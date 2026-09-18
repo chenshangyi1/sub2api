@@ -19,6 +19,15 @@
   <svg v-else-if="platform === 'antigravity'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
     <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z" />
   </svg>
+  <!-- Unified CN / video identity icons -->
+  <svg v-else-if="platform === 'cn'" :class="sizeClass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M12 3 4.5 7.5v9L12 21l7.5-4.5v-9L12 3z" />
+    <path stroke-linecap="round" stroke-linejoin="round" d="M12 12 4.5 7.5M12 12l7.5-4.5M12 12v9" />
+  </svg>
+  <svg v-else-if="platform === 'video'" :class="sizeClass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <rect x="3" y="6" width="13" height="12" rx="2" />
+    <path stroke-linecap="round" stroke-linejoin="round" d="m16 10 5-3v10l-5-3z" />
+  </svg>
   <!-- Grok / xAI logo mark (stylized angular X) -->
   <svg v-else-if="platform === 'grok'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
     <path
@@ -50,6 +59,11 @@
     <circle cx="18" cy="6" r="3" />
     <circle cx="18" cy="18" r="3" />
     <path stroke-linecap="round" stroke-linejoin="round" d="M8.7 10.7 15.3 7.3M8.7 13.3l6.6 3.4" />
+  </svg>
+  <!-- Adaptive inbound multiplexer -->
+  <svg v-else-if="platform === 'adaptive'" :class="sizeClass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <circle cx="12" cy="12" r="3" />
+    <path stroke-linecap="round" stroke-linejoin="round" d="M12 5v2M12 17v2M5 12h2M17 12h2M7.05 7.05l1.4 1.4M15.55 15.55l1.4 1.4M7.05 16.95l1.4-1.4M15.55 8.45l1.4-1.4" />
   </svg>
   <!-- Fallback: generic platform icon -->
   <svg v-else :class="sizeClass" fill="currentColor" viewBox="0 0 24 24">

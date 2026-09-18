@@ -103,7 +103,7 @@ func TestGatewayRoutesAlphaSearchRejectsUnsupportedGroup(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusNotFound, w.Code)
-	require.Contains(t, w.Body.String(), "only available for OpenAI and Composite groups")
+	require.Contains(t, w.Body.String(), "only available for OpenAI, Composite, and Adaptive groups")
 }
 
 func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {
@@ -345,6 +345,46 @@ func TestGatewayRoutesNonGrokVideosAreRejectedAtPlatformGate(t *testing.T) {
 	}
 }
 
+func TestGatewayRoutesSmartRoutingGrokVideoAllowed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	groupID := int64(1)
+	RegisterGatewayRoutes(
+		router,
+		&handler.Handlers{
+			Gateway:       &handler.GatewayHandler{},
+			OpenAIGateway: &handler.OpenAIGatewayHandler{},
+			AsyncImage:    handler.NewAsyncImageHandler(nil, nil),
+		},
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
+				GroupID:       &groupID,
+				RouteGroupIDs: []int64{1, 2},
+				Group:         &service.Group{ID: 1, Platform: service.PlatformOpenAI},
+			})
+			c.Next()
+		}),
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		&config.Config{
+			Gateway: config.GatewayConfig{
+				MaxBodySize:     1024 * 1024,
+				TextMaxBodySize: 1024 * 1024,
+			},
+		},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"grok-imagine-video-1.5","prompt":"waves"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.NotEqual(t, http.StatusNotFound, w.Code)
+	require.NotContains(t, w.Body.String(), "not supported")
+}
+
 func TestGatewayRoutesCompositeVideoGenerationAllowed(t *testing.T) {
 	router := newGatewayRoutesTestRouter(service.PlatformComposite)
 
@@ -355,6 +395,37 @@ func TestGatewayRoutesCompositeVideoGenerationAllowed(t *testing.T) {
 	router.ServeHTTP(w, req)
 	require.NotEqual(t, http.StatusNotFound, w.Code)
 	require.NotContains(t, w.Body.String(), "not supported")
+}
+
+func TestGatewayRoutesAdaptiveInboundDoesNot404LeafProtocols(t *testing.T) {
+	router := newGatewayRoutesTestRouter(service.PlatformAdaptive)
+
+	for _, path := range []string{
+		"/v1/messages",
+		"/v1/responses",
+		"/v1/chat/completions",
+		"/v1/images/generations",
+		"/v1/embeddings",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-5","prompt":"hi","input":"hi","messages":[{"role":"user","content":"hi"}]}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s", path)
+		require.NotContains(t, w.Body.String(), "not supported for this platform", "path=%s", path)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{"model":"grok-imagine-video-1.5","prompt":"waves"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.NotEqual(t, http.StatusNotFound, w.Code)
+	require.NotContains(t, w.Body.String(), "Videos API is not supported for this platform")
+
+	models := httptest.NewRequest(http.MethodGet, "/v1/models?client_version=1", nil)
+	mw := httptest.NewRecorder()
+	router.ServeHTTP(mw, models)
+	require.NotEqual(t, http.StatusNotFound, mw.Code)
 }
 
 func TestGatewayRoutesCompositeOpenAIOnlyEndpointsRequireOpenAITarget(t *testing.T) {

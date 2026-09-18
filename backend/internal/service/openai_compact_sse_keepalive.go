@@ -240,11 +240,15 @@ func OpenAICompactKeepaliveAdjustedWrittenSize(c *gin.Context) int {
 	if size < 0 {
 		return size
 	}
-	keepaliveBytes := compactKeepaliveBytes + streamKeepaliveBytes
-	if keepaliveBytes <= 0 {
+	// Keepalives are transport padding. Flushed OpenAI preamble
+	// (response.created / in_progress) is also excluded: those events are
+	// rewritten onto the same client identity during silent failover, so they
+	// must not freeze the attempt the way a visible token would.
+	nonSemanticBytes := compactKeepaliveBytes + streamKeepaliveBytes + openAIStreamPreambleBytes(c)
+	if nonSemanticBytes <= 0 {
 		return size
 	}
-	if real := size - keepaliveBytes; real > 0 {
+	if real := size - nonSemanticBytes; real > 0 {
 		return real
 	}
 	return -1

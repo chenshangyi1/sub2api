@@ -1,7 +1,7 @@
 <template>
   <div>
     <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-      {{ t('payment.paymentMethod') }}
+      {{ label || t('payment.paymentMethod') }}
     </label>
     <div
       data-testid="payment-method-grid"
@@ -62,6 +62,7 @@ export interface PaymentMethodOption {
 const props = defineProps<{
   methods: PaymentMethodOption[]
   selected: string
+  label?: string
 }>()
 
 const emit = defineEmits<{
@@ -75,6 +76,7 @@ const METHOD_ICONS: Record<string, string> = {
   wxpay: wxpayIcon,
   stripe: stripeIcon,
   airwallex: airwallexIcon,
+  epusdt: paymentIcon,
   credit_card: paymentIcon,
 }
 
@@ -91,6 +93,7 @@ function methodIcon(type: string): string {
   if (isBuiltInAlipayMethod(type)) return METHOD_ICONS.alipay
   if (isBuiltInWxpayMethod(type)) return METHOD_ICONS.wxpay
   if (type === 'airwallex') return METHOD_ICONS.airwallex
+  if (type === 'epusdt' || type.startsWith('epusdt_')) return METHOD_ICONS.epusdt
   return METHOD_ICONS[type] || paymentIcon
 }
 

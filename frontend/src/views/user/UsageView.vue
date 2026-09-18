@@ -1,10 +1,17 @@
 <template>
   <AppLayout>
-    <div class="space-y-6">
-      <UsageStatsCards :stats="usageStats" :show-account-cost="false" :strike-standard-cost="true" />
+    <div class="signal-usage space-y-6">
+      <header class="signal-workspace-heading">
+        <div class="signal-workspace-title">
+          <p class="signal-workspace-index" aria-hidden="true">03 / USAGE</p>
+          <h1>{{ t('usage.title') }}</h1>
+        </div>
+        <p class="signal-period"><Icon name="calendar" size="sm" />{{ startDate }} / {{ endDate }}</p>
+      </header>
+      <UsageStatsCards class="signal-usage-metrics" :stats="usageStats" :show-account-cost="false" :strike-standard-cost="true" />
 
       <div class="space-y-4">
-        <div class="card p-4">
+        <div class="signal-range-bar">
           <div class="flex flex-wrap items-center gap-4">
             <div class="flex items-center gap-2">
               <span class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.dashboard.timeRange') }}:</span>
@@ -23,10 +30,11 @@
           </div>
         </div>
 
-        <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div class="signal-usage-chart-grid grid grid-cols-1 gap-6 lg:grid-cols-2">
           <ModelDistributionChart
             v-model:metric="modelDistributionMetric"
             :model-stats="requestedModelStats"
+            :animation-duration="chartAnimationDuration"
             :loading="modelStatsLoading"
             :show-source-toggle="false"
             :show-metric-toggle="true"
@@ -38,6 +46,7 @@
           <GroupDistributionChart
             v-model:metric="groupDistributionMetric"
             :group-stats="groupStats"
+            :animation-duration="chartAnimationDuration"
             :loading="chartsLoading"
             :show-metric-toggle="true"
             :enable-breakdown="false"
@@ -47,11 +56,12 @@
           />
         </div>
 
-        <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div class="signal-usage-chart-grid grid grid-cols-1 gap-6 lg:grid-cols-2">
           <EndpointDistributionChart
             v-model:source="endpointDistributionSource"
             v-model:metric="endpointDistributionMetric"
             :endpoint-stats="inboundEndpointStats"
+            :animation-duration="chartAnimationDuration"
             :upstream-endpoint-stats="upstreamEndpointStats"
             :endpoint-path-stats="endpointPathStats"
             :loading="endpointStatsLoading"
@@ -62,11 +72,11 @@
             :start-date="startDate"
             :end-date="endDate"
           />
-          <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
+          <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" :animation-duration="chartAnimationDuration" />
         </div>
       </div>
 
-      <div class="card p-6">
+      <div class="signal-log-filters">
         <div class="flex flex-wrap items-end justify-between gap-4">
           <div v-if="activeTab === 'errors'" class="flex flex-1 flex-wrap items-end gap-4">
             <div class="w-full sm:w-auto sm:min-w-[220px]">
@@ -122,21 +132,22 @@
           </div>
 
           <div class="flex w-full flex-wrap items-center justify-end gap-3 sm:w-auto">
-            <button type="button" @click="refreshData" :disabled="activeTab === 'errors' ? errorLoading : loading" class="btn btn-secondary">
-              {{ t('common.refresh') }}
+            <button type="button" @click="refreshData" :disabled="activeTab === 'errors' ? errorLoading : loading" class="btn btn-secondary btn-icon" :title="t('common.refresh')" :aria-label="t('common.refresh')">
+              <Icon name="refresh" size="md" :class="{ 'animate-spin': activeTab === 'errors' ? errorLoading : loading }" />
             </button>
-            <button type="button" @click="resetFilters" class="btn btn-secondary">
-              {{ t('common.reset') }}
+            <button type="button" @click="resetFilters" class="btn btn-secondary btn-icon" :title="t('common.reset')" :aria-label="t('common.reset')">
+              <Icon name="xCircle" size="md" />
             </button>
             <div class="relative" ref="columnDropdownRef">
               <button
                 type="button"
                 @click="showColumnDropdown = !showColumnDropdown"
-                class="btn btn-secondary px-2 md:px-3"
+                class="btn btn-secondary btn-icon"
                 :title="t('admin.users.columnSettings')"
+                :aria-label="t('admin.users.columnSettings')"
+                :aria-expanded="showColumnDropdown"
               >
-                <Icon name="grid" size="sm" />
-                <span class="hidden md:inline">{{ t('admin.users.columnSettings') }}</span>
+                <Icon name="grid" size="md" />
               </button>
               <div
                 v-if="showColumnDropdown"
@@ -155,6 +166,7 @@
               </div>
             </div>
             <button v-if="activeTab !== 'errors'" type="button" @click="exportToCSV" :disabled="exporting" class="btn btn-primary">
+              <Icon name="download" size="sm" class="mr-2" />
               {{ exporting ? t('usage.exporting') : t('usage.exportCsv') }}
             </button>
           </div>
@@ -185,6 +197,7 @@
         />
 
         <Pagination
+          class="signal-pagination"
           v-if="pagination.total > 0"
           :page="pagination.page"
           :total="pagination.total"
@@ -213,7 +226,9 @@
 </template>
 
 <script setup lang="ts">
+import '@/styles/console-workspace.css'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { usePreferredReducedMotion } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { keysAPI, usageAPI, userGroupsAPI } from '@/api'
@@ -250,6 +265,8 @@ import { COMMON_ERROR_STATUS_CODES } from '@/utils/errorBadges'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const reducedMotion = usePreferredReducedMotion()
+const chartAnimationDuration = computed(() => reducedMotion.value === 'reduce' ? 0 : 180)
 
 type DistributionMetric = 'tokens' | 'actual_cost'
 type EndpointSource = 'inbound' | 'upstream' | 'path'
@@ -300,7 +317,7 @@ const errorModelOptions = computed<SelectOption[]>(() => {
   return opts
 })
 
-const errorCategoryCodes = ['auth', 'rate_limit', 'quota', 'invalid_request', 'service_unavailable', 'upstream', 'internal', 'cyber']
+const errorCategoryCodes = ['auth', 'rate_limit', 'quota', 'invalid_request', 'model_not_found', 'service_unavailable', 'upstream', 'internal', 'cyber']
 
 const errorCategoryOptions = computed<SelectOption[]>(() => [
   { value: '', label: t('usage.errors.allCategories') },
@@ -626,9 +643,10 @@ const exportToCSV = async () => {
   try {
     const allLogs: UsageLog[] = []
     const pageSize = 100
+    const exportParams = buildUsageListParams(1, pageSize)
     const totalPages = Math.ceil(pagination.total / pageSize)
     for (let page = 1; page <= totalPages; page++) {
-      const response = await usageAPI.query(buildUsageListParams(page, pageSize))
+      const response = await usageAPI.query({ ...exportParams, page })
       allLogs.push(...response.items)
     }
     if (allLogs.length === 0) {
@@ -681,7 +699,7 @@ const exportToCSV = async () => {
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `usage_${startDate.value}_to_${endDate.value}.csv`
+    link.download = `usage_${exportParams.start_date}_to_${exportParams.end_date}.csv`
     link.click()
     window.URL.revokeObjectURL(url)
     appStore.showSuccess(t('usage.exportSuccess'))

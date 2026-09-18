@@ -148,6 +148,9 @@ type CreateUserInput struct {
 	Concurrency   int
 	RPMLimit      int
 	AllowedGroups []int64
+	// RestrictPublicGroups is accepted from the admin API. Local user schema
+	// does not persist this column; the field is kept so kedaya handlers compile.
+	RestrictPublicGroups bool
 	// ActorAdminID 执行本次操作的管理员ID(来自JWT)，仅用于权限敏感操作的审计日志。
 	ActorAdminID int64
 }
@@ -163,6 +166,8 @@ type UpdateUserInput struct {
 	RPMLimit      *int     // 使用指针区分"未提供"和"设置为0"
 	Status        string
 	AllowedGroups *[]int64 // 使用指针区分"未提供"和"设置为空数组"
+	// RestrictPublicGroups 指针区分"未提供"和"显式开关"。
+	RestrictPublicGroups *bool
 	// GroupRates 用户专属分组倍率配置
 	// map[groupID]*rate，nil 表示删除该分组的专属倍率
 	GroupRates map[int64]*float64
@@ -214,6 +219,7 @@ type CreateGroupInput struct {
 	Platform                  string
 	RateMultiplier            float64
 	IsExclusive               bool
+	UserVisible               bool
 	SubscriptionType          string   // standard/subscription
 	DailyLimitUSD             *float64 // 日限额 (USD)
 	WeeklyLimitUSD            *float64 // 周限额 (USD)
@@ -288,6 +294,7 @@ type UpdateGroupInput struct {
 	Platform                  string
 	RateMultiplier            *float64 // 使用指针以支持设置为0
 	IsExclusive               *bool
+	UserVisible               *bool
 	Status                    string
 	SubscriptionType          string   // standard/subscription
 	DailyLimitUSD             *float64 // 日限额 (USD)
@@ -370,6 +377,7 @@ type CreateAccountInput struct {
 	RateMultiplier     *float64 // 账号计费倍率（>=0，允许 0）
 	LoadFactor         *int
 	GroupIDs           []int64
+	AccountGroups      []AccountGroup
 	ExpiresAt          *int64
 	AutoPauseOnExpired *bool
 	ProbeEnabled       *bool
@@ -402,6 +410,7 @@ type UpdateAccountInput struct {
 	LoadFactor            *int
 	Status                string
 	GroupIDs              *[]int64
+	AccountGroups         []AccountGroup
 	ExpiresAt             *int64
 	AutoPauseOnExpired    *bool
 	ProbeEnabled          *bool
@@ -422,6 +431,7 @@ type BulkUpdateAccountsInput struct {
 	Status         string
 	Schedulable    *bool
 	GroupIDs       *[]int64
+	AccountGroups  []AccountGroup
 	Credentials    map[string]any
 	Extra          map[string]any
 	ProbeEnabled   *bool

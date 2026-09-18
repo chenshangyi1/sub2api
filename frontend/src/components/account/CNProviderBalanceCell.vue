@@ -63,7 +63,7 @@ import { adminAPI } from '@/api/admin'
 import type { CNProviderBalanceEntry, CNProviderBalanceResult } from '@/api/admin/cnProviders'
 import type { Account } from '@/types'
 import { platformTextClass } from '@/utils/platformColors'
-import { cnBalanceCellVisible } from './credentialsBuilder'
+import { cnBalanceCellVisible, cnVendorFromAccount } from './credentialsBuilder'
 
 const props = defineProps<{
   account: Account
@@ -77,13 +77,20 @@ const readMode = (): string => {
 }
 
 // 仅 kimi / deepseek payg 账号有公开余额端点（智谱 payg 无）。
-const visible = computed(() => cnBalanceCellVisible(props.account.platform, readMode()))
+const visible = computed(() =>
+  cnBalanceCellVisible(
+    props.account.platform,
+    readMode(),
+    cnVendorFromAccount(props.account.platform, props.account.credentials as Record<string, unknown> | undefined)
+  )
+)
 
 const loading = ref(false)
 const error = ref<string | null>(null)
 const data = ref<CNProviderBalanceResult | null>(null)
 
-const extraKey = (suffix: string) => `${props.account.platform}_${suffix}`
+const extraKey = (suffix: string) =>
+  `${cnVendorFromAccount(props.account.platform, props.account.credentials as Record<string, unknown> | undefined)}_${suffix}`
 
 // 落库快照（后端周期探测/响应式写入 account.Extra）。
 const snapshotBalance = computed(() => {

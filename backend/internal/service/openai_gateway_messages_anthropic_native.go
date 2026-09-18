@@ -181,7 +181,7 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 	req.Header.Del("x-api-key")
 	req.Header.Del("x-goog-api-key")
 	req.Header.Del("cookie")
-	setAnthropicAPIKeyAuthHeader(req.Header, account, apiKey)
+	setAnthropicAPIKeyAuthHeader(req.Header, account, apiKey, account.GetAnthropicProtocolBaseURL())
 
 	if getHeaderRaw(req.Header, "content-type") == "" {
 		setHeaderRaw(req.Header, "content-type", "application/json")
@@ -314,7 +314,7 @@ func (s *OpenAIGatewayService) handleNativeAnthropicStreamingResponse(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanBuf := getSSEScannerBuf64K()
-	scanner.Buffer(scanBuf[:0], maxLineSize)
+	attachSSEScannerBuffer(scanner, scanBuf[:], maxLineSize)
 
 	type scanEvent struct {
 		line string

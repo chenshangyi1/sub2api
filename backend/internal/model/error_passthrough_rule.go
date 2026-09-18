@@ -41,9 +41,11 @@ const (
 	PlatformGemini      = domain.PlatformGemini
 	PlatformAntigravity = domain.PlatformAntigravity
 	PlatformGrok        = domain.PlatformGrok
+	PlatformCN          = domain.PlatformCN
 	PlatformKimi        = domain.PlatformKimi
 	PlatformZhipu       = domain.PlatformZhipu
 	PlatformDeepseek    = domain.PlatformDeepseek
+	PlatformVideo       = domain.PlatformVideo
 )
 
 // AllPlatforms 返回所有支持的平台列表
@@ -54,9 +56,8 @@ func AllPlatforms() []string {
 		PlatformGemini,
 		PlatformAntigravity,
 		PlatformGrok,
-		PlatformKimi,
-		PlatformZhipu,
-		PlatformDeepseek,
+		PlatformCN,
+		PlatformVideo,
 	}
 }
 

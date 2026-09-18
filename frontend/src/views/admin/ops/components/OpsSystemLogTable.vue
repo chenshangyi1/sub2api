@@ -41,6 +41,7 @@ const runtimeLoading = ref(false)
 const runtimeSaving = ref(false)
 const runtimeConfig = reactive<OpsRuntimeLogConfig>({
   level: 'info',
+  persist_access_logs: false,
   enable_sampling: false,
   sampling_initial: 100,
   sampling_thereafter: 100,
@@ -231,6 +232,7 @@ const loadRuntimeConfig = async () => {
   try {
     const cfg = await opsAPI.getRuntimeLogConfig()
     runtimeConfig.level = cfg.level
+    runtimeConfig.persist_access_logs = cfg.persist_access_logs
     runtimeConfig.enable_sampling = cfg.enable_sampling
     runtimeConfig.sampling_initial = cfg.sampling_initial
     runtimeConfig.sampling_thereafter = cfg.sampling_thereafter
@@ -249,6 +251,7 @@ const saveRuntimeConfig = async () => {
   try {
     const saved = await opsAPI.updateRuntimeLogConfig({ ...runtimeConfig })
     runtimeConfig.level = saved.level
+    runtimeConfig.persist_access_logs = saved.persist_access_logs
     runtimeConfig.enable_sampling = saved.enable_sampling
     runtimeConfig.sampling_initial = saved.sampling_initial
     runtimeConfig.sampling_thereafter = saved.sampling_thereafter
@@ -272,6 +275,7 @@ const resetRuntimeConfig = async () => {
   try {
     const saved = await opsAPI.resetRuntimeLogConfig()
     runtimeConfig.level = saved.level
+    runtimeConfig.persist_access_logs = saved.persist_access_logs
     runtimeConfig.enable_sampling = saved.enable_sampling
     runtimeConfig.sampling_initial = saved.sampling_initial
     runtimeConfig.sampling_thereafter = saved.sampling_thereafter

@@ -128,6 +128,12 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	}
 
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
+	rootAPIKey := apiKey
+	apiKey = h.startGatewayAdaptiveIfParent(
+		c.Request.Context(), c, apiKey, reqModel,
+		service.AdaptiveRouteProtocolOpenAIResponses, body, reqLog,
+	)
+	installAntiStallForKey(c.Request.Context(), c, h.settingService, rootAPIKey, reqLog, "anthropic.responses.anti_stall_pro")
 
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 
@@ -170,8 +176,8 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		h.responsesErrorResponse(c, status, code, message)
 		return
 	}
+	defer func() { deferBalancePreauthorizationRefund(reqLog, balanceGuard) }()
 	if balanceGuard != nil {
-		defer deferBalancePreauthorizationRefund(reqLog, balanceGuard)
 		c.Request = c.Request.WithContext(service.ContextWithBalancePreauthorizationGuard(c.Request.Context(), balanceGuard))
 	}
 
@@ -201,11 +207,34 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	fs := NewFillFailoverState(h.maxAccountSwitches, false)
 
 	for {
+		requestCtx = c.Request.Context()
 		if requestCtx.Err() != nil {
 			return
 		}
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(requestCtx, apiKey.GroupID, sessionHash, reqModel, fs.FailedAccountIDs, "", int64(0))
+		selection, routedKey, err := h.gatewayService.SelectAccountAlongKeyRoutes(requestCtx, apiKey, sessionHash, reqModel, fs.FailedAccountIDs, "", int64(0), effectiveAPIKeyPlatform(c, apiKey))
+		if err == nil && routedKey != nil {
+			changed := keyRouteGroupChanged(apiKey, routedKey)
+			if bindErr := h.bindSelectedKeyRoute(c, keyRouteBinding{
+				Previous: apiKey, Selected: routedKey, Subscription: &subscription,
+				Mapping: &channelMapping, Guard: &balanceGuard, Body: body, Model: reqModel, PricingAt: pricingAt,
+			}); bindErr != nil {
+				releaseRejectedKeyRouteSelection(selection)
+				status, code, message, _ := billingErrorDetails(bindErr)
+				h.responsesErrorResponse(c, status, code, message)
+				return
+			}
+			apiKey = routedKey
+			requestCtx = c.Request.Context()
+			if changed {
+				preauthorizationBody = openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
+			}
+		}
 		if err != nil {
+			if nextKey := h.advanceGatewayAdaptiveLeaf(c.Request.Context(), c, rootAPIKey, reqLog); nextKey != nil {
+				apiKey = nextKey
+				fs = NewFillFailoverState(h.maxAccountSwitches, false)
+				continue
+			}
 			if len(fs.FailedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, effectiveAPIKeyPlatform(c, apiKey))
 				cls = classifySelectionFailureErrorFromGin(c, err, cls)
@@ -420,7 +449,7 @@ func (h *GatewayHandler) handleResponsesFailoverExhausted(c *gin.Context, lastEr
 	}
 	status, code, message := statusCode, "server_error", "All available accounts exhausted"
 	if lastErr != nil && service.IsUpstreamCapacityCoolingBody(lastErr.ResponseBody) {
-		c.Header("Retry-After", "5")
+		c.Header("Retry-After", "30")
 		status, code, message = http.StatusServiceUnavailable, "server_error", "Upstream providers are temporarily cooling down; please retry later"
 	} else if lastErr != nil && lastErr.IsCredentialFailure() {
 		status, message = credentialFailoverClientResponse(lastErr)

@@ -82,6 +82,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // opsIngressRejectAggregator
 		nil, // apiKeyService
 		nil, // authCacheInvalidationWorker
+		nil, // adaptiveReservationReconciler
 		schedulerSnapshotSvc,
 		tokenRefreshSvc,
 		accountExpirySvc,

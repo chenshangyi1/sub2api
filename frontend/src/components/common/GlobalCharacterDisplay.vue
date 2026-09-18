@@ -1,15 +1,14 @@
 <template>
   <div class="global-character-display">
     <!-- 全屏角色背景（半透明） -->
-    <div 
+    <div
       class="character-background"
-      :style="{ 
-        background: currentGradient,
-        opacity: 0.08 
+      :style="{
+        background: currentGradient
       }"
     ></div>
 
-    <!-- 右下角大型角色展示 -->
+    <!-- 全屏角色展示 -->
     <div 
       class="character-showcase"
       @mouseenter="pauseRotation"
@@ -249,53 +248,79 @@ onUnmounted(() => {
   z-index: 0;
 }
 
-/* 全屏背景渐变 */
+/* Soft wash only — never a competing full-bleed wallpaper. */
 .character-background {
   position: absolute;
   inset: 0;
   transition: all 1.2s cubic-bezier(0.4, 0, 0.2, 1);
-  opacity: 0.15;
+  opacity: 0.08;
   pointer-events: none;
 }
 
-/* 全屏角色展示区 */
+/* Pin the portrait to the right so controls stay readable. */
 .character-showcase {
   position: fixed;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(52vw, 720px);
   pointer-events: none;
-  z-index: 0;
+  z-index: 1;
 }
 
-/* 发光背景 */
 .glow-background {
   position: absolute;
-  inset: 0;
+  inset: 12% 8% 18% 18%;
+  border-radius: 40%;
+  opacity: 0.35;
   transition: box-shadow 1.2s cubic-bezier(0.4, 0, 0.2, 1);
   pointer-events: none;
 }
 
-/* 角色容器 */
 .character-container {
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: flex-end;
+  justify-content: flex-end;
   overflow: hidden;
+  mask-image: linear-gradient(90deg, transparent 0%, rgba(0, 0, 0, 0.45) 10%, #000 28%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, rgba(0, 0, 0, 0.45) 10%, #000 28%);
 }
 
-/* 角色图片 */
+.character-container::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    var(--ds-bg, #f8fafc) 0%,
+    color-mix(in srgb, var(--ds-bg, #f8fafc) 35%, transparent) 18%,
+    transparent 48%
+  );
+}
+
+:global(html.dark) .character-container::after {
+  background: linear-gradient(
+    90deg,
+    var(--ds-bg, #020617) 0%,
+    color-mix(in srgb, var(--ds-bg, #020617) 35%, transparent) 18%,
+    transparent 48%
+  );
+}
+
 .character-image {
-  width: 100%;
+  width: auto;
   height: 100%;
-  object-fit: cover;
-  object-position: center;
-  filter: brightness(0.6) saturate(1.2) blur(2px);
+  max-width: none;
+  object-fit: contain;
+  object-position: right bottom;
+  filter: drop-shadow(0 18px 40px rgba(15, 23, 42, 0.28));
   transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-  opacity: 0.4;
+  opacity: 1;
 }
 
-/* 角色切换动画 */
 .character-fade-enter-active,
 .character-fade-leave-active {
   transition: opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1), 
@@ -312,18 +337,18 @@ onUnmounted(() => {
   transform: translateX(-60px) scale(0.95);
 }
 
-/* 角色名称标签 */
 .character-badge {
   position: absolute;
-  bottom: 48px;
-  left: 48px;
-  background: rgba(255, 255, 255, 0.95);
+  right: 24px;
+  bottom: 28px;
+  left: auto;
+  background: color-mix(in srgb, var(--ds-surface, #fff) 92%, transparent);
   backdrop-filter: blur(20px);
   border-radius: 16px;
-  padding: 16px 20px;
+  padding: 12px 16px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12),
               0 2px 8px rgba(0, 0, 0, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.8);
+  border: 1px solid color-mix(in srgb, var(--ds-border, #e5e7eb) 80%, transparent);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   pointer-events: auto;
   z-index: 10;

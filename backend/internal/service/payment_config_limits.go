@@ -21,7 +21,7 @@ func (s *PaymentConfigService) GetAvailableMethodLimits(ctx context.Context) (*M
 	if err != nil {
 		return nil, fmt.Errorf("query provider instances: %w", err)
 	}
-	typeInstances := pcGroupByPaymentType(instances)
+	typeInstances := s.pcGroupByPaymentType(instances)
 	typeInstances = s.pcApplyEnabledVisibleMethodInstances(ctx, typeInstances, instances)
 	resp := &MethodLimitsResponse{
 		Methods: make(map[string]MethodLimits, len(typeInstances)),
@@ -86,7 +86,7 @@ func (s *PaymentConfigService) GetMethodLimits(ctx context.Context, types []stri
 	for _, pt := range types {
 		var matching []*dbent.PaymentProviderInstance
 		for _, inst := range instances {
-			if payment.InstanceSupportsType(inst.SupportedTypes, pt) {
+			if s.instanceMatchesCheckoutType(inst, pt) {
 				matching = append(matching, inst)
 			}
 		}
@@ -103,7 +103,12 @@ func (s *PaymentConfigService) GetMethodLimits(ctx context.Context, types []stri
 }
 
 func (s *PaymentConfigService) ValidateMethodCurrencyConsistency(ctx context.Context, paymentType string) (string, error) {
-	method := NormalizeVisibleMethod(paymentType)
+	method := strings.TrimSpace(paymentType)
+	if payment.IsEPUSDTCheckoutMethod(method) {
+		method = payment.EPUSDTCheckoutMethod(payment.EPUSDTCheckoutNetwork(method))
+	} else {
+		method = NormalizeVisibleMethod(paymentType)
+	}
 	if method == "" || s == nil || s.entClient == nil {
 		return payment.DefaultPaymentCurrency, nil
 	}
@@ -114,7 +119,7 @@ func (s *PaymentConfigService) ValidateMethodCurrencyConsistency(ctx context.Con
 		return "", fmt.Errorf("query provider instances: %w", err)
 	}
 
-	typeInstances := pcGroupByPaymentType(instances)
+	typeInstances := s.pcGroupByPaymentType(instances)
 	typeInstances = s.pcApplyEnabledVisibleMethodInstances(ctx, typeInstances, instances)
 	matching := typeInstances[method]
 	if len(matching) == 0 {
@@ -176,6 +181,9 @@ func (s *PaymentConfigService) pcAggregateMethodDisplayName(pt string, instances
 	if pt == "" {
 		return ""
 	}
+	if name := payment.EPUSDTNetworkDisplayName(payment.EPUSDTCheckoutNetwork(pt)); name != "" {
+		return name
+	}
 	for _, inst := range instances {
 		displayName := s.pcInstanceEasyPayCustomMethodDisplayName(inst, pt)
 		if displayName != "" {
@@ -217,7 +225,46 @@ func (s *PaymentConfigService) pcInstanceEasyPayCustomMethodDisplayName(inst *db
 // For Stripe providers, ALL sub-types (card, link, alipay, wxpay) map to "stripe"
 // because the user sees a single "Stripe" button, not individual sub-methods.
 // Uses a seen set to avoid counting one instance twice.
-func pcGroupByPaymentType(instances []*dbent.PaymentProviderInstance) map[string][]*dbent.PaymentProviderInstance {
+func (s *PaymentConfigService) pcEPUSDTNetworks(inst *dbent.PaymentProviderInstance) []string {
+	if inst == nil {
+		return nil
+	}
+	if s != nil {
+		cfg, err := s.decryptConfig(inst.Config)
+		if err == nil {
+			if networks := payment.EPUSDTNetworksFromMap(cfg); len(networks) > 0 {
+				return networks
+			}
+		}
+	}
+	return payment.EPUSDTNetworksFromConfig(inst.Config)
+}
+
+func (s *PaymentConfigService) instanceMatchesCheckoutType(inst *dbent.PaymentProviderInstance, pt string) bool {
+	if inst == nil {
+		return false
+	}
+	pt = strings.TrimSpace(pt)
+	if inst.ProviderKey == payment.TypeEpusdt {
+		networks := s.pcEPUSDTNetworks(inst)
+		if payment.IsEPUSDTCheckoutMethod(pt) {
+			wanted := payment.EPUSDTCheckoutNetwork(pt)
+			for _, network := range networks {
+				if network == wanted {
+					return true
+				}
+			}
+			return false
+		}
+		if pt == payment.TypeEpusdt {
+			return len(networks) == 0
+		}
+		return false
+	}
+	return payment.InstanceSupportsType(inst.SupportedTypes, pt)
+}
+
+func (s *PaymentConfigService) pcGroupByPaymentType(instances []*dbent.PaymentProviderInstance) map[string][]*dbent.PaymentProviderInstance {
 	typeInstances := make(map[string][]*dbent.PaymentProviderInstance)
 	seen := make(map[string]map[int64]bool)
 	add := func(key string, inst *dbent.PaymentProviderInstance) {
@@ -233,6 +280,17 @@ func pcGroupByPaymentType(instances []*dbent.PaymentProviderInstance) map[string
 		// Stripe provider: all sub-types → single "stripe" group
 		if inst.ProviderKey == payment.TypeStripe {
 			add(payment.TypeStripe, inst)
+			continue
+		}
+		if inst.ProviderKey == payment.TypeEpusdt {
+			networks := s.pcEPUSDTNetworks(inst)
+			if len(networks) == 0 {
+				add(payment.TypeEpusdt, inst)
+				continue
+			}
+			for _, network := range networks {
+				add(payment.EPUSDTCheckoutMethod(network), inst)
+			}
 			continue
 		}
 		for _, t := range splitTypes(inst.SupportedTypes) {
@@ -291,13 +349,20 @@ func unionFloat(agg float64, limited bool, val float64, wantMin bool) (float64, 
 //   - SingleMax: highest ceiling across instances; 0 if any is unlimited
 //   - DailyLimit: highest cap across instances; 0 if any is unlimited
 func pcAggregateMethodLimits(pt string, instances []*dbent.PaymentProviderInstance) MethodLimits {
+	fee, mult := pcAggregateRechargeOverrides(instances)
+	attach := func(ml MethodLimits) MethodLimits {
+		ml.RechargeFeeRate = fee
+		ml.BalanceRechargeMultiplier = mult
+		return ml
+	}
+
 	ml := MethodLimits{PaymentType: pt}
 	minLimited, maxLimited, dailyLimited := true, true, true
 
 	for _, inst := range instances {
 		cl, hasLimits := pcInstanceTypeLimits(inst, pt)
 		if !hasLimits {
-			return MethodLimits{PaymentType: pt} // any unlimited instance → all zeros
+			return attach(MethodLimits{PaymentType: pt}) // any unlimited instance → all zeros
 		}
 		ml.SingleMin, minLimited = unionFloat(ml.SingleMin, minLimited, cl.SingleMin, true)
 		ml.SingleMax, maxLimited = unionFloat(ml.SingleMax, maxLimited, cl.SingleMax, false)
@@ -313,7 +378,34 @@ func pcAggregateMethodLimits(pt string, instances []*dbent.PaymentProviderInstan
 	if !dailyLimited {
 		ml.DailyLimit = 0
 	}
-	return ml
+	return attach(ml)
+}
+
+func pcAggregateRechargeOverrides(instances []*dbent.PaymentProviderInstance) (fee, mult *float64) {
+	if len(instances) == 0 {
+		return nil, nil
+	}
+	fee = instances[0].RechargeFeeRate
+	mult = instances[0].BalanceRechargeMultiplier
+	for _, inst := range instances[1:] {
+		if !ptrFloatEqual(fee, inst.RechargeFeeRate) {
+			fee = nil
+		}
+		if !ptrFloatEqual(mult, inst.BalanceRechargeMultiplier) {
+			mult = nil
+		}
+	}
+	return fee, mult
+}
+
+func ptrFloatEqual(a, b *float64) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
 }
 
 // pcComputeGlobalRange computes the widest [min, max] across all methods.

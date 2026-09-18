@@ -32,9 +32,9 @@ func TestOpsSystemLogSink_ShouldIndex(t *testing.T) {
 			want:  true,
 		},
 		{
-			name:  "access component",
+			name:  "access component stays in files not postgres",
 			event: &logger.LogEvent{Level: "info", Component: "http.access"},
-			want:  true,
+			want:  false,
 		},
 		{
 			name: "rejected access excluded from database sink",
@@ -46,13 +46,13 @@ func TestOpsSystemLogSink_ShouldIndex(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "access component from fields (real zap path)",
+			name: "access component from fields stays in files not postgres",
 			event: &logger.LogEvent{
 				Level:     "info",
 				Component: "",
 				Fields:    map[string]any{"component": "http.access"},
 			},
-			want: true,
+			want: false,
 		},
 		{
 			name:  "audit component",
@@ -158,10 +158,10 @@ func TestOpsSystemLogSink_StartStopAndFlushSuccess(t *testing.T) {
 	sink.WriteLogEvent(&logger.LogEvent{
 		Time:      time.Now().UTC(),
 		Level:     "warn",
-		Component: "http.access",
+		Component: "handler.openai_gateway.chat_completions",
 		Message:   `authorization="Bearer sk-test-123"`,
 		Fields: map[string]any{
-			"component":         "http.access",
+			"component":         "handler.openai_gateway.chat_completions",
 			"request_id":        "req-1",
 			"client_request_id": "creq-1",
 			"user_id":           "12",

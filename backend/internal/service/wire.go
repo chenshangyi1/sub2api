@@ -441,8 +441,9 @@ func ProvideTimingWheelService() (*TimingWheelService, error) {
 }
 
 // ProvideDeferredService creates and starts DeferredService
-func ProvideDeferredService(accountRepo AccountRepository, timingWheel *TimingWheelService) *DeferredService {
+func ProvideDeferredService(accountRepo AccountRepository, apiKeyRepo APIKeyRepository, timingWheel *TimingWheelService) *DeferredService {
 	svc := NewDeferredService(accountRepo, timingWheel, 10*time.Second)
+	svc.SetAPIKeyRepository(apiKeyRepo)
 	svc.Start()
 	return svc
 }
@@ -812,6 +813,24 @@ func ProvideBillingCacheService(
 	return NewBillingCacheService(cache, userRepo, subRepo, apiKeyRepo, rpmCache, rateRepo, cfg, userPlatformQuotaRepo)
 }
 
+// ProvideModelPlazaService attaches Adaptive topology and account mappings so
+// plaza can list models when billing channels are sparse (the production case:
+// one hidden CN channel, catalogs live on accounts / Adaptive leaves).
+func ProvideModelPlazaService(
+	channelRepo ChannelRepository,
+	groupRepo GroupRepository,
+	pricingService *PricingService,
+	billingService *BillingService,
+	resolver *ModelPricingResolver,
+	pool AdaptivePoolSnapshotRepository,
+	accountRepo AccountRepository,
+) *ModelPlazaService {
+	svc := NewModelPlazaService(channelRepo, groupRepo, pricingService, billingService, resolver)
+	svc.SetAdaptivePool(pool)
+	svc.SetAccountRepo(accountRepo)
+	return svc
+}
+
 // ProvideAPIKeyService wires APIKeyService and connects rate-limit cache invalidation.
 func ProvideAPIKeyService(
 	apiKeyRepo APIKeyRepository,
@@ -823,11 +842,38 @@ func ProvideAPIKeyService(
 	cfg *config.Config,
 	billingCacheService *BillingCacheService,
 	concurrencyService *ConcurrencyService,
+	deferredService *DeferredService,
+	pool AdaptivePoolSnapshotRepository,
 ) *APIKeyService {
 	svc := NewAPIKeyService(apiKeyRepo, userRepo, groupRepo, userSubRepo, userGroupRateRepo, cache, cfg)
 	svc.SetRateLimitCacheInvalidator(billingCacheService)
 	svc.SetConcurrencyService(concurrencyService)
+	if deferredService != nil {
+		svc.SetLastUsedScheduler(deferredService.ScheduleAPIKeyLastUsed)
+	}
+	svc.SetAdaptivePool(pool)
 	return svc
+}
+
+// ProvideAdaptiveBillingCoordinator builds the shared Adaptive authorize/capture
+// coordinator used by OpenAI and Claude gateways.
+func ProvideAdaptiveBillingCoordinator(
+	reservations UsageBillingReservationRepository,
+	usageLogs UsageLogRepository,
+) *AdaptiveBillingCoordinator {
+	return NewAdaptiveBillingCoordinator(reservations, usageLogs)
+}
+
+// ProvideAdaptiveRoutePlanner builds the leaf planner with a Redis-backed
+// signal store for shared global health state across all nodes.
+func ProvideAdaptiveRoutePlanner(
+	pool AdaptivePoolSnapshotRepository,
+	accounts AccountRepository,
+	groups GroupRepository,
+	channels *ChannelService,
+	redisClient *redis.Client,
+) *AdaptiveRoutePlanner {
+	return NewAdaptiveRoutePlanner(pool, accounts, groups, channels, NewAdaptiveRouteSignalStore(redisClient))
 }
 
 // ProviderSet is the Wire provider set for all services
@@ -854,6 +900,9 @@ var ProviderSet = wire.NewSet(
 	NewAdminService,
 	NewGatewayService,
 	NewOpenAIGatewayService,
+	ProvideAdaptiveBillingCoordinator,
+	ProvideAdaptiveReservationReconciler,
+	ProvideAdaptiveRoutePlanner,
 	ProvideImageStorageSettingService,
 	ProvideImageTaskService,
 	ProvideBatchImageModelPricingResolver,
@@ -888,6 +937,8 @@ var ProviderSet = wire.NewSet(
 	ProvideRateLimitService,
 	ProvideAccountUsageService,
 	ProvideAccountTestService,
+	NewAccountTrafficService,
+	ProvideAntiDegradeService,
 	ProvideUpstreamBillingProbeService,
 	ProvideOllamaCloudUsageService,
 	ProvideSettingService,
@@ -949,7 +1000,7 @@ var ProviderSet = wire.NewSet(
 	NewChannelService,
 	wire.Bind(new(ChannelCacheInvalidator), new(*ChannelService)),
 	NewModelPricingResolver,
-	NewModelPlazaService,
+	ProvideModelPlazaService,
 	NewContentModerationService,
 	NewAffiliateService,
 	ProvidePaymentConfigService,
@@ -958,12 +1009,20 @@ var ProviderSet = wire.NewSet(
 	ProvideBalanceNotifyService,
 	ProvideChannelMonitorService,
 	ProvideChannelMonitorRunner,
+	ProvideGroupMonitorService,
+	ProvideGroupMonitorRunner,
 	NewChannelMonitorQuotaFetcher,
 	ProvideChannelMonitorV2Service,
 	ProvideChannelMonitorV2Aggregator,
 	NewChannelMonitorRequestTemplateService,
 	ProvideUserPlatformQuotaUsageFlusher,
 )
+
+func ProvideAntiDegradeService(admin AdminService, cfg *config.Config, plugins *PluginManager) *AntiDegradeService {
+	svc := NewAntiDegradeService(admin)
+	svc.cfg, svc.pluginManager = cfg, plugins
+	return svc
+}
 
 // ProvideUserPlatformQuotaUsageFlusher 创建并启动 UserPlatformQuotaUsageFlusher。
 func ProvideUserPlatformQuotaUsageFlusher(cfg *config.Config, cache BillingCache, quotaRepo UserPlatformQuotaRepository, tw *TimingWheelService) *UserPlatformQuotaUsageFlusher {
@@ -1003,6 +1062,31 @@ func ProvidePaymentOrderExpiryService(paymentSvc *PaymentService, lockCache Lead
 // ProvideChannelMonitorService 创建渠道监控服务（CRUD + RunCheck + 用户视图聚合）。
 // 加密器复用 wire 中已注入的 SecretEncryptor（AES-256-GCM）。
 // settingService gates RunCheck via channel_monitor_enabled + channel_monitor_mode.
+// ProvideGroupMonitorService constructs the group-level monitor service.
+func ProvideGroupMonitorService(
+	repo GroupMonitorRepository,
+	accountTestService *AccountTestService,
+	rateLimitService *RateLimitService,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+) *GroupMonitorService {
+	svc := NewGroupMonitorService(repo, accountTestService, rateLimitService)
+	svc.SetVisibilitySources(userRepo, userSubRepo)
+	return svc
+}
+
+// ProvideGroupMonitorRunner constructs and starts the group monitor scheduler.
+func ProvideGroupMonitorRunner(
+	svc *GroupMonitorService,
+	lockCache LeaderLockCache,
+	db *sql.DB,
+) *GroupMonitorRunnerService {
+	runner := NewGroupMonitorRunnerService(svc)
+	runner.SetLeaderLock(lockCache, db)
+	runner.Start()
+	return runner
+}
+
 func ProvideChannelMonitorService(
 	repo ChannelMonitorRepository,
 	encryptor SecretEncryptor,
@@ -1047,8 +1131,9 @@ func ProvideChannelMonitorV2Service(repo ChannelMonitorV2Repository, settingServ
 // ProvideChannelMonitorV2Aggregator starts the passive minute-rollup worker.
 // Aggregation only runs when channel_monitor_enabled=true and mode=v2 (and V2 config enabled).
 // Set CHANNEL_MONITOR_V2_DISABLE_AGGREGATOR=1 to skip Start (local demo with seeded facts).
-func ProvideChannelMonitorV2Aggregator(repo ChannelMonitorV2Repository, db *sql.DB, settingService *SettingService) *ChannelMonitorV2Aggregator {
+func ProvideChannelMonitorV2Aggregator(repo ChannelMonitorV2Repository, db *sql.DB, settingService *SettingService, lockCache LeaderLockCache) *ChannelMonitorV2Aggregator {
 	aggregator := NewChannelMonitorV2Aggregator(repo, db, settingService)
+	aggregator.SetLeaderLock(lockCache, db)
 	if os.Getenv("CHANNEL_MONITOR_V2_DISABLE_AGGREGATOR") == "1" {
 		return aggregator
 	}

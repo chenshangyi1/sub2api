@@ -497,23 +497,37 @@ func TestGetFallbackPricing_FamilyMatching(t *testing.T) {
 		{
 			name:              "deepseek v4 flash",
 			model:             "deepseek-v4-flash",
-			expectedInput:     1.4e-7,
-			expectedOutput:    floatPtr(2.8e-7),
-			expectedCacheRead: floatPtr(2.8e-9),
+			expectedInput:     2.2e-7,
+			expectedOutput:    floatPtr(6.6e-7),
+			expectedCacheRead: floatPtr(7e-9),
+		},
+		{
+			name:              "deepseek v4 flash vision exp",
+			model:             "deepseek-v4-flash-vision-exp",
+			expectedInput:     2.2e-7,
+			expectedOutput:    floatPtr(6.6e-7),
+			expectedCacheRead: floatPtr(7e-9),
 		},
 		{
 			name:              "deepseek chat alias → flash",
 			model:             "deepseek-chat",
-			expectedInput:     1.4e-7,
-			expectedOutput:    floatPtr(2.8e-7),
-			expectedCacheRead: floatPtr(2.8e-9),
+			expectedInput:     2.2e-7,
+			expectedOutput:    floatPtr(6.6e-7),
+			expectedCacheRead: floatPtr(7e-9),
 		},
 		{
 			name:              "deepseek reasoner alias → flash",
 			model:             "deepseek-reasoner",
-			expectedInput:     1.4e-7,
-			expectedOutput:    floatPtr(2.8e-7),
-			expectedCacheRead: floatPtr(2.8e-9),
+			expectedInput:     2.2e-7,
+			expectedOutput:    floatPtr(6.6e-7),
+			expectedCacheRead: floatPtr(7e-9),
+		},
+		{
+			name:              "unknown deepseek maps to flash",
+			model:             "deepseek-foo",
+			expectedInput:     2.2e-7,
+			expectedOutput:    floatPtr(6.6e-7),
+			expectedCacheRead: floatPtr(7e-9),
 		},
 
 		// ---- 智谱 GLM（z.ai USD 口径）----
@@ -772,6 +786,29 @@ func TestGetFallbackPricing_FamilyMatching(t *testing.T) {
 			name:          "doubao embedding vision versioned alias",
 			model:         "doubao-embedding-vision-251215",
 			expectedInput: 0.098e-6,
+		},
+
+		// ---- 通义千问 Qwen 3.8 ----
+		{
+			name:              "qwen3.8-max flagship",
+			model:             "qwen3.8-max",
+			expectedInput:     1.680672e-6,
+			expectedOutput:    floatPtr(5.042017e-6),
+			expectedCacheRead: floatPtr(0.210084e-6),
+		},
+		{
+			name:              "qwen3.8-max snapshot suffix",
+			model:             "qwen3.8-max-0902",
+			expectedInput:     1.680672e-6,
+			expectedOutput:    floatPtr(5.042017e-6),
+			expectedCacheRead: floatPtr(0.210084e-6),
+		},
+		{
+			name:              "qwen3.8-flash",
+			model:             "qwen3.8-flash",
+			expectedInput:     0.112045e-6,
+			expectedOutput:    floatPtr(0.378151e-6),
+			expectedCacheRead: floatPtr(0.014006e-6),
 		},
 
 		// ---- 负向用例 ----
@@ -1188,8 +1225,40 @@ func TestGetModelPricing_Grok45OfficialFallback(t *testing.T) {
 			require.InDelta(t, 6e-6, pricing.OutputPricePerToken, 1e-12)
 			require.InDelta(t, 0.3e-6, pricing.CacheReadPricePerToken, 1e-12)
 			require.False(t, pricing.SupportsCacheBreakdown)
+			require.Equal(t, 200000, pricing.LongContextInputThreshold)
+			require.True(t, pricing.LongContextThresholdInclusive)
+			require.InDelta(t, 2.0, pricing.LongContextInputMultiplier, 1e-12)
+			require.InDelta(t, 2.0, pricing.LongContextOutputMultiplier, 1e-12)
 		})
 	}
+}
+
+func TestGetModelPricing_GrokCatalogWithoutLongContextKeepsOfficial200kLadder(t *testing.T) {
+	pricingSvc := NewPricingService(&config.Config{}, nil)
+	pricingSvc.pricingData = map[string]*LiteLLMModelPricing{
+		"grok-4.5": {
+			InputCostPerToken:       2e-6,
+			OutputCostPerToken:      6e-6,
+			CacheReadInputTokenCost: 0.3e-6,
+			LiteLLMProvider:         "xai",
+			Mode:                    "chat",
+		},
+	}
+	svc := NewBillingService(&config.Config{}, pricingSvc)
+
+	pricing, err := svc.GetModelPricing("grok-4.5")
+	require.NoError(t, err)
+	require.Equal(t, 200000, pricing.LongContextInputThreshold)
+	require.True(t, pricing.LongContextThresholdInclusive)
+	require.InDelta(t, 2.0, pricing.LongContextInputMultiplier, 1e-12)
+	require.InDelta(t, 2.0, pricing.LongContextOutputMultiplier, 1e-12)
+
+	tokens := UsageTokens{InputTokens: 200000, OutputTokens: 1000}
+	cost, err := svc.CalculateCost("grok-4.5", tokens, 1.0)
+	require.NoError(t, err)
+	require.True(t, cost.LongContextBillingApplied)
+	require.InDelta(t, 200000*4e-6, cost.InputCost, 1e-10)
+	require.InDelta(t, 1000*12e-6, cost.OutputCost, 1e-10)
 }
 
 func TestGetModelPricing_GrokBareAliasesUseGrok46(t *testing.T) {

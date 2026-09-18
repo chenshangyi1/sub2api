@@ -1,4 +1,4 @@
-import type { BillingMode, ChannelTimePricing, PricingInterval } from '@/api/admin/channels'
+import type { BillingMode, ChannelModelPricing, ChannelTimePricing, PricingInterval } from '@/api/admin/channels'
 
 type TranslateFn = (key: string, params?: Record<string, unknown>) => string
 
@@ -228,6 +228,39 @@ export function formIntervalsToAPI(intervals: IntervalFormEntry[]): PricingInter
   }))
 }
 
+export interface ChannelPricingSectionInput {
+  platform: string
+  enabled?: boolean
+  model_pricing: PricingFormEntry[]
+}
+
+/** Collect channel token cards for PUT. Filled cards persist even if that platform tab is unchecked. */
+export function collectChannelModelPricing(sections: ChannelPricingSectionInput[]): ChannelModelPricing[] {
+  const model_pricing: ChannelModelPricing[] = []
+  for (const section of sections || []) {
+    for (const entry of section.model_pricing || []) {
+      if (!entry.models?.length) continue
+      model_pricing.push({
+        platform: section.platform,
+        models: entry.models,
+        billing_mode: entry.billing_mode,
+        input_price: mTokToPerToken(entry.input_price),
+        output_price: mTokToPerToken(entry.output_price),
+        cache_write_price: mTokToPerToken(entry.cache_write_price),
+        cache_read_price: mTokToPerToken(entry.cache_read_price),
+        fast_multiplier: entry.fast_multiplier != null && entry.fast_multiplier !== '' ? Number(entry.fast_multiplier) : null,
+        flex_multiplier: entry.flex_multiplier != null && entry.flex_multiplier !== '' ? Number(entry.flex_multiplier) : null,
+        image_input_price: mTokToPerToken(entry.image_input_price),
+        image_output_price: mTokToPerToken(entry.image_output_price),
+        per_request_price: entry.per_request_price != null && entry.per_request_price !== '' ? Number(entry.per_request_price) : null,
+        intervals: formIntervalsToAPI(entry.intervals || []),
+        time_pricing: formTimePricingToAPI(entry.time_pricing)
+      })
+    }
+  }
+  return model_pricing
+}
+
 // ── 模型模式冲突检测 ──────────────────────────────────────
 
 interface ModelPattern {
@@ -405,6 +438,8 @@ export function getPlatformTagClass(platform: string): string {
     case 'gemini': return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
     case 'antigravity': return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
     case 'grok': return 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+    case 'cn': return 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400'
+    case 'video': return 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-400'
     case 'kimi': return 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400'
     case 'zhipu': return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400'
     case 'deepseek': return 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400'
@@ -420,6 +455,8 @@ export function getPlatformTextClass(platform: string): string {
     case 'gemini': return 'text-blue-700 dark:text-blue-400'
     case 'antigravity': return 'text-purple-700 dark:text-purple-400'
     case 'grok': return 'text-slate-700 dark:text-slate-300'
+    case 'cn': return 'text-rose-700 dark:text-rose-400'
+    case 'video': return 'text-fuchsia-700 dark:text-fuchsia-400'
     case 'kimi': return 'text-pink-700 dark:text-pink-400'
     case 'zhipu': return 'text-indigo-700 dark:text-indigo-400'
     case 'deepseek': return 'text-teal-700 dark:text-teal-400'

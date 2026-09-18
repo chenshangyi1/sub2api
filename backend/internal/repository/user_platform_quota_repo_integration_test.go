@@ -116,11 +116,12 @@ func TestUserPlatformQuotaRepository_BulkInsertInitial_CNProvidersAllowed(t *tes
 		{UserID: userID, Platform: "kimi", DailyLimitUSD: &daily},
 		{UserID: userID, Platform: "zhipu"},
 		{UserID: userID, Platform: "deepseek"},
+		{UserID: userID, Platform: "minimax"},
 	}
 	require.NoError(t, repo.BulkInsertInitial(txCtx, records),
-		"kimi/zhipu/deepseek 平台应可写入（迁移 224 后 CHECK 约束已含国产供应商）")
+		"kimi/zhipu/deepseek/minimax 平台应可写入（CHECK 约束已含国产供应商）")
 
-	for _, platform := range []string{"kimi", "zhipu", "deepseek"} {
+	for _, platform := range []string{"kimi", "zhipu", "deepseek", "minimax"} {
 		rec, err := repo.GetByUserPlatform(txCtx, userID, platform)
 		require.NoError(t, err)
 		require.NotNil(t, rec, "%s 配额行应已写入", platform)
@@ -227,6 +228,57 @@ func TestUserPlatformQuotaRepository_IncrementUsageWithReset_WeeklyReset(t *test
 	require.InDelta(t, 2.0, rec.DailyUsageUSD, 1e-9, "daily resets to new cost")
 	require.InDelta(t, 2.0, rec.WeeklyUsageUSD, 1e-9, "weekly resets (new week)")
 	require.InDelta(t, 7.0, rec.MonthlyUsageUSD, 1e-9, "monthly accumulates (same month)")
+}
+
+// TestUserPlatformQuotaRepository_303PreservesUnlimitedUsageAcrossDefaults
+// 锁定 303 混跑语义：旧实例缺行累加会建立无限额行；注册默认限额随后补齐
+// limit，但不能清掉已有用量；管理员清空限额只清 limit，仍保留该行和用量。
+func TestUserPlatformQuotaRepository_303PreservesUnlimitedUsageAcrossDefaults(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	userID := mustCreateUserForQuota(t, client)
+	repo := NewUserPlatformQuotaRepository(client)
+
+	now := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
+	// 模拟 303 旧实例在配额行缺失时的同步累加。
+	require.NoError(t, repo.IncrementUsageWithReset(ctx, userID, "anthropic", 1.25, now))
+
+	rec, err := repo.GetByUserPlatform(ctx, userID, "anthropic")
+	require.NoError(t, err)
+	require.NotNil(t, rec)
+	require.Nil(t, rec.DailyLimitUSD)
+	require.InDelta(t, 1.25, rec.DailyUsageUSD, 1e-9)
+	require.InDelta(t, 1.25, rec.WeeklyUsageUSD, 1e-9)
+	require.InDelta(t, 1.25, rec.MonthlyUsageUSD, 1e-9)
+
+	daily, weekly, monthly := 10.0, 20.0, 30.0
+	require.NoError(t, repo.BulkInsertInitial(ctx, []UserPlatformQuotaRecord{{
+		UserID: userID, Platform: "anthropic",
+		DailyLimitUSD: &daily, WeeklyLimitUSD: &weekly, MonthlyLimitUSD: &monthly,
+	}}))
+
+	rec, err = repo.GetByUserPlatform(ctx, userID, "anthropic")
+	require.NoError(t, err)
+	require.NotNil(t, rec)
+	require.InDelta(t, 10.0, *rec.DailyLimitUSD, 1e-9)
+	require.InDelta(t, 1.25, rec.DailyUsageUSD, 1e-9, "default limits must not erase daily usage")
+	require.InDelta(t, 1.25, rec.WeeklyUsageUSD, 1e-9, "default limits must not erase weekly usage")
+	require.InDelta(t, 1.25, rec.MonthlyUsageUSD, 1e-9, "default limits must not erase monthly usage")
+
+	// 303 管理员清空限额：保留 active 行和历史窗口用量，只把三档 limit 置为 NULL。
+	require.NoError(t, repo.UpsertForUser(ctx, userID, []UserPlatformQuotaRecord{{
+		UserID: userID, Platform: "anthropic",
+	}}))
+
+	rec, err = repo.GetByUserPlatform(ctx, userID, "anthropic")
+	require.NoError(t, err)
+	require.NotNil(t, rec, "clearing limits must keep the 303 row active")
+	require.Nil(t, rec.DailyLimitUSD)
+	require.Nil(t, rec.WeeklyLimitUSD)
+	require.Nil(t, rec.MonthlyLimitUSD)
+	require.InDelta(t, 1.25, rec.DailyUsageUSD, 1e-9)
+	require.InDelta(t, 1.25, rec.WeeklyUsageUSD, 1e-9)
+	require.InDelta(t, 1.25, rec.MonthlyUsageUSD, 1e-9)
 }
 
 func TestUserPlatformQuotaRepository_ResetExpiredWindow(t *testing.T) {

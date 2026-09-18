@@ -115,6 +115,161 @@ func (s *OpenAIGatewayService) shouldBridgeOpenAIWSHTTP(account *Account, payloa
 	return threshold > 0 && int64(payloadBytes) >= threshold
 }
 
+func (s *OpenAIGatewayService) shouldBridgeOpenAIWSPassthroughFirstMessage(account *Account, payload []byte) bool {
+	if account != nil && account.Platform == PlatformGrok {
+		return true
+	}
+	if !s.openAIWSHTTPBridgeEnabled() || int64(len(payload)) < s.openAIWSHTTPBridgeThresholdBytes() {
+		return false
+	}
+	if !json.Valid(payload) {
+		return false
+	}
+
+	i := skipOpenAIWSJSONSpace(payload, 0)
+	if i >= len(payload) || payload[i] != '{' {
+		return false
+	}
+	i++
+	eventType := "response.create"
+	previousResponseID := ""
+	typeSeen, previousResponseIDSeen := false, false
+	for i < len(payload) {
+		i = skipOpenAIWSJSONSpace(payload, i)
+		if i >= len(payload) {
+			return false
+		}
+		if payload[i] == '}' {
+			break
+		}
+		keyStart := i
+		keyEnd := scanOpenAIWSJSONString(payload, keyStart)
+		if keyEnd <= keyStart {
+			return false
+		}
+		i = skipOpenAIWSJSONSpace(payload, keyEnd)
+		if i >= len(payload) || payload[i] != ':' {
+			return false
+		}
+		i++
+		i = skipOpenAIWSJSONSpace(payload, i)
+		valueStart := i
+		i = skipOpenAIWSJSONValue(payload, i)
+		if i <= valueStart {
+			return false
+		}
+
+		key := ""
+		if keyEnd-keyStart <= 128 {
+			_ = json.Unmarshal(payload[keyStart:keyEnd], &key)
+		}
+		switch key {
+		case "type":
+			if typeSeen {
+				return false
+			}
+			typeSeen = true
+			var value *string
+			if err := json.Unmarshal(payload[valueStart:i], &value); err != nil {
+				return false
+			}
+			if value == nil || strings.TrimSpace(*value) == "" {
+				eventType = "response.create"
+			} else {
+				eventType = strings.TrimSpace(*value)
+			}
+		case "previous_response_id":
+			if previousResponseIDSeen {
+				return false
+			}
+			previousResponseIDSeen = true
+			var value *string
+			if err := json.Unmarshal(payload[valueStart:i], &value); err != nil {
+				return false
+			}
+			if value != nil {
+				previousResponseID = strings.TrimSpace(*value)
+			}
+		}
+		i = skipOpenAIWSJSONSpace(payload, i)
+		if i < len(payload) && payload[i] == ',' {
+			i++
+		}
+	}
+	return eventType == "response.create" && previousResponseID == ""
+}
+
+func skipOpenAIWSJSONSpace(payload []byte, i int) int {
+	for i < len(payload) {
+		switch payload[i] {
+		case ' ', '\t', '\r', '\n':
+			i++
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+func scanOpenAIWSJSONString(payload []byte, i int) int {
+	if i >= len(payload) || payload[i] != '"' {
+		return i
+	}
+	i++
+	for i < len(payload) {
+		switch payload[i] {
+		case '\\':
+			i += 2
+		case '"':
+			return i + 1
+		default:
+			i++
+		}
+	}
+	return i
+}
+
+func skipOpenAIWSJSONValue(payload []byte, i int) int {
+	i = skipOpenAIWSJSONSpace(payload, i)
+	if i >= len(payload) {
+		return i
+	}
+	switch payload[i] {
+	case '"':
+		return scanOpenAIWSJSONString(payload, i)
+	case '{', '[':
+		open, closeCh := payload[i], byte('}')
+		if payload[i] == '[' {
+			closeCh = ']'
+		}
+		depth := 1
+		i++
+		for i < len(payload) && depth > 0 {
+			switch payload[i] {
+			case '"':
+				i = scanOpenAIWSJSONString(payload, i)
+				continue
+			case open:
+				depth++
+			case closeCh:
+				depth--
+			}
+			i++
+		}
+		return i
+	default:
+		for i < len(payload) {
+			switch payload[i] {
+			case ',', '}', ']', ' ', '\t', '\r', '\n':
+				return i
+			default:
+				i++
+			}
+		}
+		return i
+	}
+}
+
 func prepareOpenAIWSHTTPBridgeBody(payload []byte) ([]byte, error) {
 	var body map[string]any
 	if err := decodeOpenAIJSONUseNumber(payload, &body); err != nil {
@@ -249,6 +404,9 @@ func buildOpenAIWSHTTPBridgeFailedEvent(responseID, model string, source []byte,
 		code = strings.TrimSpace(gjson.GetBytes(source, "response.error.code").String())
 	}
 	if code == "" {
+		code = strings.TrimSpace(gjson.GetBytes(source, "code").String())
+	}
+	if code == "" {
 		code = "upstream_error"
 	}
 	message := extractOpenAISSEErrorMessage(source)
@@ -264,14 +422,14 @@ func buildOpenAIWSHTTPBridgeFailedEvent(responseID, model string, source []byte,
 	}
 	response := map[string]any{
 		"id": responseID, "object": "response", "status": "failed",
-		"output": []any{}, "error": errorBody,
+		"output": []any{}, "error": errorBody, "created_at": time.Now().Unix(),
 	}
 	if model = strings.TrimSpace(model); model != "" {
 		response["model"] = model
 	}
-	body, err := json.Marshal(map[string]any{"type": "response.failed", "response": response})
+	body, err := json.Marshal(map[string]any{"type": "response.failed", "sequence_number": gjson.GetBytes(source, "sequence_number").Int(), "response": response})
 	if err != nil {
-		return []byte(`{"type":"response.failed","response":{"status":"failed","output":[],"error":{"code":"upstream_error","message":"Upstream response failed"}}}`)
+		return []byte(`{"type":"response.failed","sequence_number":0,"response":{"status":"failed","output":[],"error":{"code":"upstream_error","message":"Upstream response failed"}}}`)
 	}
 	return body
 }
@@ -454,7 +612,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		if upstreamMsg == "" {
 			upstreamMsg = http.StatusText(resp.StatusCode)
 		}
-		shouldFailover := s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody)
+		shouldFailover := s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody)
 		if account.Platform == PlatformGrok {
 			shouldFailover = s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody)
 			s.handleGrokAccountUpstreamError(withGrokTeamRateLimitModel(ctx, resolveGrokWSUpstreamModel(account, body, originalModel)), account, resp.StatusCode, resp.Header, respBody)
@@ -558,7 +716,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanBuf := getSSEScannerBuf64K()
-	scanner.Buffer(scanBuf[:0], maxLineSize)
+	attachSSEScannerBuffer(scanner, scanBuf[:], maxLineSize)
 	defer putSSEScannerBuf64K(scanBuf)
 
 	pendingSSEEventType := ""

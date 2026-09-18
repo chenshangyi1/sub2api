@@ -64,6 +64,18 @@ func (s *sparkShadowRepoStub) ListShadowsByParent(_ context.Context, parentID in
 	return result, nil
 }
 
+func (s *sparkShadowRepoStub) UpdateAccountGroupPriorities(_ context.Context, accountID int64, groups []AccountGroup) error {
+	return nil
+}
+
+func (s *sparkShadowRepoStub) BindAccountGroups(_ context.Context, accountID int64, groups []AccountGroup) error {
+	ids := make([]int64, 0, len(groups))
+	for _, group := range groups {
+		ids = append(ids, group.GroupID)
+	}
+	return s.BindGroups(context.Background(), accountID, ids)
+}
+
 func (s *sparkShadowRepoStub) BindGroups(_ context.Context, accountID int64, groupIDs []int64) error {
 	s.groupsOf[accountID] = append(s.groupsOf[accountID], groupIDs...)
 	return nil
@@ -749,6 +761,14 @@ func (s *raceCreateRepoStub) Create(ctx context.Context, account *Account) error
 // bindFailRepoStub 让 BindGroups 失败,用于验证绑组失败时补偿删除刚建的影子(外审 C/P1)。
 type bindFailRepoStub struct {
 	*sparkShadowRepoStub
+}
+
+func (s *bindFailRepoStub) UpdateAccountGroupPriorities(_ context.Context, _ int64, _ []AccountGroup) error {
+	return nil
+}
+
+func (s *bindFailRepoStub) BindAccountGroups(_ context.Context, _ int64, _ []AccountGroup) error {
+	return errors.New("bind groups failed")
 }
 
 func (s *bindFailRepoStub) BindGroups(_ context.Context, _ int64, _ []int64) error {

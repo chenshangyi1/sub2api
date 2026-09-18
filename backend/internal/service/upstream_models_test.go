@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,6 +20,28 @@ func upstreamModelSyncTestConfig() *config.Config {
 			URLAllowlist: config.URLAllowlistConfig{Enabled: false},
 		},
 	}
+}
+
+type geminiModelSyncHTTPRecorder struct {
+	lastReq   *http.Request
+	requests  []*http.Request
+	resp      *http.Response
+	responses []*http.Response
+}
+
+func (u *geminiModelSyncHTTPRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	u.lastReq = req
+	u.requests = append(u.requests, req)
+	if len(u.responses) > 0 {
+		resp := u.responses[0]
+		u.responses = u.responses[1:]
+		return resp, nil
+	}
+	return u.resp, nil
+}
+
+func (u *geminiModelSyncHTTPRecorder) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
 func grokOAuthModelSyncTestAccount(baseURL string) *Account {
@@ -183,7 +206,7 @@ func TestBuildUpstreamModelsRequestSupportsOpenAIOAuth(t *testing.T) {
 }
 
 func TestFetchUpstreamSupportedModelsParsesOpenAIOAuthManifest(t *testing.T) {
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
+	upstream := &geminiModelSyncHTTPRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(strings.NewReader(`{"models":[{"slug":"gpt-5.6-sol"},{"slug":"gpt-5.5-codex"}]}`)),
@@ -274,6 +297,33 @@ func TestBuildUpstreamModelsRequestsForAPIKeyAccounts(t *testing.T) {
 	require.Equal(t, "https://xai.example.com/v1/models", grokReq.URL.String())
 	require.Equal(t, "Bearer xai-key", grokReq.Header.Get("Authorization"))
 
+	geminiProtocolReq, err := svc.buildUpstreamModelsRequest(ctx, &Account{
+		Platform: PlatformGemini,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":      "gemini-key",
+			"base_url":     "https://mdkj.lol",
+			"api_protocol": APIProtocolResponses,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "https://mdkj.lol/v1/models", geminiProtocolReq.URL.String())
+	require.Equal(t, "Bearer gemini-key", geminiProtocolReq.Header.Get("Authorization"))
+	require.Empty(t, geminiProtocolReq.Header.Get("x-goog-api-key"))
+
+	geminiCustomNoProtocolReq, err := svc.buildUpstreamModelsRequest(ctx, &Account{
+		Platform: PlatformGemini,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "gemini-key",
+			"base_url": "https://mdkj.lol/v1",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "https://mdkj.lol/v1/v1beta/models", geminiCustomNoProtocolReq.URL.String())
+	require.Equal(t, "gemini-key", geminiCustomNoProtocolReq.Header.Get("x-goog-api-key"))
+	require.Empty(t, geminiCustomNoProtocolReq.Header.Get("Authorization"))
+
 	geminiReq, err := svc.buildGeminiUpstreamModelsRequest(ctx, &Account{
 		Platform: PlatformGemini,
 		Type:     AccountTypeAPIKey,
@@ -297,6 +347,67 @@ func TestBuildUpstreamModelsRequestsForAPIKeyAccounts(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "https://gateway.example.com/antigravity/v1/models", antigravityReq.URL.String())
 	require.Equal(t, "antigravity-key", antigravityReq.Header.Get("x-api-key"))
+}
+
+func TestFetchUpstreamSupportedModelsGeminiCustomFallsBackToOpenAIOnNative404(t *testing.T) {
+	upstream := &geminiModelSyncHTTPRecorder{
+		responses: []*http.Response{
+			{
+				StatusCode: http.StatusNotFound,
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
+				Body:       io.NopCloser(strings.NewReader(`<html><title>404 Not Found</title></html>`)),
+			},
+			{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gemini-3.8-flash"}]}`)),
+			},
+		},
+	}
+	svc := &AccountTestService{
+		httpUpstream: upstream,
+		cfg:          upstreamModelSyncTestConfig(),
+	}
+	models, err := svc.FetchUpstreamSupportedModels(context.Background(), &Account{
+		Platform: PlatformGemini,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "gemini-key",
+			"base_url": "https://mdkj.lol",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"gemini-3.8-flash"}, models)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "https://mdkj.lol/v1beta/models", upstream.requests[0].URL.String())
+	require.Equal(t, "gemini-key", upstream.requests[0].Header.Get("x-goog-api-key"))
+	require.Equal(t, "https://mdkj.lol/v1/models", upstream.requests[1].URL.String())
+	require.Equal(t, "Bearer gemini-key", upstream.requests[1].Header.Get("Authorization"))
+}
+
+func TestFetchUpstreamSupportedModelsGeminiCustomKeepsNativeWhenV1BetaWorks(t *testing.T) {
+	upstream := &geminiModelSyncHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"models":[{"name":"models/gemini-3.8-flash"}]}`)),
+	}}
+	svc := &AccountTestService{
+		httpUpstream: upstream,
+		cfg:          upstreamModelSyncTestConfig(),
+	}
+	models, err := svc.FetchUpstreamSupportedModels(context.Background(), &Account{
+		Platform: PlatformGemini,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "gemini-key",
+			"base_url": "https://relay.example.com",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"gemini-3.8-flash"}, models)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "https://relay.example.com/v1beta/models", upstream.requests[0].URL.String())
+	require.Equal(t, "gemini-key", upstream.requests[0].Header.Get("x-goog-api-key"))
 }
 
 func TestBuildUpstreamModelsRequestSupportsGrokOAuth(t *testing.T) {
@@ -369,7 +480,7 @@ func TestBuildAnthropicUpstreamModelsRequestRejectsBedrock(t *testing.T) {
 func TestFetchUpstreamSupportedModelsParsesOpenAIResponse(t *testing.T) {
 	t.Parallel()
 
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
+	upstream := &geminiModelSyncHTTPRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gpt-5"},{"id":"gpt-5"},{"name":"o3"}]}`)),
@@ -397,7 +508,7 @@ func TestFetchUpstreamSupportedModelsParsesOpenAIResponse(t *testing.T) {
 func TestFetchUpstreamSupportedModelsUsesConfiguredBodyLimit(t *testing.T) {
 	t.Parallel()
 
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
+	upstream := &geminiModelSyncHTTPRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gpt-5"}]}`)),
@@ -422,7 +533,7 @@ func TestFetchUpstreamSupportedModelsUsesConfiguredBodyLimit(t *testing.T) {
 func TestFetchUpstreamSupportedModelsParsesGrokAPIKeyResponse(t *testing.T) {
 	t.Parallel()
 
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
+	upstream := &geminiModelSyncHTTPRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"grok-4.5"},{"id":"grok-4.5"},{"id":"grok-imagine"}]}`)),
@@ -450,7 +561,7 @@ func TestFetchUpstreamSupportedModelsParsesGrokAPIKeyResponse(t *testing.T) {
 func TestFetchUpstreamSupportedModelsParsesGrokOAuthResponse(t *testing.T) {
 	t.Parallel()
 
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
+	upstream := &geminiModelSyncHTTPRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(strings.NewReader(`{"data":[{"model":"grok-4.5"},{"model":"grok-4.5"},{"modelId":"grok-build-0.1"}]}`)),
@@ -489,7 +600,7 @@ func TestBuildUpstreamModelsRequestGrokOAuthDoesNotSendIdentityToCustomBase(t *t
 func TestFetchUpstreamSupportedModelsDoesNotExposeUpstreamBody(t *testing.T) {
 	t.Parallel()
 
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
+	upstream := &geminiModelSyncHTTPRecorder{resp: &http.Response{
 		StatusCode: http.StatusBadGateway,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(strings.NewReader(`{"error":"SECRET_TOKEN should not be exposed"}`)),

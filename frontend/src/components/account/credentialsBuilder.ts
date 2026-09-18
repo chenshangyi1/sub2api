@@ -1,3 +1,5 @@
+import { openAIPlanTypeLabel } from '@/utils/planType'
+
 export function applyInterceptWarmup(
   credentials: Record<string, unknown>,
   enabled: boolean,
@@ -36,13 +38,36 @@ export interface HeaderOverrideRow {
 }
 
 /** 请求头覆写资格（与后端 IsHeaderOverrideEligible 保持一致） */
+export function isCNPlatform(platform: string): boolean {
+  return platform === 'cn' || platform === 'kimi' || platform === 'zhipu' || platform === 'deepseek'
+}
+
+export function isVideoPlatform(platform: string): boolean {
+  return platform === 'video'
+}
+
+export type CnVendor = 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'custom'
+export type VideoVendor = 'sora' | 'kling' | 'jimeng' | 'custom'
+
+export function cnVendorFromAccount(platform: string, credentials?: Record<string, unknown> | null): CnVendor {
+  const vendor = String(credentials?.cn_vendor ?? '').trim().toLowerCase()
+  if (vendor === 'kimi' || vendor === 'zhipu' || vendor === 'deepseek' || vendor === 'minimax' || vendor === 'custom') return vendor
+  if (platform === 'kimi' || platform === 'zhipu' || platform === 'deepseek') return platform
+  return 'custom'
+}
+
+export function videoVendorFromAccount(credentials?: Record<string, unknown> | null): VideoVendor {
+  const vendor = String(credentials?.video_vendor ?? '').trim().toLowerCase()
+  if (vendor === 'sora' || vendor === 'kling' || vendor === 'jimeng' || vendor === 'custom') return vendor
+  return 'custom'
+}
+
 export function isHeaderOverrideCapable(platform: string, type: string): boolean {
   if (
     platform === 'anthropic' ||
     platform === 'openai' ||
-    platform === 'kimi' ||
-    platform === 'zhipu' ||
-    platform === 'deepseek'
+    isCNPlatform(platform) ||
+    isVideoPlatform(platform)
   ) {
     return type === 'apikey'
   }
@@ -256,9 +281,32 @@ export const GROK_BASE_URL_PRESETS: GrokBaseUrlPreset[] = [
 
 export type CnAccountMode = 'payg' | 'coding'
 
-/** 仅 deepseek 支持原生 responses；adaptive 会按入站协议选择原生端点。 */
+/** deepseek / kimi / Gemini 自定义上游支持原生 responses；adaptive 会按入站协议选择原生端点。 */
 export type CnApiProtocol = 'adaptive' | 'chat_completions' | 'anthropic' | 'responses'
+
+export function cnSupportsNativeResponses(platform: string, vendor?: string): boolean {
+  if (platform === 'gemini') return true
+  const resolved = vendor || platform
+  return resolved === 'deepseek' || resolved === 'kimi' || resolved === 'minimax' || resolved === 'custom' || platform === 'video'
+}
 export type CnNativeApiProtocol = Exclude<CnApiProtocol, 'adaptive'>
+
+export function isGeminiOpenAIProtocolAccount(account: {
+  platform?: string
+  type?: string
+  credentials?: { api_protocol?: unknown } | null
+}): boolean {
+  if (account.platform !== 'gemini' || account.type !== 'apikey') return false
+  switch (String(account.credentials?.api_protocol ?? '').trim()) {
+    case 'adaptive':
+    case 'chat_completions':
+    case 'anthropic':
+    case 'responses':
+      return true
+    default:
+      return false
+  }
+}
 
 export interface CnBaseUrlPreset {
   mode: CnAccountMode
@@ -268,13 +316,21 @@ export interface CnBaseUrlPreset {
   url: string
 }
 
+export function cnPresetKey(platform: string, vendor?: string): 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | '' {
+  const resolved = (vendor || platform).trim().toLowerCase()
+  if (resolved === 'kimi' || resolved === 'zhipu' || resolved === 'deepseek' || resolved === 'minimax') return resolved
+  return ''
+}
+
 /** 各供应商按账号类型 × API 协议分档的快捷端点（点击快速填充，输入框仍可自由填写）。 */
-export const CN_BASE_URL_PRESETS: Record<'kimi' | 'zhipu' | 'deepseek', CnBaseUrlPreset[]> = {
+export const CN_BASE_URL_PRESETS: Record<'kimi' | 'zhipu' | 'deepseek' | 'minimax', CnBaseUrlPreset[]> = {
   kimi: [
     { mode: 'payg', protocol: 'chat_completions', label: 'Moonshot', url: 'https://api.moonshot.cn/v1' },
     { mode: 'payg', protocol: 'anthropic', label: 'Moonshot Anthropic', url: 'https://api.moonshot.cn/anthropic' },
+    { mode: 'payg', protocol: 'responses', label: 'Moonshot Responses', url: 'https://api.moonshot.cn/v1' },
     { mode: 'coding', protocol: 'chat_completions', label: 'Kimi For Coding', url: 'https://api.kimi.com/coding/v1' },
-    { mode: 'coding', protocol: 'anthropic', label: 'Kimi Coding Anthropic', url: 'https://api.kimi.com/coding' }
+    { mode: 'coding', protocol: 'anthropic', label: 'Kimi Coding Anthropic', url: 'https://api.kimi.com/coding' },
+    { mode: 'coding', protocol: 'responses', label: 'Kimi Coding Responses', url: 'https://api.kimi.com/coding/v1' }
   ],
   zhipu: [
     { mode: 'payg', protocol: 'chat_completions', label: 'GLM PaaS', url: 'https://open.bigmodel.cn/api/paas/v4' },
@@ -286,6 +342,14 @@ export const CN_BASE_URL_PRESETS: Record<'kimi' | 'zhipu' | 'deepseek', CnBaseUr
     { mode: 'payg', protocol: 'chat_completions', label: 'DeepSeek', url: 'https://api.deepseek.com' },
     { mode: 'payg', protocol: 'anthropic', label: 'DeepSeek Anthropic', url: 'https://api.deepseek.com/anthropic' },
     { mode: 'payg', protocol: 'responses', label: 'DeepSeek Responses', url: 'https://api.deepseek.com' }
+  ],
+  minimax: [
+    { mode: 'payg', protocol: 'chat_completions', label: 'MiniMax', url: 'https://api.minimaxi.com/v1' },
+    { mode: 'payg', protocol: 'anthropic', label: 'MiniMax Anthropic', url: 'https://api.minimaxi.com/anthropic' },
+    { mode: 'payg', protocol: 'responses', label: 'MiniMax Responses', url: 'https://api.minimaxi.com/v1' },
+    { mode: 'coding', protocol: 'chat_completions', label: 'MiniMax Coding', url: 'https://api.minimaxi.com/v1' },
+    { mode: 'coding', protocol: 'anthropic', label: 'MiniMax Coding Anthropic', url: 'https://api.minimaxi.com/anthropic' },
+    { mode: 'coding', protocol: 'responses', label: 'MiniMax Coding Responses', url: 'https://api.minimaxi.com/v1' }
   ]
 }
 
@@ -303,11 +367,13 @@ export function defaultCNBaseUrl(
         return 'https://open.bigmodel.cn/api/anthropic'
       case 'deepseek':
         return 'https://api.deepseek.com/anthropic'
+      case 'minimax':
+        return 'https://api.minimaxi.com/anthropic'
       default:
         return ''
     }
   }
-  // responses 仅 deepseek：base 与 chat_completions 相同（端点路径差异由后端处理）。
+  // responses：Kimi / DeepSeek / Gemini 自定义上游的 base 与 chat_completions 相同（路径由后端拼接）。
   switch (platform) {
     case 'kimi':
       return mode === 'coding' ? 'https://api.kimi.com/coding/v1' : 'https://api.moonshot.cn/v1'
@@ -317,6 +383,8 @@ export function defaultCNBaseUrl(
         : 'https://open.bigmodel.cn/api/paas/v4'
     case 'deepseek':
       return 'https://api.deepseek.com'
+    case 'minimax':
+      return 'https://api.minimaxi.com/v1'
     default:
       return ''
   }
@@ -324,13 +392,59 @@ export function defaultCNBaseUrl(
 
 /** 返回自适应模式下需要配置的原生协议及其默认端点。 */
 export function defaultCNAdaptiveBaseUrls(
-  platform: 'kimi' | 'zhipu' | 'deepseek',
+  platform: string,
   mode: CnAccountMode
 ): Record<CnNativeApiProtocol, string> {
   return {
     chat_completions: defaultCNBaseUrl(platform, mode, 'chat_completions'),
     anthropic: defaultCNBaseUrl(platform, mode, 'anthropic'),
-    responses: platform === 'deepseek' ? defaultCNBaseUrl(platform, mode, 'responses') : ''
+    responses: cnSupportsNativeResponses(platform, platform) ? defaultCNBaseUrl(platform, mode, 'responses') : ''
+  }
+}
+
+/** 只填主 Chat URL 时，按官方默认或自定义中继推导其余协议地址。 */
+export function deriveCNAdaptiveBaseUrlsFromPrimary(
+  platform: string,
+  mode: CnAccountMode,
+  primaryUrl: string
+): Record<CnNativeApiProtocol, string> {
+  return resolveCNAdaptiveBaseUrls(platform, mode, {}, primaryUrl)
+}
+
+function readStoredAdaptiveURL(
+  stored: Partial<Record<CnNativeApiProtocol, unknown>> | Record<string, unknown> | null | undefined,
+  key: CnNativeApiProtocol
+): string {
+  const raw = stored?.[key]
+  return typeof raw === 'string' ? raw.trim() : ''
+}
+
+/**
+ * 自适应端点：已填的协议地址原样保留。
+ * 空槽位在 Chat URL 是自定义中继时跟 Chat URL，官方厂商地址才回落到官方默认。
+ */
+export function resolveCNAdaptiveBaseUrls(
+  platform: string,
+  mode: CnAccountMode,
+  stored?: Partial<Record<CnNativeApiProtocol, unknown>> | Record<string, unknown> | null,
+  fallbackUrl = ''
+): Record<CnNativeApiProtocol, string> {
+  const defaults = defaultCNAdaptiveBaseUrls(platform, mode)
+  const storedChat = readStoredAdaptiveURL(stored, 'chat_completions')
+  const storedAnthropic = readStoredAdaptiveURL(stored, 'anthropic')
+  const storedResponses = readStoredAdaptiveURL(stored, 'responses')
+  const fallback = fallbackUrl.trim()
+  const chat = storedChat || fallback || defaults.chat_completions
+  const customFill = chat && chat !== defaults.chat_completions ? chat : ''
+  const pick = (stored: string, official: string) => (
+    stored && stored !== official ? stored : (customFill || official)
+  )
+  return {
+    chat_completions: chat,
+    anthropic: pick(storedAnthropic, defaults.anthropic),
+    responses: cnSupportsNativeResponses(platform, platform)
+      ? pick(storedResponses, defaults.responses)
+      : ''
   }
 }
 
@@ -338,12 +452,14 @@ export function defaultCNAdaptiveBaseUrls(
 // CNProviderQuotaCell / CNProviderBalanceCell 与 AccountUsageCell 的占位符判定
 // 共用，避免多处复制条件后一处改另一处漏改。
 
-export function cnQuotaCellVisible(platform: string, accountMode: string): boolean {
-  return (platform === 'kimi' || platform === 'zhipu') && accountMode === 'coding'
+export function cnQuotaCellVisible(platform: string, accountMode: string, vendor?: string): boolean {
+  const resolved = vendor || (platform === 'kimi' || platform === 'zhipu' ? platform : '')
+  return (resolved === 'kimi' || resolved === 'zhipu') && accountMode === 'coding'
 }
 
-export function cnBalanceCellVisible(platform: string, accountMode: string): boolean {
-  return (platform === 'kimi' || platform === 'deepseek') && accountMode !== 'coding'
+export function cnBalanceCellVisible(platform: string, accountMode: string, vendor?: string): boolean {
+  const resolved = vendor || (platform === 'kimi' || platform === 'deepseek' ? platform : '')
+  return (resolved === 'kimi' || resolved === 'deepseek') && accountMode !== 'coding'
 }
 
 /**
@@ -375,23 +491,12 @@ export interface PlanTypeOption {
 }
 
 /**
- * plan_type 值的友好显示标签，镜像 PlatformTypeBadge 的映射
- * （canonical 值 chatgptpro 显示为 Pro，team 显示为 Team）。未知值原样返回。
+ * plan_type 值的友好显示标签（ChatGPT 档位命名）。
+ * 与 PlatformTypeBadge 共用 openAIPlanTypeLabel，避免两处映射漂移；
+ * canonical 值 chatgptpro 显示为 Pro 20x，team 显示为 Business Standard。未知值原样返回。
  */
 export function planTypeDisplayLabel(value: string): string {
-  switch (value.trim().toLowerCase()) {
-    case 'plus':
-      return 'Plus'
-    case 'pro':
-    case 'chatgptpro':
-      return 'Pro'
-    case 'free':
-      return 'Free'
-    case 'team':
-      return 'Team'
-    default:
-      return value
-  }
+  return openAIPlanTypeLabel(value) || value
 }
 
 /**
@@ -404,8 +509,8 @@ export function readPlanType(credentials: Record<string, unknown> | undefined | 
 }
 
 /**
- * 构建 plan_type 下拉选项：清空 + Plus/Pro/Free 预设。
- * 若当前值是某预设的别名（如 chatgptpro↔Pro），用当前的 canonical 值占据该
+ * 构建 plan_type 下拉选项：清空 + Plus/Pro 20x/Pro 5x/Business Premium/Free 预设。
+ * 若当前值是某预设的别名（如 chatgptpro↔Pro 20x），用当前的 canonical 值占据该
  * 标签位（保留 canonical，显示友好标签，避免重复项）；若是完全预设外的值
  * （如 team 或异常值），追加为一项，避免编辑时下拉丢失原值。
  */
@@ -414,7 +519,9 @@ export function buildPlanTypeOptions(current: string, clearLabel: string): PlanT
   const curLabel = cur ? planTypeDisplayLabel(cur) : ''
   const presets: PlanTypeOption[] = [
     { value: 'plus', label: 'Plus' },
-    { value: 'pro', label: 'Pro' },
+    { value: 'pro', label: 'Pro 20x' },
+    { value: 'prolite', label: 'Pro 5x' },
+    { value: 'self_serve_business_prolite', label: 'Business Premium' },
     { value: 'free', label: 'Free' }
   ]
   const opts: PlanTypeOption[] = [{ value: '', label: clearLabel }]

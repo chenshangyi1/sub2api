@@ -145,6 +145,17 @@ func (lb *DefaultLoadBalancer) queryEnabledInstances(
 				matched = append(matched, inst)
 			}
 		} else if InstanceSupportsType(inst.SupportedTypes, paymentType) {
+			if IsEPUSDTCheckoutMethod(paymentType) {
+				wanted := EPUSDTCheckoutNetwork(paymentType)
+				config, cfgErr := lb.decryptConfig(inst.Config)
+				if cfgErr != nil {
+					slog.Warn("skip epusdt instance with unreadable config during network filtering", "instance_id", inst.ID, "error", cfgErr)
+					continue
+				}
+				if wanted == "" || !EPUSDTInstanceSupportsNetwork(config, wanted) {
+					continue
+				}
+			}
 			if expectedWxpayJSAPIAppID != "" && normalizeVisibleMethodSupportType(paymentType) == TypeWxpay && inst.ProviderKey == TypeWxpay {
 				config, cfgErr := lb.decryptConfig(inst.Config)
 				if cfgErr != nil {
@@ -262,6 +273,11 @@ func getInstanceChannelLimits(inst *dbent.PaymentProviderInstance, paymentType P
 	if cl, ok := limits[lookupKey]; ok {
 		return cl
 	}
+	if IsEPUSDTCheckoutMethod(lookupKey) {
+		if cl, ok := limits[TypeEpusdt]; ok {
+			return cl
+		}
+	}
 	if aliasKey := legacyVisibleMethodAlias(lookupKey); aliasKey != "" {
 		if cl, ok := limits[aliasKey]; ok {
 			return cl
@@ -306,11 +322,13 @@ func (lb *DefaultLoadBalancer) buildSelection(selected *dbent.PaymentProviderIns
 	}
 
 	return &InstanceSelection{
-		InstanceID:     fmt.Sprintf("%d", selected.ID),
-		ProviderKey:    selected.ProviderKey,
-		Config:         config,
-		SupportedTypes: selected.SupportedTypes,
-		PaymentMode:    selected.PaymentMode,
+		InstanceID:                fmt.Sprintf("%d", selected.ID),
+		ProviderKey:               selected.ProviderKey,
+		Config:                    config,
+		SupportedTypes:            selected.SupportedTypes,
+		PaymentMode:               selected.PaymentMode,
+		RechargeFeeRate:           selected.RechargeFeeRate,
+		BalanceRechargeMultiplier: selected.BalanceRechargeMultiplier,
 	}, nil
 }
 
@@ -384,6 +402,9 @@ func InstanceSupportsType(supportedTypes string, target PaymentType) bool {
 	for _, t := range strings.Split(supportedTypes, ",") {
 		supported := strings.TrimSpace(t)
 		if supported == target || normalizeVisibleMethodSupportType(supported) == normalizedTarget {
+			return true
+		}
+		if IsEPUSDTCheckoutMethod(target) && (supported == TypeEpusdt || IsEPUSDTCheckoutMethod(supported)) {
 			return true
 		}
 	}

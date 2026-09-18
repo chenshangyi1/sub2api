@@ -51,6 +51,8 @@ export interface MethodLimit {
   single_max: number
   fee_rate: number
   available: boolean
+  recharge_fee_rate?: number | null
+  balance_recharge_multiplier?: number | null
 }
 
 /** Response from /payment/limits API */
@@ -162,6 +164,8 @@ export interface ProviderInstance {
   allow_user_refund: boolean
   limits: string
   sort_order: number
+  recharge_fee_rate?: number | null
+  balance_recharge_multiplier?: number | null
 }
 
 // ==================== Request / Response ====================

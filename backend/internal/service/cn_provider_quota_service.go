@@ -129,8 +129,8 @@ func (s *CNProviderQuotaService) QueryUsageForAccount(ctx context.Context, accou
 
 func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, account *Account) (*CNProviderQuotaProbeResult, error) {
 	provider := account.GetCodingPlanProvider()
-	if provider != PlatformKimi && provider != PlatformZhipu {
-		return nil, infraerrors.New(http.StatusBadRequest, "CN_QUOTA_NOT_CODING_PLAN", "account is not a kimi/zhipu coding plan account")
+	if provider != PlatformKimi && provider != PlatformZhipu && provider != CNVendorMiniMax {
+		return nil, infraerrors.New(http.StatusBadRequest, "CN_QUOTA_NOT_CODING_PLAN", "account is not a kimi/zhipu/minimax coding plan account")
 	}
 
 	apiKey := strings.TrimSpace(account.GetCNAPIKey())
@@ -150,6 +150,9 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 	case PlatformZhipu:
 		targetURL = zhipuQuotaURL(baseURL)
 		authHeader = apiKey // 智谱额度端点鉴权不加 Bearer 前缀
+	case CNVendorMiniMax:
+		targetURL = minimaxQuotaURL(baseURL)
+		authHeader = "Bearer " + apiKey
 	}
 
 	// 探测发起前过出站 URL 安全策略（与网关转发/Grok 探测同一套校验）：
@@ -169,7 +172,7 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 	}
 	req.Header.Set("Authorization", authHeader)
 	req.Header.Set("Accept", "application/json")
-	if provider == PlatformZhipu {
+	if provider == PlatformZhipu || provider == CNVendorMiniMax {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept-Language", "en-US,en")
 	}
@@ -220,6 +223,17 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 	case PlatformZhipu:
 		tiers = parseZhipuTokenTiers(gjson.GetBytes(bodyBytes, "data"))
 		result.PlanLevel = strings.TrimSpace(gjson.GetBytes(bodyBytes, "data.level").String())
+	case CNVendorMiniMax:
+		if status := gjson.GetBytes(bodyBytes, "base_resp.status_code"); status.Exists() && status.Int() != 0 {
+			msg := strings.TrimSpace(gjson.GetBytes(bodyBytes, "base_resp.status_msg").String())
+			if msg == "" {
+				msg = "unknown minimax quota error"
+			}
+			result.Error = fmt.Sprintf("API error (%d): %s", status.Int(), msg)
+			return result, nil
+		}
+		tiers = parseMiniMaxUsageTiers(bodyBytes)
+		result.PlanLevel = strings.TrimSpace(gjson.GetBytes(bodyBytes, "current_subscribe_title").String())
 	}
 	result.Tiers = tiers
 	result.Success = true
@@ -289,6 +303,15 @@ func zhipuQuotaURL(baseURL string) string {
 func kimiQuotaURL(baseURL string) string {
 	base := strings.TrimSuffix(strings.TrimRight(baseURL, "/"), "/v1")
 	return base + "/v1/usages"
+}
+
+// minimaxQuotaURL 根据推理域名选择 Token Plan / Coding Plan 额度主机。
+// 国际站 api.minimax.io；国内站 api.minimaxi.com（含 api.minimax.com 与自定义回落）。
+func minimaxQuotaURL(baseURL string) string {
+	if strings.Contains(strings.ToLower(baseURL), "minimax.io") {
+		return "https://api.minimax.io/v1/api/openplatform/coding_plan/remains"
+	}
+	return "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains"
 }
 
 func zhipuQuotaHost(baseURL string) string {
@@ -577,6 +600,68 @@ func cnMillisToRFC3339(n int64) string {
 		ms = n * 1000
 	} else {
 		ms = n
+	}
+	return time.UnixMilli(ms).UTC().Format(time.RFC3339)
+}
+
+// parseMiniMaxUsageTiers 解析 MiniMax Token Plan / Coding Plan remains 响应。
+// 只取 model_name == "general"（编程套餐），跳过 video。字段是剩余百分比，
+// 展示已用 = 100 - remaining。
+func parseMiniMaxUsageTiers(body []byte) []CNQuotaTier {
+	remains := gjson.GetBytes(body, "model_remains")
+	if !remains.IsArray() {
+		return nil
+	}
+	var general gjson.Result
+	remains.ForEach(func(_, item gjson.Result) bool {
+		if strings.EqualFold(strings.TrimSpace(item.Get("model_name").String()), "general") {
+			general = item
+			return false
+		}
+		return true
+	})
+	if !general.Exists() {
+		return nil
+	}
+
+	var tiers []CNQuotaTier
+	if remaining, ok := cnParseF64(general.Get("current_interval_remaining_percent").Value()); ok {
+		used := 100 - remaining
+		if used < 0 {
+			used = 0
+		}
+		tiers = append(tiers, CNQuotaTier{
+			Window:      "5h",
+			UsedPercent: used,
+			ResetAt:     minimaxResetTime(general.Get("end_time")),
+		})
+	}
+	if general.Get("current_weekly_status").Int() == 1 {
+		if remaining, ok := cnParseF64(general.Get("current_weekly_remaining_percent").Value()); ok {
+			used := 100 - remaining
+			if used < 0 {
+				used = 0
+			}
+			tiers = append(tiers, CNQuotaTier{
+				Window:      "weekly",
+				UsedPercent: used,
+				ResetAt:     minimaxResetTime(general.Get("weekly_end_time")),
+			})
+		}
+	}
+	return tiers
+}
+
+func minimaxResetTime(v gjson.Result) string {
+	if !v.Exists() {
+		return ""
+	}
+	ms := v.Int()
+	if ms <= 0 {
+		return cnNormalizeResetTime(v.Value())
+	}
+	if ms < 1_000_000_000_000 {
+		return time.Unix(ms, 0).UTC().Format(time.RFC3339)
 	}
 	return time.UnixMilli(ms).UTC().Format(time.RFC3339)
 }

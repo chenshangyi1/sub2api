@@ -689,6 +689,60 @@ func TestAdminService_UpdateGroup_PreservesDescriptionWhenNil(t *testing.T) {
 	require.Equal(t, "keep me", repo.updated.Description, "nil should preserve existing description")
 }
 
+func TestAdminService_CreateGroup_AllowsZeroRateMultiplier(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:           "zero-rate",
+		Platform:       PlatformOpenAI,
+		RateMultiplier: 0,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, repo.created)
+	require.InDelta(t, 0, repo.created.RateMultiplier, 1e-12)
+}
+
+func TestAdminService_UpdateGroup_AllowsZeroRateMultiplier(t *testing.T) {
+	existingGroup := &Group{
+		ID:             1,
+		Name:           "existing-group",
+		Platform:       PlatformOpenAI,
+		Status:         StatusActive,
+		RateMultiplier: 0.001,
+	}
+	repo := &groupRepoStubForAdmin{getByID: existingGroup}
+	svc := &adminServiceImpl{groupRepo: repo}
+	zero := 0.0
+
+	_, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+		RateMultiplier: &zero,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, repo.updated)
+	require.InDelta(t, 0, repo.updated.RateMultiplier, 1e-12)
+}
+
+func TestAdminService_UpdateGroup_RejectsNegativeRateMultiplier(t *testing.T) {
+	existingGroup := &Group{
+		ID:             1,
+		Name:           "existing-group",
+		Platform:       PlatformOpenAI,
+		Status:         StatusActive,
+		RateMultiplier: 1,
+	}
+	repo := &groupRepoStubForAdmin{getByID: existingGroup}
+	svc := &adminServiceImpl{groupRepo: repo}
+	negative := -0.1
+
+	_, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+		RateMultiplier: &negative,
+	})
+	require.Error(t, err)
+	require.Nil(t, repo.updated)
+}
+
 func TestAdminService_UpdateGroup_RejectsNegativeImageRateMultiplier(t *testing.T) {
 	existingGroup := &Group{
 		ID:                  1,
@@ -916,6 +970,67 @@ func TestAdminService_UpdateGroup_ClearsReasoningPolicyForUnsupportedPlatform(t 
 	require.Empty(t, repo.updated.ReasoningEffortMappings)
 }
 
+func TestAdminService_CreateGroup_InvalidPeakRateReturnsBadRequest(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:             "subscription-group",
+		RateMultiplier:   1,
+		Platform:         PlatformOpenAI,
+		SubscriptionType: SubscriptionTypeSubscription,
+		PeakRateEnabled:  true,
+		PeakStart:        "20:00",
+		PeakEnd:          "08:30",
+	})
+
+	require.ErrorContains(t, err, "peak_end")
+	require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+	require.Equal(t, "INVALID_PEAK_RATE_CONFIG", infraerrors.Reason(err))
+	require.Nil(t, repo.created)
+}
+
+func TestAdminService_UpdateGroup_PeakRateValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   UpdateGroupInput
+		wantErr bool
+	}{
+		{"cross-day window", UpdateGroupInput{PeakStart: ptrString("20:00"), PeakEnd: ptrString("08:30")}, true},
+		{"partial update invalidates window", UpdateGroupInput{PeakEnd: ptrString("08:30")}, true},
+		{"partial update keeps valid window", UpdateGroupInput{PeakEnd: ptrString("19:00")}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &groupRepoStubForAdmin{getByID: &Group{
+				ID:                 1,
+				Name:               "subscription-group",
+				Platform:           PlatformOpenAI,
+				Status:             StatusActive,
+				SubscriptionType:   SubscriptionTypeSubscription,
+				PeakRateEnabled:    true,
+				PeakStart:          "14:00",
+				PeakEnd:            "18:00",
+				PeakRateMultiplier: 3,
+			}}
+			svc := &adminServiceImpl{groupRepo: repo}
+
+			_, err := svc.UpdateGroup(context.Background(), 1, &tt.input)
+
+			if tt.wantErr {
+				require.ErrorContains(t, err, "peak_end")
+				require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+				require.Equal(t, "INVALID_PEAK_RATE_CONFIG", infraerrors.Reason(err))
+				require.Nil(t, repo.updated)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, repo.updated)
+				require.Equal(t, "19:00", repo.updated.PeakEnd)
+			}
+		})
+	}
+}
+
 func TestAdminService_UpdateGroup_ClearsPeakRateWhenChangingToStandard(t *testing.T) {
 	existingGroup := &Group{
 		ID:                 1,
@@ -1027,6 +1142,27 @@ func TestAdminService_CreateGroup_ClearsMessagesDispatchFieldsForNonOpenAIPlatfo
 	require.False(t, repo.created.AllowLive)
 	require.Empty(t, repo.created.DefaultMappedModel)
 	require.Equal(t, OpenAIMessagesDispatchModelConfig{}, repo.created.MessagesDispatchModelConfig)
+}
+
+func TestAdminService_CreateAdaptiveGroupPreservesLiveAndClearsClaudeMapping(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                  "adaptive-group",
+		Platform:              PlatformAdaptive,
+		RateMultiplier:        1.0,
+		AllowLive:             true,
+		AllowMessagesDispatch: true,
+		DefaultMappedModel:    "gpt-5.6-sol",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, repo.created)
+	require.True(t, repo.created.AllowLive)
+	require.False(t, repo.created.AllowMessagesDispatch)
+	require.Empty(t, repo.created.DefaultMappedModel)
 }
 
 func TestAdminService_CreateCompositeGroupPreservesLive(t *testing.T) {

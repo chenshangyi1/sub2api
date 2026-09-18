@@ -15,6 +15,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
@@ -27,11 +28,12 @@ import (
 func f64p(v float64) *float64 { return &v }
 
 type httpUpstreamRecorder struct {
-	lastReq      *http.Request
-	lastBody     []byte
-	lastProxyURL string
-	requests     []*http.Request
-	bodies       [][]byte
+	lastContextErr error
+	lastReq        *http.Request
+	lastBody       []byte
+	lastProxyURL   string
+	requests       []*http.Request
+	bodies         [][]byte
 
 	resp      *http.Response
 	responses []*http.Response
@@ -65,6 +67,9 @@ func (r passthroughErrReadCloser) Close() error {
 
 func (u *httpUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
 	u.lastReq = req
+	if req != nil {
+		u.lastContextErr = req.Context().Err()
+	}
 	u.lastProxyURL = proxyURL
 	if req != nil && req.Body != nil {
 		b, _ := io.ReadAll(req.Body)
@@ -910,7 +915,74 @@ func TestOpenAIGatewayService_OAuthPassthrough_DisabledUsesLegacyTransform(t *te
 	require.Contains(t, string(upstream.lastBody), `"stream":true`)
 }
 
-func TestOpenAIGatewayService_OAuthLegacy_UpstreamRequestIgnoresClientCancel(t *testing.T) {
+func TestOpenAIGatewayService_OAuthLegacy_GroupForceOpenAIFastInjectsMissingTier(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+	inputBody := []byte(`{"model":"gpt-5.6-sol","stream":false,"input":[{"type":"text","text":"hi"}]}`)
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_group_fast_legacy"}},
+		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+	}}
+	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+	svc.cfg = &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}}
+	svc.httpUpstream = upstream
+	account := &Account{
+		ID: 123, Name: "acc", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra:       map[string]any{"openai_passthrough": false, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff},
+		Status:      StatusActive, Schedulable: true, RateMultiplier: f64p(1),
+	}
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{
+		ID: 7, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, ForceOpenAIFast: true,
+	})
+
+	result, err := svc.Forward(ctx, c, account, inputBody)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, OpenAIFastTierPriority, gjson.GetBytes(upstream.lastBody, "service_tier").String())
+	require.NotNil(t, result.ServiceTier)
+	require.Equal(t, OpenAIFastTierPriority, *result.ServiceTier)
+}
+
+func TestOpenAIGatewayService_OAuthLegacy_GroupForceStillHonorsGlobalFilter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+	inputBody := []byte(`{"model":"gpt-5.6-sol","stream":false,"input":[{"type":"text","text":"hi"}]}`)
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_group_fast_filter"}},
+		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+	}}
+	svc := newOpenAIGatewayServiceWithSettings(t, openAIFastFilterPriorityPolicy())
+	svc.cfg = &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}}
+	svc.httpUpstream = upstream
+	account := &Account{
+		ID: 123, Name: "acc", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra:       map[string]any{"openai_passthrough": false, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff},
+		Status:      StatusActive, Schedulable: true, RateMultiplier: f64p(1),
+	}
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{
+		ID: 7, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, ForceOpenAIFast: true,
+	})
+
+	result, err := svc.Forward(ctx, c, account, inputBody)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, gjson.GetBytes(upstream.lastBody, "service_tier").Exists())
+	require.Nil(t, result.ServiceTier)
+}
+
+func TestOpenAIGatewayService_OAuthLegacy_CanceledRequestIsNotDispatched(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -950,10 +1022,9 @@ func TestOpenAIGatewayService_OAuthLegacy_UpstreamRequestIgnoresClientCancel(t *
 	}
 
 	result, err := svc.Forward(reqCtx, c, account, originalBody)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.NotNil(t, upstream.lastReq)
-	require.NoError(t, upstream.lastReq.Context().Err())
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, result)
+	require.Nil(t, upstream.lastReq)
 }
 
 func TestOpenAIGatewayService_OAuthLegacy_CompositeCodexUAUsesCodexOriginator(t *testing.T) {

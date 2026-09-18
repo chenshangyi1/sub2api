@@ -8,7 +8,7 @@ import (
 )
 
 func TestCompositeRoutesCNProvidersMigration(t *testing.T) {
-	content, err := FS.ReadFile("227_composite_routes_add_cn_providers.sql")
+	content, err := FS.ReadFile("235_composite_routes_add_cn_providers.sql")
 	require.NoError(t, err)
 
 	sql := strings.Join(strings.Fields(string(content)), " ")

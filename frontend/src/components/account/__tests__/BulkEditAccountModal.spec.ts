@@ -73,7 +73,24 @@ function mountModal(extraProps: Record<string, unknown> = {}) {
           `
         },
         ProxySelector: true,
-        GroupSelector: true,
+        GroupSelector: {
+          props: ['modelValue', 'priorities'],
+          emits: ['update:modelValue', 'update:priorities'],
+          template: `
+            <div>
+              <button
+                type="button"
+                data-testid="select-bulk-groups"
+                @click="
+                  $emit('update:modelValue', [7, 8]);
+                  $emit('update:priorities', { 7: 1, 8: 3 })
+                "
+              >
+                groups
+              </button>
+            </div>
+          `
+        },
         Icon: true
       }
     }
@@ -217,7 +234,7 @@ describe('BulkEditAccountModal', () => {
     expect(wrapper.findAll('[data-testid="grok-base-url-preset"]').length).toBe(0)
   })
 
-  it.each(['kimi', 'zhipu', 'deepseek'])('全部目标为 %s API Key 时展示请求头覆写', (platform) => {
+  it.each(['cn', 'video', 'kimi', 'zhipu', 'deepseek'])('全部目标为 %s API Key 时展示请求头覆写', (platform) => {
     const wrapper = mountModal({
       selectedPlatforms: [platform],
       selectedTypes: ['apikey']
@@ -226,7 +243,7 @@ describe('BulkEditAccountModal', () => {
     expect(wrapper.find('#bulk-edit-header-override-enabled').exists()).toBe(true)
   })
 
-  it.each(['kimi', 'zhipu', 'deepseek'])('目标为 %s OAuth 时不展示请求头覆写', (platform) => {
+  it.each(['cn', 'video', 'kimi', 'zhipu', 'deepseek'])('目标为 %s OAuth 时不展示请求头覆写', (platform) => {
     const wrapper = mountModal({
       selectedPlatforms: [platform],
       selectedTypes: ['oauth']
@@ -918,6 +935,28 @@ describe('BulkEditAccountModal', () => {
         privacy_mode: 'training_set_cf_blocked'
       },
       status: 'active'
+    })
+  })
+
+  it('批量改分组时按每个分组提交独立优先级', async () => {
+    const wrapper = mountModal({
+      groups: [
+        { id: 7, name: 'g7', platform: 'antigravity', rate_multiplier: 1, account_count: 1 },
+        { id: 8, name: 'g8', platform: 'antigravity', rate_multiplier: 1, account_count: 1 }
+      ]
+    })
+
+    await wrapper.get('#bulk-edit-groups-enabled').setValue(true)
+    await wrapper.get('[data-testid="select-bulk-groups"]').trigger('click')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      account_groups: [
+        { account_id: 0, group_id: 7, priority: 1 },
+        { account_id: 0, group_id: 8, priority: 3 }
+      ]
     })
   })
 })

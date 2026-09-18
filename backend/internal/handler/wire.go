@@ -15,6 +15,8 @@ func ProvideAdminHandlers(
 	userHandler *admin.UserHandler,
 	groupHandler *admin.GroupHandler,
 	accountHandler *admin.AccountHandler,
+	accountTrafficHandler *admin.AccountTrafficHandler,
+	antiDegradeHandler *admin.AntiDegradeHandler,
 	announcementHandler *admin.AnnouncementHandler,
 	dataManagementHandler *admin.DataManagementHandler,
 	backupHandler *admin.BackupHandler,
@@ -41,22 +43,27 @@ func ProvideAdminHandlers(
 	channelHandler *admin.ChannelHandler,
 	channelMonitorHandler *admin.ChannelMonitorHandler,
 	channelMonitorTemplateHandler *admin.ChannelMonitorRequestTemplateHandler,
+	groupMonitorHandler *admin.GroupMonitorHandler,
 	contentModerationHandler *admin.ContentModerationHandler,
 	promptAuditHandler *securityaudit.PromptAdminHandler,
 	paymentHandler *admin.PaymentHandler,
 	affiliateHandler *admin.AffiliateHandler,
 	complianceHandler *admin.ComplianceHandler,
 	auditLogHandler *admin.AuditLogHandler,
+	adaptiveHandler *admin.AdaptiveHandler,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	ollamaCloudUsage *service.OllamaCloudUsageService,
 ) *AdminHandlers {
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
+	accountHandler.SetAccountTrafficHandler(accountTrafficHandler)
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
 		User:                   userHandler,
 		Group:                  groupHandler,
 		Account:                accountHandler,
+		AccountTraffic:         accountTrafficHandler,
+		AntiDegrade:            antiDegradeHandler,
 		Announcement:           announcementHandler,
 		DataManagement:         dataManagementHandler,
 		Backup:                 backupHandler,
@@ -83,12 +90,14 @@ func ProvideAdminHandlers(
 		Channel:                channelHandler,
 		ChannelMonitor:         channelMonitorHandler,
 		ChannelMonitorTemplate: channelMonitorTemplateHandler,
+		GroupMonitor:           groupMonitorHandler,
 		ContentModeration:      contentModerationHandler,
 		PromptAudit:            promptAuditHandler,
 		Payment:                paymentHandler,
 		Affiliate:              affiliateHandler,
 		Compliance:             complianceHandler,
 		AuditLog:               auditLogHandler,
+		Adaptive:               adaptiveHandler,
 	}
 }
 
@@ -110,12 +119,17 @@ func ProvideGatewayHandler(
 	cfg *config.Config,
 	settingService *service.SettingService,
 	coordinator *securityaudit.Coordinator,
+	adaptivePlanner *service.AdaptiveRoutePlanner,
+	adaptiveBilling *service.AdaptiveBillingCoordinator,
 ) *GatewayHandler {
 	h := NewGatewayHandler(gatewayService, openAIGatewayService, geminiCompatService, antigravityGatewayService,
 		userService, concurrencyService, billingCacheService, usageService, apiKeyService, usageRecordWorkerPool,
 		errorPassthroughService, contentModerationService, userMsgQueueService, cfg, settingService)
 	h.balancePreauthorizer = balancePreauthorizationService
 	h.securityAuditCoordinator = coordinator
+	h.SetAdaptivePlanner(adaptivePlanner)
+	h.adaptiveBilling = adaptiveBilling
+	gatewayService.SetAdaptiveBillingCoordinator(adaptiveBilling)
 	return h
 }
 
@@ -133,6 +147,11 @@ func ProvideOpenAIGatewayHandler(
 	grokQuotaService *service.GrokQuotaService,
 	cfg *config.Config,
 	coordinator *securityaudit.Coordinator,
+	adaptivePlanner *service.AdaptiveRoutePlanner,
+	adaptiveBilling *service.AdaptiveBillingCoordinator,
+	settingService *service.SettingService,
+	anthropicGateway *service.GatewayService,
+	geminiCompat *service.GeminiMessagesCompatService,
 ) *OpenAIGatewayHandler {
 	gatewayService.SetPluginManager(pluginManager)
 	h := NewOpenAIGatewayHandler(gatewayService, concurrencyService, billingCacheService, apiKeyService,
@@ -140,6 +159,17 @@ func ProvideOpenAIGatewayHandler(
 	h.balancePreauthorizer = balancePreauthorizationService
 	h.securityAuditCoordinator = coordinator
 	h.grokMediaEligibilityProber = grokQuotaService
+	h.SetAdaptiveRouting(adaptivePlanner, adaptiveBilling)
+	h.SetSettingService(settingService)
+	h.SetCrossPlatformAdaptiveServices(anthropicGateway, geminiCompat)
+	gatewayService.SetAdaptiveBillingCoordinator(adaptiveBilling)
+	return h
+}
+
+// ProvideAdaptiveHandler wires Adaptive admin + Anti-Stall PRO settings.
+func ProvideAdaptiveHandler(repo service.AdaptivePoolAdminRepository, settings *service.SettingService) *admin.AdaptiveHandler {
+	h := admin.NewAdaptiveHandler(repo)
+	h.SetSettingService(settings)
 	return h
 }
 
@@ -186,6 +216,7 @@ func ProvideHandlers(
 	subscriptionHandler *SubscriptionHandler,
 	announcementHandler *AnnouncementHandler,
 	channelMonitorUserHandler *ChannelMonitorUserHandler,
+	groupMonitorUserHandler *GroupMonitorUserHandler,
 	channelMonitorV2Handler *ChannelMonitorV2Handler,
 	adminHandlers *AdminHandlers,
 	gatewayHandler *GatewayHandler,
@@ -212,6 +243,7 @@ func ProvideHandlers(
 		Subscription:     subscriptionHandler,
 		Announcement:     announcementHandler,
 		ChannelMonitor:   channelMonitorUserHandler,
+		GroupMonitor:     groupMonitorUserHandler,
 		ChannelMonitorV2: channelMonitorV2Handler,
 		Admin:            adminHandlers,
 		Gateway:          gatewayHandler,
@@ -239,6 +271,7 @@ var ProviderSet = wire.NewSet(
 	NewSubscriptionHandler,
 	NewAnnouncementHandler,
 	NewChannelMonitorUserHandler,
+	NewGroupMonitorUserHandler,
 	NewChannelMonitorV2Handler,
 	ProvideGatewayHandler,
 	ProvideOpenAIGatewayHandler,
@@ -257,6 +290,8 @@ var ProviderSet = wire.NewSet(
 	admin.NewUserHandler,
 	admin.NewGroupHandler,
 	admin.ProvideAccountHandler,
+	admin.NewAccountTrafficHandler,
+	admin.NewAntiDegradeHandler,
 	admin.NewAnnouncementHandler,
 	admin.NewDataManagementHandler,
 	admin.NewBackupHandler,
@@ -283,11 +318,13 @@ var ProviderSet = wire.NewSet(
 	admin.NewChannelHandler,
 	admin.NewChannelMonitorHandler,
 	admin.NewChannelMonitorRequestTemplateHandler,
+	admin.NewGroupMonitorHandler,
 	admin.NewContentModerationHandler,
 	admin.NewPaymentHandler,
 	admin.NewAffiliateHandler,
 	admin.NewComplianceHandler,
 	admin.NewAuditLogHandler,
+	ProvideAdaptiveHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

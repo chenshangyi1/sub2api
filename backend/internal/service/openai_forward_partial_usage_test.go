@@ -103,8 +103,10 @@ func TestOpenAIGatewayService_Forward_PreOutputFailoverDropsPartialUsage(t *test
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
 	require.Nil(t, result, "a replayable attempt must not expose partial usage")
-	require.Empty(t, recorder.Body.String())
+	require.Contains(t, recorder.Body.String(), `"type":"response.created"`)
+	require.NotContains(t, recorder.Body.String(), `"delta"`)
 }
 
 func TestOpenAIGatewayService_PassthroughStreamErrorPreservesPartialUsage(t *testing.T) {

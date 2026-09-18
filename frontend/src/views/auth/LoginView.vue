@@ -24,7 +24,7 @@
             <input
               id="email"
               v-model="formData.email"
-              type="email"
+              type="text"
               required
               autofocus
               autocomplete="email"
@@ -529,12 +529,9 @@ function validateForm(): boolean {
     return false
   }
 
-  // Email validation
+  // Login ID validation (accepts email OR username)
   if (!formData.email.trim()) {
     errors.email = t('auth.emailRequired')
-    isValid = false
-  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
-    errors.email = t('auth.invalidEmail')
     isValid = false
   }
 

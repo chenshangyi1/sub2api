@@ -90,6 +90,9 @@ func TestLiveEnabledForAPIKey(t *testing.T) {
 	require.True(t, liveEnabledForAPIKey(&service.APIKey{
 		Group: &service.Group{Platform: service.PlatformComposite, AllowLive: true},
 	}))
+	require.True(t, liveEnabledForAPIKey(&service.APIKey{
+		Group: &service.Group{Platform: service.PlatformAdaptive, AllowLive: true},
+	}))
 }
 
 func TestLiveAttestationErrorIsExplicit(t *testing.T) {

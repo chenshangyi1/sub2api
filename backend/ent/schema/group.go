@@ -65,6 +65,9 @@ func (Group) Fields() []ent.Field {
 			Comment("高峰时段叠加倍率，仅在 peak_rate_enabled 且处于 [peak_start, peak_end) 时乘入文本倍率"),
 		field.Bool("is_exclusive").
 			Default(false),
+		field.Bool("user_visible").
+			Default(true).
+			Comment("是否在用户侧列表与选择器中可见"),
 		field.String("status").
 			MaxLen(20).
 			Default(domain.StatusActive),

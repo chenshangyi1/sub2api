@@ -10,6 +10,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
+	"github.com/Wei-Shaw/sub2api/ent/adaptivegroupconfig"
+	"github.com/Wei-Shaw/sub2api/ent/adaptivegroupmembership"
 	"github.com/Wei-Shaw/sub2api/ent/announcement"
 	"github.com/Wei-Shaw/sub2api/ent/announcementread"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
@@ -185,6 +187,60 @@ func (f TraverseAccountGroup) Traverse(ctx context.Context, q ent.Query) error {
 		return f(ctx, q)
 	}
 	return fmt.Errorf("unexpected query type %T. expect *ent.AccountGroupQuery", q)
+}
+
+// The AdaptiveGroupConfigFunc type is an adapter to allow the use of ordinary function as a Querier.
+type AdaptiveGroupConfigFunc func(context.Context, *ent.AdaptiveGroupConfigQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f AdaptiveGroupConfigFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.AdaptiveGroupConfigQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.AdaptiveGroupConfigQuery", q)
+}
+
+// The TraverseAdaptiveGroupConfig type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseAdaptiveGroupConfig func(context.Context, *ent.AdaptiveGroupConfigQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseAdaptiveGroupConfig) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseAdaptiveGroupConfig) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.AdaptiveGroupConfigQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.AdaptiveGroupConfigQuery", q)
+}
+
+// The AdaptiveGroupMembershipFunc type is an adapter to allow the use of ordinary function as a Querier.
+type AdaptiveGroupMembershipFunc func(context.Context, *ent.AdaptiveGroupMembershipQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f AdaptiveGroupMembershipFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.AdaptiveGroupMembershipQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.AdaptiveGroupMembershipQuery", q)
+}
+
+// The TraverseAdaptiveGroupMembership type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseAdaptiveGroupMembership func(context.Context, *ent.AdaptiveGroupMembershipQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseAdaptiveGroupMembership) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseAdaptiveGroupMembership) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.AdaptiveGroupMembershipQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.AdaptiveGroupMembershipQuery", q)
 }
 
 // The AnnouncementFunc type is an adapter to allow the use of ordinary function as a Querier.
@@ -1168,6 +1224,10 @@ func NewQuery(q ent.Query) (Query, error) {
 		return &query[*ent.AccountQuery, predicate.Account, account.OrderOption]{typ: ent.TypeAccount, tq: q}, nil
 	case *ent.AccountGroupQuery:
 		return &query[*ent.AccountGroupQuery, predicate.AccountGroup, accountgroup.OrderOption]{typ: ent.TypeAccountGroup, tq: q}, nil
+	case *ent.AdaptiveGroupConfigQuery:
+		return &query[*ent.AdaptiveGroupConfigQuery, predicate.AdaptiveGroupConfig, adaptivegroupconfig.OrderOption]{typ: ent.TypeAdaptiveGroupConfig, tq: q}, nil
+	case *ent.AdaptiveGroupMembershipQuery:
+		return &query[*ent.AdaptiveGroupMembershipQuery, predicate.AdaptiveGroupMembership, adaptivegroupmembership.OrderOption]{typ: ent.TypeAdaptiveGroupMembership, tq: q}, nil
 	case *ent.AnnouncementQuery:
 		return &query[*ent.AnnouncementQuery, predicate.Announcement, announcement.OrderOption]{typ: ent.TypeAnnouncement, tq: q}, nil
 	case *ent.AnnouncementReadQuery:

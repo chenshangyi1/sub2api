@@ -68,6 +68,9 @@ func (s *GatewayService) DiagnoseModelAvailabilityForPlatform(
 	if s.accountRepo == nil {
 		return ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true}
 	}
+	if schedulerSnapshotOnlyFromContext(ctx) {
+		return diagnoseModelAvailabilityFromSchedulerSnapshot(s.schedulerSnapshot, ctx, groupID, requestedModel, platform)
+	}
 
 	useMixed := platform == PlatformAnthropic || platform == PlatformGemini
 	platforms := []string{platform}
@@ -103,6 +106,41 @@ func (s *GatewayService) DiagnoseModelAvailabilityForPlatform(
 		}
 		diag.HasAccountsInPool = true
 		if s.isModelSupportedByAccountWithContext(ctx, &accounts[i], requestedModel) {
+			diag.HasModelSupport = true
+			return diag
+		}
+	}
+	return diag
+}
+
+func diagnoseModelAvailabilityFromSchedulerSnapshot(
+	snapshot *SchedulerSnapshotService,
+	ctx context.Context,
+	groupID *int64,
+	requestedModel string,
+	platform string,
+) ModelAvailabilityDiagnosis {
+	if snapshot == nil {
+		return ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true}
+	}
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" || strings.TrimSpace(platform) == "" {
+		return ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true}
+	}
+	accounts, _, err := snapshot.ListSchedulableAccountsSnapshot(ctx, groupID, platform, false)
+	if err != nil {
+		// Cache not ready or snapshot miss stays on 503. A 404 here would be
+		// a false "model missing" while the real pool is still warming up.
+		return ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true}
+	}
+	diag := ModelAvailabilityDiagnosis{}
+	useMixed := platform == PlatformAnthropic || platform == PlatformGemini
+	for i := range accounts {
+		if useMixed && accounts[i].Platform == PlatformAntigravity && !accounts[i].IsMixedSchedulingEnabled() {
+			continue
+		}
+		diag.HasAccountsInPool = true
+		if accounts[i].IsModelSupported(requestedModel) {
 			diag.HasModelSupport = true
 			return diag
 		}

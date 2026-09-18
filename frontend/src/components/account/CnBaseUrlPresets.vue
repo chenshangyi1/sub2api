@@ -20,13 +20,13 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { CN_BASE_URL_PRESETS, type CnBaseUrlPreset } from './credentialsBuilder'
+import { CN_BASE_URL_PRESETS, cnPresetKey, type CnBaseUrlPreset } from './credentialsBuilder'
 
 // 国产供应商快捷端点：点击把预设地址（及对应账号类型/协议）回填到调用方。
 // 与 Grok 预设一致，仅作快速填充，输入框仍接受任意第三方转发地址。
 // 传入 protocol 时只显示该协议档的预设（协议 × 账号类型正交分档）。
 const props = defineProps<{
-  platform: 'kimi' | 'zhipu' | 'deepseek'
+  platform: string
   /** 当前已选账号类型，用于过滤和高亮匹配的预设 */
   mode?: 'payg' | 'coding'
   /** 当前已选 API 协议，用于过滤和高亮匹配的预设 */
@@ -40,7 +40,8 @@ const emit = defineEmits<{
 }>()
 
 const presets = computed(() => {
-  const all = CN_BASE_URL_PRESETS[props.platform] ?? []
+  const key = cnPresetKey(props.platform)
+  const all = key ? CN_BASE_URL_PRESETS[key] : []
   // 只按协议过滤：同协议下 payg/coding 两档都展示，点击即同时切换账号类型。
   if (props.protocol == null) return all
   return all.filter(p => p.protocol === props.protocol)

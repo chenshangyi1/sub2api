@@ -15,6 +15,54 @@ export interface ConfigFieldDef {
   options?: TypeOption[]
 }
 
+export const EPUSDT_NETWORK_OPTIONS: TypeOption[] = [
+  { value: 'bsc', label: 'BNB Smart Chain / BSC (BEP20)' },
+  { value: 'polygon', label: 'Polygon (PoS)' },
+  { value: 'trc20', label: 'TRON (TRC20)' },
+  { value: 'erc20', label: 'Ethereum (ERC20)' },
+]
+
+export function parseEpusdtNetworks(raw: string | undefined): string[] {
+  if (!raw || !raw.trim()) return []
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const part of raw.split(',')) {
+    const network = normalizeEpusdtNetwork(part)
+    if (!network || seen.has(network)) continue
+    seen.add(network)
+    out.push(network)
+  }
+  return out
+}
+
+export function serializeEpusdtNetworks(networks: string[]): string {
+  return parseEpusdtNetworks(networks.join(',')).join(',')
+}
+
+export function normalizeEpusdtNetwork(raw: string): string {
+  switch (raw.trim().toLowerCase()) {
+    case 'bsc':
+    case 'bep20':
+    case 'bnb':
+    case 'binance':
+      return 'bsc'
+    case 'trc20':
+    case 'tron':
+    case 'trx':
+      return 'trc20'
+    case 'polygon':
+    case 'matic':
+    case 'pos':
+      return 'polygon'
+    case 'erc20':
+    case 'eth':
+    case 'ethereum':
+      return 'erc20'
+    default:
+      return ''
+  }
+}
+
 export interface TypeOption {
   value: string
   label: string
@@ -49,7 +97,23 @@ export const PROVIDER_SUPPORTED_TYPES: Record<string, string[]> = {
 export const EASYPAY_PAYMENT_MODES = ['qrcode', 'popup'] as const
 
 /** Fixed display order for user-facing payment methods */
-export const METHOD_ORDER = ['alipay', 'alipay_direct', 'wxpay', 'wxpay_direct', 'stripe', 'airwallex', 'epusdt'] as const
+export const METHOD_ORDER = [
+  'alipay',
+  'alipay_direct',
+  'wxpay',
+  'wxpay_direct',
+  'stripe',
+  'airwallex',
+  'epusdt_bsc',
+  'epusdt_polygon',
+  'epusdt_trc20',
+  'epusdt_erc20',
+  'epusdt',
+] as const
+
+export function isEpusdtMethod(type: string): boolean {
+  return type === 'epusdt' || type.startsWith('epusdt_')
+}
 
 export function isBuiltInAlipayMethod(type: string): boolean {
   return type === 'alipay' || type === 'alipay_direct'
@@ -158,9 +222,8 @@ export const PROVIDER_CONFIG_FIELDS: Record<string, ConfigFieldDef[]> = {
   epusdt: [
     { key: 'pid', label: 'PID', sensitive: false },
     { key: 'secretKey', label: '', sensitive: true },
-    { key: 'apiBase', label: '', sensitive: false, defaultValue: 'https://ep.kedaya.xyz' },
+    { key: 'apiBase', label: '', sensitive: false, defaultValue: 'https://ep.baiyuan.cc.cd' },
     { key: 'token', label: '', sensitive: false, defaultValue: 'USDT' },
-    { key: 'network', label: '', sensitive: false, defaultValue: 'bsc' },
     { key: 'currency', label: '', sensitive: false, defaultValue: 'CNY', hintKey: 'admin.settings.payment.field_paymentCurrencyHint', options: PAYMENT_CURRENCY_OPTIONS },
   ],
   airwallex: [

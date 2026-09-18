@@ -72,24 +72,22 @@ func TestGeminiV1BetaHandler_ListModelsAntigravityFallback(t *testing.T) {
 			expectedBehavior: "static_fallback",
 		},
 		{
-			name:             "无任何账户-返回503",
+			name:             "无任何账户-返回本地目录",
 			hasGeminiAccount: false,
 			hasAntigravity:   false,
-			expectedBehavior: "service_unavailable",
+			expectedBehavior: "static_fallback",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// 模拟 GeminiV1BetaListModels 的逻辑 (lines 33-44 in gemini_v1beta_handler.go)
+			// 模拟 GeminiV1BetaListModels 的逻辑：OpenAI-compat / 无账号时仍返回本地目录。
 			var behavior string
 
 			if tt.hasGeminiAccount {
 				behavior = "forward_to_upstream"
-			} else if tt.hasAntigravity {
-				behavior = "static_fallback"
 			} else {
-				behavior = "service_unavailable"
+				behavior = "static_fallback"
 			}
 
 			require.Equal(t, tt.expectedBehavior, behavior)
@@ -118,24 +116,22 @@ func TestGeminiV1BetaHandler_GetModelAntigravityFallback(t *testing.T) {
 			expectedBehavior: "static_model_info",
 		},
 		{
-			name:             "无任何账户-返回503",
+			name:             "无任何账户-返回静态模型信息",
 			hasGeminiAccount: false,
 			hasAntigravity:   false,
-			expectedBehavior: "service_unavailable",
+			expectedBehavior: "static_model_info",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// 模拟 GeminiV1BetaGetModel 的逻辑 (lines 77-87 in gemini_v1beta_handler.go)
+			// 模拟 GeminiV1BetaGetModel 的逻辑：无账号或 OpenAI-compat 时回退静态模型。
 			var behavior string
 
 			if tt.hasGeminiAccount {
 				behavior = "forward_to_upstream"
-			} else if tt.hasAntigravity {
-				behavior = "static_model_info"
 			} else {
-				behavior = "service_unavailable"
+				behavior = "static_model_info"
 			}
 
 			require.Equal(t, tt.expectedBehavior, behavior)

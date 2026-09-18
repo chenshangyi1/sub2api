@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
@@ -228,7 +229,7 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 				}
 			}
 
-			retryResp, retryErr := p.httpUpstream.Do(retryReq, p.proxyURL, p.account.ID, p.account.Concurrency)
+			retryResp, retryErr := p.httpUpstream.Do(WithAccountTrafficRequest(retryReq, p.account), p.proxyURL, p.account.ID, p.account.Concurrency)
 			if retryErr == nil && retryResp != nil && retryResp.StatusCode != http.StatusTooManyRequests && retryResp.StatusCode != http.StatusServiceUnavailable {
 				log.Printf("%s status=%d smart_retry_success attempt=%d/%d", p.prefix, retryResp.StatusCode, attempt, maxAttempts)
 				// 重试成功，清除 MODEL_CAPACITY_EXHAUSTED cooldown
@@ -403,7 +404,7 @@ func (s *AntigravityGatewayService) handleSingleAccountRetryInPlace(
 			break
 		}
 
-		retryResp, retryErr := p.httpUpstream.Do(retryReq, p.proxyURL, p.account.ID, p.account.Concurrency)
+		retryResp, retryErr := p.httpUpstream.Do(WithAccountTrafficRequest(retryReq, p.account), p.proxyURL, p.account.ID, p.account.Concurrency)
 		if retryErr == nil && retryResp != nil && retryResp.StatusCode != http.StatusTooManyRequests && retryResp.StatusCode != http.StatusServiceUnavailable {
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d single_account_503_retry_success attempt=%d/%d total_waited=%v",
 				p.prefix, retryResp.StatusCode, attempt, antigravitySingleAccountSmartRetryMaxAttempts, totalWaited)
@@ -541,7 +542,7 @@ urlFallbackLoop:
 				return nil, err
 			}
 
-			resp, err = p.httpUpstream.Do(upstreamReq, p.proxyURL, p.account.ID, p.account.Concurrency)
+			resp, err = p.httpUpstream.Do(WithAccountTrafficRequest(upstreamReq, p.account), p.proxyURL, p.account.ID, p.account.Concurrency)
 			if err == nil && resp == nil {
 				err = errors.New("upstream returned nil response")
 			}
@@ -785,6 +786,11 @@ func (s *AntigravityGatewayService) shouldFailoverUpstreamError(statusCode int) 
 	}
 }
 
+func (s *AntigravityGatewayService) shouldFailoverUpstreamResponse(statusCode int, headers http.Header, body []byte) bool {
+	failoverOn400 := s != nil && s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.FailoverOn400
+	return ShouldFailoverUpstreamResponse(statusCode, headers, body, failoverOn400)
+}
+
 // isGoogleProjectConfigError 判断（已提取的小写）错误消息是否属于 Google 服务端配置类问题。
 // 只精确匹配已知的服务端侧错误，避免对客户端请求错误做无意义重试。
 // 适用于所有走 Google 后端的平台（Antigravity、Gemini）。
@@ -794,13 +800,13 @@ func isGoogleProjectConfigError(lowerMsg string) bool {
 }
 
 // googleConfigErrorCooldown 服务端配置类 400 错误的临时封禁时长
-const googleConfigErrorCooldown = 1 * time.Minute
+const googleConfigErrorCooldown = 5 * time.Minute
 
 // tempUnscheduleGoogleConfigError 对服务端配置类 400 错误触发临时封禁，
 // 避免短时间内反复调度到同一个有问题的账号。
 func tempUnscheduleGoogleConfigError(ctx context.Context, repo AccountRepository, accountID int64, logPrefix string) {
 	until := time.Now().Add(googleConfigErrorCooldown)
-	reason := "400: invalid project resource name (auto temp-unschedule 1m)"
+	reason := "400: invalid project resource name (auto temp-unschedule 5m)"
 	if err := repo.SetTempUnschedulable(ctx, accountID, until, reason); err != nil {
 		log.Printf("%s temp_unschedule_failed account=%d error=%v", logPrefix, accountID, err)
 	} else {
@@ -809,13 +815,78 @@ func tempUnscheduleGoogleConfigError(ctx context.Context, repo AccountRepository
 }
 
 // emptyResponseCooldown 空流式响应的临时封禁时长
-const emptyResponseCooldown = 1 * time.Minute
+const emptyResponseCooldown = 5 * time.Minute
+
+// consecutiveUnusableFailureThreshold 同一账号连续不可用失败达到该次数后冷却。
+const consecutiveUnusableFailureThreshold = 2
+
+// consecutiveUnusableFailureWindow 连续失败的计数窗口；窗口外重新从 1 计。
+const consecutiveUnusableFailureWindow = 5 * time.Minute
+
+// consecutiveUnusableFailureCooldown 连续不可用失败的临时封禁时长。
+const consecutiveUnusableFailureCooldown = 5 * time.Minute
+
+type consecutiveUnusableFailureEntry struct {
+	count int
+	last  time.Time
+}
+
+var consecutiveUnusableFailureStore sync.Map
+
+func resetConsecutiveUnusableFailuresForTest() {
+	consecutiveUnusableFailureStore.Range(func(key, _ any) bool {
+		consecutiveUnusableFailureStore.Delete(key)
+		return true
+	})
+}
+
+func isUnusableUpstreamStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusNotFound, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 529:
+		return true
+	default:
+		return false
+	}
+}
+
+func incrementConsecutiveUnusableFailure(accountID int64, now time.Time) int {
+	if accountID <= 0 {
+		return 0
+	}
+	count := 1
+	if raw, ok := consecutiveUnusableFailureStore.Load(accountID); ok {
+		prev, _ := raw.(consecutiveUnusableFailureEntry)
+		if !prev.last.IsZero() && now.Sub(prev.last) <= consecutiveUnusableFailureWindow {
+			count = prev.count + 1
+		}
+	}
+	consecutiveUnusableFailureStore.Store(accountID, consecutiveUnusableFailureEntry{count: count, last: now})
+	return count
+}
+
+func noteConsecutiveUnusableFailure(ctx context.Context, repo AccountRepository, accountID int64, statusCode int, logPrefix string) {
+	if repo == nil || accountID <= 0 || !isUnusableUpstreamStatus(statusCode) {
+		return
+	}
+	count := incrementConsecutiveUnusableFailure(accountID, time.Now())
+	if count < consecutiveUnusableFailureThreshold {
+		log.Printf("%s consecutive_unusable_failure account=%d status=%d count=%d threshold=%d", logPrefix, accountID, statusCode, count, consecutiveUnusableFailureThreshold)
+		return
+	}
+	until := time.Now().Add(consecutiveUnusableFailureCooldown)
+	reason := fmt.Sprintf("consecutive unusable upstream failures: %d (status=%d, auto temp-unschedule 5m)", count, statusCode)
+	if err := repo.SetTempUnschedulable(ctx, accountID, until, reason); err != nil {
+		log.Printf("%s temp_unschedule_failed account=%d error=%v", logPrefix, accountID, err)
+		return
+	}
+	log.Printf("%s temp_unscheduled account=%d until=%v reason=%q", logPrefix, accountID, until.Format("15:04:05"), reason)
+}
 
 // tempUnscheduleEmptyResponse 对空流式响应触发临时封禁，
 // 避免短时间内反复调度到同一个返回空响应的账号。
 func tempUnscheduleEmptyResponse(ctx context.Context, repo AccountRepository, accountID int64, logPrefix string) {
 	until := time.Now().Add(emptyResponseCooldown)
-	reason := "empty stream response (auto temp-unschedule 1m)"
+	reason := "empty stream response (auto temp-unschedule 5m)"
 	if err := repo.SetTempUnschedulable(ctx, accountID, until, reason); err != nil {
 		log.Printf("%s temp_unschedule_failed account=%d error=%v", logPrefix, accountID, err)
 	} else {

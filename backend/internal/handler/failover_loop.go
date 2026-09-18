@@ -36,9 +36,8 @@ const (
 	maxSameAccountRetries = 3
 	// sameAccountRetryDelay 同账号重试间隔
 	sameAccountRetryDelay = 500 * time.Millisecond
-	// maxRequestScopedRetryDelay 限制请求级瞬时错误的指数退避上限，避免高重试配置
-	// 将单次请求拖入分钟级等待。
-	maxRequestScopedRetryDelay = 8 * time.Second
+	// maxRequestScopedRetryDelay 同账号/瞬时错误指数退避的单次等待上限。
+	maxRequestScopedRetryDelay = 30 * time.Second
 	// singleAccountBackoffDelay 单账号分组 503 退避重试固定延时。
 	// Service 层在 SingleAccountRetry 模式下已做充分原地重试（最多 3 次、总等待 30s），
 	// Handler 层只需短暂间隔后重新进入 Service 层即可。
@@ -94,6 +93,9 @@ func sameAccountRetryDelayFor(failoverErr *service.UpstreamFailoverError, retryC
 		return sameAccountRetryDelay
 	}
 	if failoverErr.SameAccountRetryDelay > 0 {
+		if failoverErr.SameAccountRetryDelay > maxRequestScopedRetryDelay {
+			return maxRequestScopedRetryDelay
+		}
 		return failoverErr.SameAccountRetryDelay
 	}
 	if !failoverErr.RequestScopedTransient || retryCount <= 1 {
@@ -108,6 +110,15 @@ func sameAccountRetryDelayFor(failoverErr *service.UpstreamFailoverError, retryC
 		delay *= 2
 	}
 	return delay
+}
+
+func isUnusableFailoverStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusNotFound, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 529:
+		return true
+	default:
+		return false
+	}
 }
 
 func sameAccountRetryAllowed(failoverErr *service.UpstreamFailoverError, retryCount, retryLimit int) bool {
@@ -296,8 +307,8 @@ func (s *FailoverState) HandleFailoverError(
 		return FailoverContinue
 	}
 
-	// 同账号重试用尽，执行临时封禁
-	if failoverErr.RetryableOnSameAccount {
+	// 同账号重试用尽或直接换号：对可摘号的上游失败做临时封禁 / 连续失败冷却。
+	if failoverErr.RetryableOnSameAccount || isUnusableFailoverStatus(failoverErr.StatusCode) {
 		gatewayService.TempUnscheduleRetryableError(ctx, accountID, failoverErr)
 	}
 

@@ -296,6 +296,9 @@
               <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" :class="[row.schedulable ? 'translate-x-4' : 'translate-x-0']" />
             </button>
           </template>
+          <template #cell-scheduler_status="{ row }">
+            <AccountSchedulingStateCell :account="row" />
+          </template>
           <template #cell-today_stats="{ row }">
             <AccountTodayStatsCell
               :stats="todayStatsByAccountId[String(row.id)] ?? null"
@@ -519,6 +522,7 @@ import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
+import AccountSchedulingStateCell from '@/components/account/AccountSchedulingStateCell.vue'
 import UpstreamBillingRateCell from '@/components/account/UpstreamBillingRateCell.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -1696,6 +1700,7 @@ const allColumns = computed(() => {
     { key: 'capacity', label: t('admin.accounts.columns.capacity'), sortable: false },
     { key: 'status', label: t('admin.accounts.columns.status'), sortable: true },
     { key: 'schedulable', label: t('admin.accounts.columns.schedulable'), sortable: true },
+    { key: 'scheduler_status', label: t('admin.accounts.schedulingState.title'), sortable: false },
     { key: 'today_stats', label: t('admin.accounts.columns.todayStats'), sortable: false }
   ]
   if (!authStore.isSimpleMode) {

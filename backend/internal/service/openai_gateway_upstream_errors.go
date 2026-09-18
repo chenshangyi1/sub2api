@@ -283,15 +283,15 @@ func isOpenAINonBillableRequestError(upstreamMsg string, upstreamBody []byte) bo
 }
 
 func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool {
-	switch statusCode {
-	case 401, 402, 403, 405, 429, 529:
-		return true
-	default:
-		return statusCode >= 500
-	}
+	return ShouldFailoverUpstream(statusCode, nil, nil, nil)
 }
 
-func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+func (s *OpenAIGatewayService) shouldFailoverUpstreamResponse(statusCode int, headers http.Header, body []byte) bool {
+	failoverOn400 := s != nil && s.cfg != nil && s.cfg.Gateway.FailoverOn400
+	return ShouldFailoverUpstreamResponse(statusCode, headers, body, failoverOn400)
+}
+
+func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
 	// cyber_policy is request-scoped even when an intermediary wraps the
 	// provider response in a retryable 5xx status. Never punish or rotate the
 	// selected credential for it.
@@ -301,16 +301,57 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode i
 	if isOpenAIContextWindowError(upstreamMsg, upstreamBody) {
 		return false
 	}
+	if isOpenAIDeterministicClientErrorMessage(upstreamMsg, upstreamBody) {
+		return false
+	}
 	if isOpenAIHTTPUpstreamAccessStateError(statusCode, upstreamMsg, upstreamBody) {
 		return true
 	}
 	if isOpenAIRequestBodyTooLargeError(statusCode, upstreamMsg, upstreamBody) {
 		return true
 	}
-	if s.shouldFailoverUpstreamError(statusCode) {
+	class := ClassifyUpstreamFailure(statusCode, nil, upstreamBody, nil)
+	if class.Kind == UpstreamFailureModelMissing {
+		// A bare forwarding service has no account-selection owner to consume a
+		// failover sentinel. In that mode (used by direct/single-account callers),
+		// preserve the deterministic upstream 400 instead of returning an unwritten
+		// retry signal. Managed gateway instances always have an account repository;
+		// their handler can exclude this account and actually select another one.
+		return s != nil && s.accountRepo != nil && account != nil && account.IsOpenAICompatible()
+	}
+	if class.Kind == UpstreamFailureCompat {
+		return s != nil && s.cfg != nil && s.cfg.Gateway.FailoverOn400
+	}
+	if class.Failover {
 		return true
 	}
 	return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
+}
+
+func isOpenAICompatibleModelNotFound400(respBody []byte) bool {
+	return isOpenAICompatibleModelNotFoundBody(respBody)
+}
+
+func isOpenAICompatibleModelNotFoundBody(respBody []byte) bool {
+	code := strings.TrimSpace(extractUpstreamErrorCode(respBody))
+	if code != "" {
+		return strings.EqualFold(code, "model_not_found")
+	}
+
+	msg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
+	if msg == "" && !gjson.ValidBytes(respBody) {
+		msg = strings.ToLower(strings.TrimSpace(string(respBody)))
+	}
+	return strings.Contains(msg, "unknown provider for model") ||
+		strings.Contains(msg, "unknown model") ||
+		strings.Contains(msg, "model not found") ||
+		strings.Contains(msg, "model is not supported")
+}
+
+// IsOpenAICompatibleModelNotFound400 reports whether an OpenAI-compatible 400
+// is an account-specific missing-model response eligible for failover.
+func IsOpenAICompatibleModelNotFound400(respBody []byte) bool {
+	return isOpenAICompatibleModelNotFound400(respBody)
 }
 
 // OpenAIRequestBodyTooLargeClientMessage is the fixed downstream message used
@@ -331,12 +372,21 @@ func newOpenAIUpstreamFailoverError(
 	retryableOnSameAccount bool,
 ) *UpstreamFailoverError {
 	requestScopedCapacity := isOpenAIRequestScopedCapacityShed(upstreamMsg, responseBody)
+	class := ClassifyUpstreamFailure(statusCode, responseHeaders, responseBody, nil)
+	if isUpstreamRouteNotFound(statusCode, responseBody) {
+		retryableOnSameAccount = false
+		requestScopedCapacity = false
+	}
+	if class.Kind == UpstreamFailureWAF {
+		retryableOnSameAccount = false
+		requestScopedCapacity = false
+	}
 	failoverErr := &UpstreamFailoverError{
 		StatusCode:             statusCode,
 		ResponseBody:           responseBody,
 		ResponseHeaders:        responseHeaders.Clone(),
 		RetryableOnSameAccount: retryableOnSameAccount || requestScopedCapacity,
-		RequestScopedTransient: requestScopedCapacity,
+		RequestScopedTransient: requestScopedCapacity || class.Kind == UpstreamFailureWAF,
 	}
 	if isOpenAIRequestBodyTooLargeError(statusCode, upstreamMsg, responseBody) {
 		failoverErr.RetryableOnSameAccount = false
@@ -633,6 +683,12 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		}
 		return nil, fmt.Errorf("upstream error: %d (passthrough rule matched) message=%s", resp.StatusCode, upstreamMsg)
 	}
+	if resp.StatusCode == http.StatusUnprocessableEntity && account.Type == AccountTypeAPIKey && !isOpenAIDeterministicClientFailure(resp.StatusCode, upstreamMsg, body) {
+		c.JSON(http.StatusBadGateway, gin.H{"type": "error", "error": gin.H{
+			"type": "upstream_error", "message": "Upstream request failed",
+		}})
+		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
+	}
 
 	// Check custom error codes
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
@@ -715,28 +771,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	var errType, errMsg string
 	var statusCode int
 
-	switch resp.StatusCode {
-	case 401:
-		statusCode = http.StatusBadGateway
-		errType = "upstream_error"
-		errMsg = "Upstream authentication failed, please contact administrator"
-	case 402:
-		statusCode = http.StatusBadGateway
-		errType = "upstream_error"
-		errMsg = "Upstream payment required: insufficient balance or billing issue"
-	case 403:
-		statusCode = http.StatusBadGateway
-		errType = "upstream_error"
-		errMsg = "Upstream access forbidden, please contact administrator"
-	case 429:
-		statusCode = http.StatusTooManyRequests
-		errType = "rate_limit_error"
-		errMsg = "Upstream rate limit exceeded, please retry later"
-	default:
-		statusCode = http.StatusBadGateway
-		errType = "upstream_error"
-		errMsg = "Upstream request failed"
-	}
+	statusCode, errType, errMsg = mapOpenAIUpstreamClientError(resp.StatusCode, body)
 	if isOpenAIContextWindowError(upstreamMsg, body) && upstreamMsg != "" {
 		errMsg = upstreamMsg
 	}
@@ -888,19 +923,16 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 
 	MarkResponseCommitted(c)
 
-	// Map status code to error type and write response
-	errType := "api_error"
-	switch {
-	case resp.StatusCode == 400:
-		errType = "invalid_request_error"
-	case resp.StatusCode == 404:
-		errType = "not_found_error"
-	case resp.StatusCode == 429:
-		errType = "rate_limit_error"
-	case resp.StatusCode >= 500:
-		errType = "api_error"
+	if isOpenAIDeterministicClientError(resp.StatusCode) {
+		writeError(c, resp.StatusCode, "invalid_request_error", upstreamMsg)
+		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		writeError(c, resp.StatusCode, "not_found_error", upstreamMsg)
+		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
 	}
 
-	writeError(c, resp.StatusCode, errType, upstreamMsg)
+	statusCode, errType, errMsg := mapOpenAIUpstreamClientError(resp.StatusCode, body)
+	writeError(c, statusCode, errType, errMsg)
 	return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
 }

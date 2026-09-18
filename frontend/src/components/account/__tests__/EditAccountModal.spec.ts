@@ -28,7 +28,11 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
-      checkMixedChannelRisk: checkMixedChannelRiskMock
+      checkMixedChannelRisk: checkMixedChannelRiskMock,
+      listAntiDegradeStrategies: vi.fn().mockResolvedValue([]),
+      previewAntiDegrade: vi.fn(),
+      applyAntiDegrade: vi.fn(),
+      revertAntiDegrade: vi.fn()
     },
     settings: {
       getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
@@ -317,7 +321,8 @@ function mountModal(account = buildAccount()) {
         Icon: true,
         ProxySelector: true,
         GroupSelector: GroupSelectorStub,
-        ModelWhitelistSelector: ModelWhitelistSelectorStub
+        ModelWhitelistSelector: ModelWhitelistSelectorStub,
+        AccountTrafficControls: true
       }
     }
   })
@@ -386,19 +391,14 @@ describe('EditAccountModal', () => {
     })
   })
 
-  it.each([
-    ['explicit Chat Completions', 'chat_completions'],
-    ['legacy missing protocol', undefined]
-  ])('preserves a custom CN relay for %s accounts', async (_name, storedProtocol) => {
+  it('preserves a custom CN relay for explicit Chat Completions accounts', async () => {
     const account = buildAccount()
     account.platform = 'zhipu'
     account.credentials = {
       api_key: 'sk-glm',
       account_mode: 'payg',
+      api_protocol: 'chat_completions',
       base_url: 'https://relay.example.com/v1'
-    }
-    if (storedProtocol) {
-      account.credentials.api_protocol = storedProtocol
     }
     updateAccountMock.mockReset().mockResolvedValue(account)
     checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
@@ -414,6 +414,43 @@ describe('EditAccountModal', () => {
       base_url: 'https://relay.example.com/v1'
     })
     expect(submittedCredentials).not.toHaveProperty('api_base_urls')
+  })
+
+  it('defaults a custom CN relay to adaptive and copies the URL into every protocol slot', async () => {
+    const account = buildAccount()
+    account.platform = 'cn'
+    account.credentials = {
+      api_key: 'sk-ds',
+      cn_vendor: 'deepseek',
+      account_mode: 'payg',
+      base_url: 'http://51.161.119.83:17777'
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    expect(wrapper.get('[data-testid="cn-adaptive-base-url-chat_completions"]').element).toMatchObject({
+      value: 'http://51.161.119.83:17777'
+    })
+    expect(wrapper.get('[data-testid="cn-adaptive-base-url-anthropic"]').element).toMatchObject({
+      value: 'http://51.161.119.83:17777'
+    })
+    expect(wrapper.get('[data-testid="cn-adaptive-base-url-responses"]').element).toMatchObject({
+      value: 'http://51.161.119.83:17777'
+    })
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+      api_protocol: 'adaptive',
+      base_url: 'http://51.161.119.83:17777',
+      api_base_urls: {
+        chat_completions: 'http://51.161.119.83:17777',
+        anthropic: 'http://51.161.119.83:17777',
+        responses: 'http://51.161.119.83:17777'
+      }
+    })
   })
 
   it('uses the legacy base_url when adaptive endpoints are missing', async () => {
@@ -440,7 +477,7 @@ describe('EditAccountModal', () => {
       base_url: 'https://relay.example.com/v1',
       api_base_urls: {
         chat_completions: 'https://relay.example.com/v1',
-        anthropic: 'https://open.bigmodel.cn/api/anthropic'
+        anthropic: 'https://relay.example.com/v1'
       }
     })
   })
@@ -481,9 +518,9 @@ describe('EditAccountModal', () => {
       platform: 'zhipu',
       protocol: 'anthropic',
       baseUrl: 'https://relay.example.com/anthropic',
-      expectedBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+      expectedBaseUrl: 'https://relay.example.com/anthropic',
       expectedProtocolUrls: {
-        chat_completions: 'https://open.bigmodel.cn/api/paas/v4',
+        chat_completions: 'https://relay.example.com/anthropic',
         anthropic: 'https://relay.example.com/anthropic'
       }
     },
@@ -492,10 +529,10 @@ describe('EditAccountModal', () => {
       platform: 'deepseek',
       protocol: 'responses',
       baseUrl: 'https://relay.example.com/responses',
-      expectedBaseUrl: 'https://api.deepseek.com',
+      expectedBaseUrl: 'https://relay.example.com/responses',
       expectedProtocolUrls: {
-        chat_completions: 'https://api.deepseek.com',
-        anthropic: 'https://api.deepseek.com/anthropic',
+        chat_completions: 'https://relay.example.com/responses',
+        anthropic: 'https://relay.example.com/responses',
         responses: 'https://relay.example.com/responses'
       }
     }
@@ -792,6 +829,7 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     const payload = updateAccountMock.mock.calls[0]?.[1]
     expect(payload?.group_ids).toEqual([7])
+    expect(payload?.account_groups).toEqual([{ account_id: 4, group_id: 7, priority: 1 }])
     expect(payload?.credentials).toEqual({
       model_mapping: {
         'gpt-5.3-codex-spark': 'gpt-5.3-codex-spark'

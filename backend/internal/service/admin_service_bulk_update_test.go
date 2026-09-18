@@ -82,6 +82,18 @@ func (s *accountRepoStubForBulkUpdate) Update(_ context.Context, account *Accoun
 	return s.updateErr
 }
 
+func (s *accountRepoStubForBulkUpdate) UpdateAccountGroupPriorities(_ context.Context, accountID int64, groups []AccountGroup) error {
+	return s.BindAccountGroups(context.Background(), accountID, groups)
+}
+
+func (s *accountRepoStubForBulkUpdate) BindAccountGroups(_ context.Context, accountID int64, groups []AccountGroup) error {
+	ids := make([]int64, 0, len(groups))
+	for _, group := range groups {
+		ids = append(ids, group.GroupID)
+	}
+	return s.BindGroups(context.Background(), accountID, ids)
+}
+
 func (s *accountRepoStubForBulkUpdate) BindGroups(_ context.Context, accountID int64, groupIDs []int64) error {
 	s.bindGroupsCalls = append(s.bindGroupsCalls, accountID)
 	if s.bindGroupsByAccount == nil {

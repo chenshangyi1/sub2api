@@ -252,6 +252,9 @@ func TestGetBasePaymentType(t *testing.T) {
 		{payment.TypeAlipayDirect, payment.TypeAlipay},
 		{payment.TypeWxpay, payment.TypeWxpay},
 		{payment.TypeWxpayDirect, payment.TypeWxpay},
+		{payment.TypeEpusdt, payment.TypeEpusdt},
+		{"epusdt_bsc", payment.TypeEpusdt},
+		{"epusdt_trc20", payment.TypeEpusdt},
 		{"unknown", "unknown"},
 		{"", ""},
 	}

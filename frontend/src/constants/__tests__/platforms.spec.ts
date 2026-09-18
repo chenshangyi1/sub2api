@@ -7,9 +7,8 @@ const concretePlatforms = [
   'gemini',
   'antigravity',
   'grok',
-  'kimi',
-  'zhipu',
-  'deepseek'
+  'cn',
+  'video'
 ]
 
 describe('platform option catalogs', () => {
@@ -17,10 +16,11 @@ describe('platform option catalogs', () => {
     expect(CONCRETE_PLATFORM_OPTIONS.map((option) => option.value)).toEqual(concretePlatforms)
   })
 
-  it('adds composite for group-backed filters', () => {
+  it('adds composite and adaptive for group-backed filters', () => {
     expect(GROUP_PLATFORM_OPTIONS.map((option) => option.value)).toEqual([
       ...concretePlatforms,
-      'composite'
+      'composite',
+      'adaptive'
     ])
   })
 })

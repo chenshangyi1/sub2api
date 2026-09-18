@@ -1,25 +1,21 @@
-FROM golang:1.26.6-alpine
+FROM golang:1.27.0-alpine
+ENV GOEXPERIMENT=jsonv2
 
 WORKDIR /app
 
-# 安装必要的工具
+# Install the tools needed by the version resolver.
 RUN apk add --no-cache git
 
-# 复制go.mod和go.sum
+# Copy module metadata first so dependency downloads stay cacheable.
 COPY go.mod go.sum ./
-
-# 下载依赖
 RUN go mod download
 
-# 复制源代码
+# The embed build requires both backend source and internal/web/dist.
 COPY . .
 
-# 构建应用
 RUN VERSION_VALUE="$(./scripts/resolve-version.sh)" && \
-    go build -ldflags="-s -w -X main.Version=${VERSION_VALUE}" -o main ./cmd/server/
+    go build -tags="embed timetzdata" -ldflags="-s -w -X main.Version=${VERSION_VALUE}" -o main ./cmd/server
 
-# 暴露端口
 EXPOSE 8080
 
-# 运行应用
 CMD ["./main"]

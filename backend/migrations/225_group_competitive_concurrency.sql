@@ -1,0 +1,2 @@
+ALTER TABLE groups
+    ADD COLUMN IF NOT EXISTS competitive_concurrency BOOLEAN NOT NULL DEFAULT FALSE;

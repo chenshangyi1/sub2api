@@ -44,7 +44,8 @@ func TestSameAccountRetryDelayFor(t *testing.T) {
 		{name: "third retry", retryCount: 3, want: 2 * time.Second},
 		{name: "fourth retry", retryCount: 4, want: 4 * time.Second},
 		{name: "fifth retry", retryCount: 5, want: 8 * time.Second},
-		{name: "capped retry", retryCount: 10, want: 8 * time.Second},
+		{name: "sixth retry", retryCount: 6, want: 16 * time.Second},
+		{name: "capped retry", retryCount: 10, want: 30 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Equal(t, tc.want, sameAccountRetryDelayFor(capacityErr, tc.retryCount))
@@ -62,6 +63,11 @@ func TestSameAccountRetryDelayFor(t *testing.T) {
 	t.Run("explicit oauth delay wins", func(t *testing.T) {
 		err := &service.UpstreamFailoverError{SameAccountRetryDelay: 3 * time.Second}
 		require.Equal(t, 3*time.Second, sameAccountRetryDelayFor(err, 1))
+	})
+
+	t.Run("explicit delay capped at 30s", func(t *testing.T) {
+		err := &service.UpstreamFailoverError{SameAccountRetryDelay: 45 * time.Second}
+		require.Equal(t, 30*time.Second, sameAccountRetryDelayFor(err, 1))
 	})
 }
 
@@ -301,7 +307,8 @@ func TestHandleFailoverError_BasicSwitch(t *testing.T) {
 		require.Contains(t, fs.FailedAccountIDs, int64(100))
 		require.Equal(t, err, fs.LastFailoverErr)
 		require.False(t, fs.ForceCacheBilling)
-		require.Empty(t, mock.calls, "不应调用 TempUnschedule")
+		require.Len(t, mock.calls, 1, "连续不可用失败应触发冷却")
+		require.Equal(t, int64(100), mock.calls[0].accountID)
 	})
 
 	t.Run("非重试错误_Antigravity_第一次切换无延迟", func(t *testing.T) {
@@ -620,13 +627,14 @@ func TestHandleFailoverError_SameAccountRetry(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleFailoverError_TempUnschedule(t *testing.T) {
-	t.Run("非重试错误不调用TempUnschedule", func(t *testing.T) {
+	t.Run("非重试不可用错误调用TempUnschedule", func(t *testing.T) {
 		mock := &mockTempUnscheduler{}
 		fs := NewFailoverState(3, false)
-		err := newTestFailoverErr(500, false, false) // RetryableOnSameAccount=false
+		err := newTestFailoverErr(500, false, false) // RetryableOnSameAccount=false, 500 连续不可用仍冷却
 
 		fs.HandleFailoverError(context.Background(), mock, 100, "openai", maxSameAccountRetries, err)
-		require.Empty(t, mock.calls)
+		require.Len(t, mock.calls, 1)
+		require.Equal(t, int64(100), mock.calls[0].accountID)
 	})
 
 	t.Run("重试错误耗尽后调用TempUnschedule_传入正确参数", func(t *testing.T) {

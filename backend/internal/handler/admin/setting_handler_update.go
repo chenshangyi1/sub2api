@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -274,6 +275,7 @@ type UpdateSettingsRequest struct {
 	// OpenAI account scheduling
 	OpenAILowUpstreamRatePriorityEnabled               *bool    `json:"openai_low_upstream_rate_priority_enabled"`
 	OpenAIOAuthSchedulingRateMultiplier                *float64 `json:"openai_oauth_scheduling_rate_multiplier"`
+	AdaptiveServiceFeePercent                          *float64 `json:"adaptive_service_fee_percent"`
 	CodexQuotaOverdraftEnabled                         *bool    `json:"codex_quota_overdraft_enabled"`
 	CodexQuotaOverdraftBusinessInjectionEnabled        *bool    `json:"codex_quota_overdraft_business_injection_enabled"`
 	OpenAIAdvancedSchedulerEnabled                     *bool    `json:"openai_advanced_scheduler_enabled"`
@@ -1453,6 +1455,14 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		req.OpenAICodexClientVersion = &normalized
 	}
 
+	if req.AdaptiveServiceFeePercent != nil {
+		fee := *req.AdaptiveServiceFeePercent
+		if math.IsNaN(fee) || math.IsInf(fee, 0) || fee < 0 || fee > 100 {
+			response.Error(c, http.StatusBadRequest, "adaptive_service_fee_percent must be between 0 and 100")
+			return
+		}
+	}
+
 	// codex_cli_only 加固：最低/最高 Codex 版本（空=禁用，或合法 semver；max>=min）
 	if req.MinCodexVersion != "" && !semverPattern.MatchString(req.MinCodexVersion) {
 		response.Error(c, http.StatusBadRequest, "min_codex_version must be empty or a valid semver (e.g. 0.141.0)")
@@ -1805,6 +1815,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				return *req.OpenAIOAuthSchedulingRateMultiplier
 			}
 			return previousSettings.OpenAIOAuthSchedulingRateMultiplier
+		}(),
+		AdaptiveServiceFeePercent: func() float64 {
+			if req.AdaptiveServiceFeePercent != nil {
+				return *req.AdaptiveServiceFeePercent
+			}
+			return previousSettings.AdaptiveServiceFeePercent
 		}(),
 		CodexQuotaOverdraftEnabled: func() bool {
 			if req.CodexQuotaOverdraftEnabled != nil {
@@ -2313,6 +2329,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		PaymentVisibleMethodWxpayEnabled:                       updatedSettings.PaymentVisibleMethodWxpayEnabled,
 		OpenAILowUpstreamRatePriorityEnabled:                   updatedSettings.OpenAILowUpstreamRatePriorityEnabled,
 		OpenAIOAuthSchedulingRateMultiplier:                    updatedSettings.OpenAIOAuthSchedulingRateMultiplier,
+		AdaptiveServiceFeePercent:                              updatedSettings.AdaptiveServiceFeePercent,
 		CodexQuotaOverdraftEnabled:                             updatedSettings.CodexQuotaOverdraftEnabled,
 		CodexQuotaOverdraftBusinessInjectionEnabled:            updatedSettings.CodexQuotaOverdraftBusinessInjectionEnabled,
 		OpenAIAdvancedSchedulerEnabled:                         updatedSettings.OpenAIAdvancedSchedulerEnabled,

@@ -58,4 +58,47 @@ describe('AppSidebar user navigation', () => {
   it('hides the legacy subscriptions entry while keeping the route available', () => {
     expect(componentSource).not.toContain("{ path: '/subscriptions'")
   })
+
+  it('exposes model plaza in the mobile sidebar menu', () => {
+    expect(componentSource).toContain("path: '/model-plaza'")
+    expect(componentSource).toContain("t('nav.modelPlaza')")
+    expect(componentSource).toContain('flagModelPlaza')
+  })
+
+  it('does not keep the compact-home toggle', () => {
+    expect(componentSource).not.toContain('data-testid="sidebar-home-layout"')
+    expect(componentSource).not.toContain('toggleHomeLayout')
+    expect(componentSource).not.toContain("t('nav.useCompactHome')")
+    expect(componentSource).not.toContain('homeLayoutPreference')
+  })
+
+  it('keeps Infinite Canvas and batch image without Image Studio', () => {
+    expect(componentSource).not.toContain("path: '/image-studio'")
+    expect(componentSource).not.toContain("t('nav.imageStudio')")
+    expect(componentSource).toContain("path: '/infinite-canvas'")
+    expect(componentSource).toContain("path: '/batch-image'")
+    expect(componentSource.indexOf("path: '/infinite-canvas'")).toBeLessThan(componentSource.indexOf("path: '/batch-image'"))
+  })
+
+  it('includes Infinite Canvas next to API keys', () => {
+    expect(componentSource).toContain("path: '/infinite-canvas'")
+    expect(componentSource).toContain("t('nav.infiniteCanvas')")
+    expect(componentSource.indexOf("path: '/keys'")).toBeLessThan(componentSource.indexOf("path: '/infinite-canvas'"))
+  })
+
+  it('hides the IP allowlist page from user navigation', () => {
+    expect(componentSource).not.toContain("path: '/ip-allowlist'")
+    expect(componentSource).not.toContain("t('nav.ipAllowlist')")
+  })
+
+  it('renders the character-safe BrandLogo instead of a clipped square', () => {
+    expect(componentSource).toContain('BrandLogo')
+    expect(componentSource).not.toContain("siteLogo || '/logo.png'")
+    expect(componentSource).not.toContain('h-10 w-10 overflow-hidden')
+  })
+
+  it('keeps the expanded sidebar at 16rem so it does not overlap the main pane', () => {
+    expect(componentSource).toContain("sidebarCollapsed ? 'w-[76px]' : 'w-64'")
+    expect(componentSource).not.toContain("'w-[17.5rem]'")
+  })
 })

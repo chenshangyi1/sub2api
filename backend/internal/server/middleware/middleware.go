@@ -119,6 +119,17 @@ func GoogleErrorWriter(c *gin.Context, status int, message string) {
 	})
 }
 
+// OpenAIErrorWriter 按 OpenAI API 规范输出模型级错误（model_not_found）。
+func OpenAIErrorWriter(c *gin.Context, status int, message string) {
+	c.JSON(status, gin.H{
+		"error": gin.H{
+			"message": message,
+			"type":    "invalid_request_error",
+			"code":    "model_not_found",
+		},
+	})
+}
+
 // RequireGroupAssignment 检查 API Key 是否已分配到分组，
 // 如果未分组且系统设置不允许未分组 Key 调度则返回 403。
 func RequireGroupAssignment(settingService *service.SettingService, writeError GatewayErrorWriter) gin.HandlerFunc {
@@ -129,7 +140,11 @@ func RequireGroupAssignment(settingService *service.SettingService, writeError G
 			return
 		}
 		// 未分组 Key — 检查系统设置
-		if settingService.IsUngroupedKeySchedulingAllowed(c.Request.Context()) {
+		// This gate runs before concrete gateway handlers install their scheduler
+		// context. Treat the setting as control-plane data here as well: use the
+		// last known value and let SettingService refresh it asynchronously so a
+		// cold settings cache cannot add a PostgreSQL read to request ingress.
+		if settingService.IsUngroupedKeySchedulingAllowed(service.WithSchedulerSnapshotOnly(c.Request.Context())) {
 			c.Next()
 			return
 		}

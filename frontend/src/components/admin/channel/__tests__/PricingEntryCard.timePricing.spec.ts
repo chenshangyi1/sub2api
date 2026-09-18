@@ -84,3 +84,72 @@ describe('PricingEntryCard service tier multipliers', () => {
     expect(shown.text()).toContain('admin.channels.form.flexMultiplier')
   })
 })
+
+vi.mock('@/api/admin/channels', () => ({
+  default: {
+    getModelDefaultPricing: vi.fn(),
+  },
+}))
+
+describe('PricingEntryCard official price follow', () => {
+  it('does not freeze official prices when a model is added', async () => {
+    const channelsAPI = (await import('@/api/admin/channels')).default
+    const entry = createEntry()
+    const wrapper = shallowMount(PricingEntryCard, { props: { entry } })
+
+    wrapper.findComponent({ name: 'ModelTagInput' }).vm.$emit('update:models', ['kimi-k3'])
+    await wrapper.vm.$nextTick()
+
+    expect(channelsAPI.getModelDefaultPricing).not.toHaveBeenCalled()
+    expect(wrapper.emitted('update')?.[0]?.[0]).toEqual({
+      ...entry,
+      models: ['kimi-k3'],
+    })
+  })
+
+  it('fills current official prices only when requested', async () => {
+    const channelsAPI = (await import('@/api/admin/channels')).default
+    vi.mocked(channelsAPI.getModelDefaultPricing).mockResolvedValue({
+      found: true,
+      input_price: 3e-6,
+      output_price: 15e-6,
+      cache_write_price: 0,
+      cache_read_price: 0.30e-6,
+    })
+    const entry = { ...createEntry(), models: ['kimi-k3'] }
+    const wrapper = shallowMount(PricingEntryCard, { props: { entry } })
+
+    await wrapper.get('[data-testid="fill-official-prices"]').trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(channelsAPI.getModelDefaultPricing).toHaveBeenCalledWith('kimi-k3')
+    const updated = wrapper.emitted('update')?.at(-1)?.[0] as PricingFormEntry
+    expect(updated.input_price).toBe(3)
+    expect(updated.output_price).toBe(15)
+    expect(updated.cache_read_price).toBe(0.3)
+  })
+
+  it('clears overrides so billing can follow the official catalog', async () => {
+    const entry = {
+      ...createEntry(),
+      models: ['kimi-k3'],
+      input_price: 20,
+      output_price: 100,
+      cache_write_price: 2,
+      cache_read_price: 2,
+    }
+    const wrapper = shallowMount(PricingEntryCard, { props: { entry } })
+
+    await wrapper.get('[data-testid="clear-price-overrides"]').trigger('click')
+
+    expect(wrapper.emitted('update')?.[0]?.[0]).toMatchObject({
+      models: ['kimi-k3'],
+      input_price: null,
+      output_price: null,
+      cache_write_price: null,
+      cache_read_price: null,
+      image_input_price: null,
+      image_output_price: null,
+    })
+  })
+})

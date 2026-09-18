@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
@@ -26,6 +27,10 @@ const (
 	RoleUser  = domain.RoleUser
 )
 
+func IsAdminRole(role string) bool {
+	return role == RoleAdmin
+}
+
 // Affiliate rebate settings
 const (
 	AffiliateRebateRateDefault          = 20.0
@@ -48,10 +53,19 @@ const (
 	PlatformAntigravity = domain.PlatformAntigravity
 	PlatformGrok        = domain.PlatformGrok
 	// 国产 OpenAI 兼容供应商（与 grok 一样经 OpenAI 网关转发）。
-	PlatformKimi      = domain.PlatformKimi
-	PlatformZhipu     = domain.PlatformZhipu
-	PlatformDeepseek  = domain.PlatformDeepseek
+	PlatformCN       = domain.PlatformCN
+	PlatformKimi     = domain.PlatformKimi
+	PlatformZhipu    = domain.PlatformZhipu
+	PlatformDeepseek = domain.PlatformDeepseek
+	// PlatformMiniMax is kedaya's standalone MiniMax platform id. Local CN
+	// accounts still use PlatformCN + CNVendorMiniMax; this alias keeps
+	// kedaya routing tables compiling without a schema change.
+	PlatformMiniMax   = domain.CNVendorMiniMax
+	PlatformVideo     = domain.PlatformVideo
 	PlatformComposite = domain.PlatformComposite
+	// PlatformAdaptive is a group-only inbound identity. Leaves keep their
+	// own platforms; do not treat the parent as openai/anthropic.
+	PlatformAdaptive = domain.PlatformAdaptive
 	// PlatformKiro is retained for unsupported-platform threshold tests and legacy
 	// account rows. Scheduling-threshold evaluation never pauses kiro accounts.
 	PlatformKiro = "kiro"
@@ -79,6 +93,8 @@ const (
 	DefaultZhipuPayGBaseURL   = "https://open.bigmodel.cn/api/paas/v4"
 	DefaultZhipuCodingBaseURL = "https://open.bigmodel.cn/api/coding/paas/v4"
 	DefaultDeepseekBaseURL    = "https://api.deepseek.com"
+	// MiniMax 按量付费与 Coding/Token Plan 共用推理域名，靠 API Key 区分套餐。
+	DefaultMiniMaxBaseURL = "https://api.minimaxi.com/v1"
 )
 
 // 国产供应商 Anthropic 协议端点的默认 base_url（上游路径为 {base}/v1/messages）。
@@ -88,16 +104,128 @@ const (
 	DefaultKimiCodingAnthropicBaseURL = "https://api.kimi.com/coding"
 	DefaultZhipuAnthropicBaseURL      = "https://open.bigmodel.cn/api/anthropic"
 	DefaultDeepseekAnthropicBaseURL   = "https://api.deepseek.com/anthropic"
+	DefaultMiniMaxAnthropicBaseURL    = "https://api.minimaxi.com/anthropic"
 )
 
-// IsCNProvider 报告 platform 是否为国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）。
+const (
+	CNVendorKimi      = domain.CNVendorKimi
+	CNVendorZhipu     = domain.CNVendorZhipu
+	CNVendorDeepseek  = domain.CNVendorDeepseek
+	CNVendorMiniMax   = domain.CNVendorMiniMax
+	CNVendorCustom    = domain.CNVendorCustom
+	VideoVendorSora   = domain.VideoVendorSora
+	VideoVendorKling  = domain.VideoVendorKling
+	VideoVendorJimeng = domain.VideoVendorJimeng
+	VideoVendorCustom = domain.VideoVendorCustom
+)
+
+// IsCNProvider 报告 platform 是否为国产 OpenAI 兼容供应商。
+// 统一身份是 cn；kimi/zhipu/deepseek 仍可读，便于迁移前的历史行。
 func IsCNProvider(platform string) bool {
 	switch platform {
-	case PlatformKimi, PlatformZhipu, PlatformDeepseek:
+	case PlatformCN, PlatformKimi, PlatformZhipu, PlatformDeepseek:
 		return true
 	default:
 		return false
 	}
+}
+
+// IsVideoProvider 报告 platform 是否为独立视频货源平台。
+func IsVideoProvider(platform string) bool {
+	return platform == PlatformVideo
+}
+
+// IsAdaptiveInboundPlatform reports whether a group row is the Adaptive
+// inbound multiplexer. It is not an account platform and must not be used
+// as a scheduler/forwarding identity — leaves own those.
+func IsAdaptiveInboundPlatform(platform string) bool {
+	return platform == PlatformAdaptive
+}
+
+// CanonicalAccountPlatform 把历史国模三平台折叠为 cn；其余原样返回。
+func CanonicalAccountPlatform(platform string) string {
+	switch platform {
+	case PlatformKimi, PlatformZhipu, PlatformDeepseek:
+		return PlatformCN
+	default:
+		return platform
+	}
+}
+
+// AccountMatchesPlatform 比较账号 platform 与请求/分组 platform。
+// cn 与历史 kimi/zhipu/deepseek 互通；历史三平台彼此仍隔离。
+func AccountMatchesPlatform(accountPlatform, requestedPlatform string) bool {
+	if accountPlatform == requestedPlatform {
+		return true
+	}
+	if CanonicalAccountPlatform(accountPlatform) != CanonicalAccountPlatform(requestedPlatform) {
+		return false
+	}
+	if requestedPlatform == PlatformCN {
+		return IsCNProvider(accountPlatform)
+	}
+	if accountPlatform == PlatformCN {
+		return IsCNProvider(requestedPlatform)
+	}
+	return false
+}
+
+// ExpandSchedulablePlatforms 把调度查询展开成仓库可命中的 platform 值。
+// cn 桶需要同时读出尚未迁移的 kimi/zhipu/deepseek 行；历史三平台查询额外包含 cn。
+func ExpandSchedulablePlatforms(platform string) []string {
+	platform = strings.TrimSpace(platform)
+	if platform == "" {
+		return nil
+	}
+	switch platform {
+	case PlatformCN:
+		return []string{PlatformCN, PlatformKimi, PlatformZhipu, PlatformDeepseek}
+	case PlatformKimi, PlatformZhipu, PlatformDeepseek:
+		return []string{platform, PlatformCN}
+	default:
+		return []string{platform}
+	}
+}
+
+// ExpandSchedulablePlatformList 展开并去重一组调度 platform。
+func ExpandSchedulablePlatformList(platforms []string) []string {
+	seen := make(map[string]struct{}, len(platforms)+3)
+	out := make([]string, 0, len(platforms)+3)
+	for _, platform := range platforms {
+		for _, expanded := range ExpandSchedulablePlatforms(platform) {
+			if _, ok := seen[expanded]; ok {
+				continue
+			}
+			seen[expanded] = struct{}{}
+			out = append(out, expanded)
+		}
+	}
+	return out
+}
+
+// PrepareAccountPlatformWrite 把创建/更新时的 platform 折叠为调度身份，
+// 并在国模账号缺少 cn_vendor 时用历史平台名补上。不改 openai/anthropic/grok。
+func PrepareAccountPlatformWrite(platform string, creds map[string]any) (string, map[string]any) {
+	canonical := CanonicalAccountPlatform(platform)
+	if !IsCNProvider(platform) {
+		return canonical, creds
+	}
+	if creds == nil {
+		creds = map[string]any{}
+	}
+	if vendor, _ := creds["cn_vendor"].(string); strings.TrimSpace(vendor) == "" {
+		switch platform {
+		case PlatformKimi:
+			creds["cn_vendor"] = CNVendorKimi
+		case PlatformZhipu:
+			creds["cn_vendor"] = CNVendorZhipu
+		case PlatformDeepseek:
+			creds["cn_vendor"] = CNVendorDeepseek
+		default:
+			creds["cn_vendor"] = CNVendorCustom
+		}
+	}
+	return canonical, creds
 }
 
 // AllowedQuotaPlatforms 是允许设置 user × platform quota 的平台列表（单一权威来源）。
@@ -109,6 +237,8 @@ var AllowedQuotaPlatforms = []string{
 	PlatformGemini,
 	PlatformAntigravity,
 	PlatformGrok,
+	PlatformCN,
+	PlatformVideo,
 	PlatformKimi,
 	PlatformZhipu,
 	PlatformDeepseek,
@@ -121,6 +251,7 @@ var AllowedSchedulingThresholdPlatforms = []string{
 	PlatformOpenAI,
 	PlatformAnthropic,
 	PlatformGrok,
+	PlatformCN,
 	PlatformKimi,
 	PlatformZhipu,
 }
@@ -216,6 +347,7 @@ const (
 	SettingKeyContentModerationConfig             = "content_moderation_config"        // 内容审计配置（JSON）
 	SettingKeyCyberSessionBlockEnabled            = "cyber_session_block_enabled"      // cyber 命中后会话级自动屏蔽总开关(默认关)
 	SettingKeyCyberSessionBlockTTLSeconds         = "cyber_session_block_ttl_seconds"  // 会话屏蔽 TTL 秒数(默认 3600)
+	SettingKeyAntiStallPro                        = "anti_stall_pro"                   // Anti-Stall PRO（抗中断）JSON 配置
 	SettingKeyLoginAgreementEnabled               = "login_agreement_enabled"          // 登录前是否要求同意条款
 	SettingKeyLoginAgreementMode                  = "login_agreement_mode"             // 条款确认展示模式：modal / checkbox
 	SettingKeyLoginAgreementUpdatedAt             = "login_agreement_updated_at"       // 条款更新日期（展示用）
@@ -541,6 +673,8 @@ const (
 
 	// SettingKeyRateLimit429CooldownSettings stores JSON config for 429 fallback cooldown handling.
 	SettingKeyRateLimit429CooldownSettings = "rate_limit_429_cooldown_settings"
+	// SettingKeyOpenAIImagesOAuthUnavailableCooldownSettings stores the cooldown applied when the OAuth image tool is unavailable.
+	SettingKeyOpenAIImagesOAuthUnavailableCooldownSettings = "openai_images_oauth_unavailable_cooldown_settings"
 	// SettingKeyOpenAIAPIKeyHealthBreakerSettings stores the opt-in OpenAI pool API-key breaker config.
 	SettingKeyOpenAIAPIKeyHealthBreakerSettings = "openai_apikey_health_breaker_settings"
 
@@ -602,6 +736,8 @@ const (
 	SettingKeyOpenAILowUpstreamRatePriorityEnabled = "openai_low_upstream_rate_priority_enabled"
 	// SettingKeyOpenAIOAuthSchedulingRateMultiplier OAuth 账号参与成本调度时使用的参考倍率。
 	SettingKeyOpenAIOAuthSchedulingRateMultiplier = "openai_oauth_scheduling_rate_multiplier"
+	// SettingKeyAdaptiveServiceFeePercent is the Adaptive-only customer service fee percentage.
+	SettingKeyAdaptiveServiceFeePercent = "adaptive_service_fee_percent"
 	// SettingKeyCodexQuotaOverdraftEnabled controls the guarded Codex quota
 	// overdraft detector at the admin-settings layer. The deployment config
 	// remains the master switch for enabling the feature at process startup.
@@ -629,6 +765,10 @@ const (
 	SettingKeyBackendModeEnabled = "backend_mode_enabled"
 
 	// Gateway Forwarding Behavior
+	// SettingKeyOpenAITTFTMode 控制 first_token_ms 的统计口径。
+	SettingKeyOpenAITTFTMode = "openai_ttft_mode"
+	OpenAITTFTModeSemantic   = "semantic"
+	OpenAITTFTModeVisible    = "visible"
 	// SettingKeyEnableFingerprintUnification 是否统一 OAuth 账号的 X-Stainless-* 指纹头（默认 true）
 	SettingKeyEnableFingerprintUnification = "enable_fingerprint_unification"
 	// SettingKeyEnableMetadataPassthrough 是否透传客户端原始 metadata.user_id（默认 false）

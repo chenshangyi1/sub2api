@@ -7,7 +7,11 @@ import { useAppStore } from '@/stores/app'
 import { updateFavicon } from '@/utils/branding'
 import { isIOSDevice } from '@/utils/device'
 import { initTheme } from '@/composables/useCharacterTheme'
+import { readLocalStorage } from '@/utils/safeStorage'
 import './style.css'
+import './styles/design-system.css'
+import './styles/macos-liquid-glass.css'
+import './styles/console-redesign.css'
 
 function initIOSViewportZoomFix() {
   // iOS Safari 在输入框字号小于 16px 时聚焦会自动放大页面，且失焦后不会恢复。
@@ -24,24 +28,70 @@ function initIOSViewportZoomFix() {
 }
 
 function initThemeClass() {
-  const savedTheme = localStorage.getItem('theme')
-  const shouldUseDark =
-    savedTheme === 'dark' ||
-    (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  const savedTheme = readLocalStorage('theme')
+  let prefersDark = false
+  try {
+    prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+  } catch {
+    prefersDark = false
+  }
+  const shouldUseDark = savedTheme === 'dark' || (!savedTheme && prefersDark)
   document.documentElement.classList.toggle('dark', shouldUseDark)
+  document.documentElement.style.colorScheme = shouldUseDark ? 'dark' : 'light'
+}
+
+function initChunkReloadGuard() {
+  window.addEventListener('unhandledrejection', (event) => {
+    const msg = (event.reason as Error)?.message || String(event.reason)
+    if (/Failed to fetch dynamically imported module|Loading chunk|error loading dynamically imported module|Importing a module script failed/i.test(msg)) {
+      const key = 'chunk_reload_attempted_app'
+      const last = Number(sessionStorage.getItem(key) || 0)
+      if (!last || Date.now() - last > 10000) {
+        sessionStorage.setItem(key, String(Date.now()))
+        window.location.reload()
+      }
+    }
+  })
 }
 
 async function bootstrap() {
+  // Keep this assignment: it forces a new hashed entry chunk after 0.1.295
+  // served compressed JS without Content-Type, which browsers refuse as modules.
+  document.documentElement.dataset.spaBuild = '0.1.329'
+
   // Apply theme class globally before app mount to keep all routes consistent.
-  initThemeClass()
+  try {
+    initThemeClass()
+  } catch (error) {
+    console.error(error)
+  }
   initIOSViewportZoomFix()
+  initChunkReloadGuard()
 
   // 初始化角色动态主题系统
-  initTheme()
+  try {
+    initTheme()
+  } catch (error) {
+    console.error(error)
+  }
 
   const app = createApp(App)
   const pinia = createPinia()
   app.use(pinia)
+
+  app.config.errorHandler = (err) => {
+    const msg = (err as Error)?.message || String(err)
+    if (/Failed to fetch dynamically imported module|Loading chunk|error loading dynamically imported module|Importing a module script failed/i.test(msg)) {
+      const key = 'chunk_reload_attempted_app'
+      const last = Number(sessionStorage.getItem(key) || 0)
+      if (!last || Date.now() - last > 10000) {
+        sessionStorage.setItem(key, String(Date.now()))
+        window.location.reload()
+        return
+      }
+    }
+    console.error(err)
+  }
 
   // Initialize settings from injected config BEFORE mounting (prevents flash)
   // This must happen after pinia is installed but before router and i18n
@@ -54,14 +104,24 @@ async function bootstrap() {
   }
   updateFavicon(appStore.siteLogo)
 
-  await initI18n()
+  try {
+    await initI18n()
+  } catch (error) {
+    console.error('initI18n failed, mounting without locale messages', error)
+  }
 
   app.use(router)
   app.use(i18n)
 
   // 等待路由器完成初始导航后再挂载，避免竞态条件导致的空白渲染
-  await router.isReady()
+  try {
+    await router.isReady()
+  } catch (error) {
+    console.error(error)
+  }
   app.mount('#app')
 }
 
-bootstrap()
+bootstrap().catch((error) => {
+  console.error('bootstrap failed', error)
+})

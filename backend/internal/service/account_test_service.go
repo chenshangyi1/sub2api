@@ -143,10 +143,14 @@ type AccountTestService struct {
 	claudeTokenProvider       *ClaudeTokenProvider
 	grokTokenProvider         *GrokTokenProvider
 	antigravityGatewayService *AntigravityGatewayService
+	openaiGatewayService      *OpenAIGatewayService
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
 	settingService            *SettingService
 	tlsFPProfileService       *TLSFingerprintProfileService
+	modelMetadataRegistryMu   sync.Mutex
+	modelMetadataRegistry     map[string]modelsDevProvider
+	modelMetadataRegistryAt   time.Time
 	pluginManager             *PluginManager
 	agentIdentityTaskMu       sync.Mutex
 	agentIdentityWS           agentIdentityWSConnectionInvalidator
@@ -166,6 +170,65 @@ func (s *AccountTestService) SetPluginManager(pluginManager *PluginManager) {
 	if s != nil {
 		s.pluginManager = pluginManager
 	}
+}
+
+func (s *AccountTestService) SetOpenAIGatewayService(gateway *OpenAIGatewayService) {
+	if s != nil {
+		s.openaiGatewayService = gateway
+	}
+}
+
+// FetchOpenAIAccountModels uses the shared cached discovery path for the test picker.
+// It only fills picker-only gaps (local display-name fallbacks, OAuth image choices)
+// on its own copy; the shared catalog and its cache stay untouched.
+func (s *AccountTestService) FetchOpenAIAccountModels(ctx context.Context, account *Account) ([]openai.Model, error) {
+	if s == nil || s.openaiGatewayService == nil {
+		return nil, errors.New("OpenAI model discovery service is unavailable")
+	}
+	response, err := s.openaiGatewayService.FetchOpenAIModelsList(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Data []openai.Model `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body, &payload); err != nil {
+		return nil, fmt.Errorf("decode OpenAI account models: %w", err)
+	}
+	// Every entry in the picker is labelled by the same rule: the upstream display
+	// name when the catalog has one, otherwise the local catalog name for that model
+	// ID, otherwise the raw ID. Without this the picker mixes "GPT-5.6 Sol" with
+	// "gpt-5.6-sol" for the same catalog.
+	for i := range payload.Data {
+		model := &payload.Data[i]
+		if strings.TrimSpace(model.DisplayName) == "" {
+			model.DisplayName = openaiCodexDisplayName(model.ID)
+		}
+		if strings.TrimSpace(model.Type) == "" {
+			model.Type = "model"
+		}
+	}
+	// Codex discovery lists Responses drivers, not image_generation tool models.
+	// Add locally supported image choices only to the OAuth test picker; keep the
+	// shared upstream catalog and API-key discovery authoritative.
+	if account != nil && account.IsOpenAIOAuthLike() {
+		seen := make(map[string]bool, len(payload.Data))
+		for _, model := range payload.Data {
+			seen[model.ID] = true
+		}
+		for _, model := range openai.DefaultModels {
+			if IsGPTImageGenerationModel(model.ID) && account.IsModelSupported(model.ID) && !seen[model.ID] {
+				payload.Data = append(payload.Data, model)
+				seen[model.ID] = true
+			}
+		}
+		for model := range account.GetModelMapping() {
+			if IsGPTImageGenerationModel(model) && !strings.Contains(model, "*") && !seen[model] {
+				payload.Data = append(payload.Data, openai.Model{ID: model, Object: "model", Type: "model", OwnedBy: "openai", DisplayName: openaiCodexDisplayName(model)})
+			}
+		}
+	}
+	return payload.Data, nil
 }
 
 // NewAccountTestService creates a new AccountTestService
@@ -436,7 +499,7 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 		req.Header.Set("Authorization", "Bearer "+authToken)
 	} else {
 		req.Header.Set("anthropic-beta", claude.APIKeyBetaHeader)
-		setAnthropicAPIKeyAuthHeader(req.Header, account, authToken)
+		setAnthropicAPIKeyAuthHeader(req.Header, account, authToken, account.GetBaseURL())
 	}
 
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
@@ -735,7 +798,12 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	if isOAuth {
 		upstreamTestModelID = normalizeOpenAIModelForUpstream(credentialAccount, testModelID)
 	}
-	payload := createOpenAITestPayload(upstreamTestModelID, isOAuth)
+	var payload map[string]any
+	if mode == AccountTestModeHealthProbe {
+		payload = createOpenAIHealthProbePayload(upstreamTestModelID, isOAuth)
+	} else {
+		payload = createOpenAITestPayload(upstreamTestModelID, isOAuth)
+	}
 	payloadBytes, _ := json.Marshal(payload)
 	ctx, payloadBytes, overdraftInjected := s.prepareCodexQuotaOverdraftTestRequest(ctx, account, payloadBytes)
 
@@ -2270,7 +2338,11 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 
 	switch account.Type {
 	case AccountTypeAPIKey:
-		req, err = s.buildGeminiAPIKeyRequest(ctx, account, testModelID, payload)
+		if account.IsGeminiOpenAIProtocol() {
+			req, err = s.buildGeminiOpenAICompatTestRequest(ctx, account, testModelID, payload)
+		} else {
+			req, err = s.buildGeminiAPIKeyRequest(ctx, account, testModelID, payload)
+		}
 	case AccountTypeOAuth:
 		req, err = s.buildGeminiOAuthRequest(ctx, account, testModelID, payload)
 	case AccountTypeServiceAccount:
@@ -2292,18 +2364,44 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 		proxyURL = account.Proxy.URL()
 	}
 
-	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	resp, err := s.doUpstreamModelsRequest(req, proxyURL, account)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
-	defer func() { _ = resp.Body.Close() }()
+	closeBody := true
+	defer func() {
+		if closeBody && resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
 
+	usedOpenAICompat := account.IsGeminiOpenAIProtocol()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		_ = resp.Body.Close()
+		closeBody = false
+		if !shouldFallbackGeminiNativeToOpenAI(account, resp.StatusCode, body, nil) {
+			return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+		}
+		req, err = s.buildGeminiOpenAICompatTestRequest(ctx, account, testModelID, payload)
+		if err != nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to build request: %s", err.Error()))
+		}
+		resp, err = s.doUpstreamModelsRequest(req, proxyURL, account)
+		if err != nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
+		}
+		closeBody = true
+		usedOpenAICompat = true
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+			return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+		}
 	}
 
-	// Process SSE stream
+	if usedOpenAICompat {
+		return s.processOpenAIChatCompletionsGeminiTestStream(c, resp.Body)
+	}
 	return s.processGeminiStream(c, resp.Body)
 }
 
@@ -2363,6 +2461,37 @@ func antigravityConnectionTestModel(modelID string) string {
 }
 
 // buildGeminiAPIKeyRequest builds request for Gemini API Key accounts
+func (s *AccountTestService) buildGeminiOpenAICompatTestRequest(ctx context.Context, account *Account, modelID string, payload []byte) (*http.Request, error) {
+	apiKey := strings.TrimSpace(account.GetCredential("api_key"))
+	if apiKey == "" {
+		return nil, fmt.Errorf("no API key available")
+	}
+	baseURL := strings.TrimSpace(account.GetCNProtocolBaseURL(APIProtocolChatCompletions))
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(account.GetCredential("base_url"))
+	}
+	if baseURL == "" {
+		return nil, fmt.Errorf("OpenAI-compatible Gemini base_url is not configured")
+	}
+	normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	chatBody, err := geminiNativeRequestToChatCompletions(modelID, payload, true)
+	if err != nil {
+		return nil, err
+	}
+	fullURL := strings.TrimRight(normalizedBaseURL, "/") + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(chatBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "text/event-stream")
+	return req, nil
+}
+
 func (s *AccountTestService) buildGeminiAPIKeyRequest(ctx context.Context, account *Account, modelID string, payload []byte) (*http.Request, error) {
 	apiKey := account.GetCredential("api_key")
 	if strings.TrimSpace(apiKey) == "" {
@@ -2543,6 +2672,44 @@ func createGeminiTestPayload(modelID string, prompt string) []byte {
 }
 
 // processGeminiStream processes SSE stream from Gemini API
+func (s *AccountTestService) processOpenAIChatCompletionsGeminiTestStream(c *gin.Context, body io.Reader) error {
+	reader := bufio.NewReader(body)
+	gotContent := false
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				if !gotContent {
+					return s.sendErrorAndEnd(c, "OpenAI-compatible Gemini stream ended without content")
+				}
+				s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+				return nil
+			}
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read error: %s", err.Error()))
+		}
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		jsonStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if jsonStr == "[DONE]" {
+			if !gotContent {
+				return s.sendErrorAndEnd(c, "OpenAI-compatible Gemini stream ended without content")
+			}
+			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+			return nil
+		}
+		text := strings.TrimSpace(gjson.Get(jsonStr, "choices.0.delta.content").String())
+		if text == "" {
+			text = strings.TrimSpace(gjson.Get(jsonStr, "choices.0.message.content").String())
+		}
+		if text != "" {
+			gotContent = true
+			s.sendEvent(c, TestEvent{Type: "content", Text: text})
+		}
+	}
+}
+
 func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader) error {
 	reader := bufio.NewReader(body)
 
@@ -2653,6 +2820,34 @@ func createOpenAITestPayload(modelID string, isOAuth bool) map[string]any {
 	return payload
 }
 
+// createOpenAIHealthProbePayload 构造分组监控用的极简 Responses 探测体。
+// 与 createOpenAITestPayload 的区别：instructions 用一句话、显式限制输出预算，
+// 避免把完整 Codex base prompt（数千 token）烧在健康探测上。
+func createOpenAIHealthProbePayload(modelID string, isOAuth bool) map[string]any {
+	payload := map[string]any{
+		"model": modelID,
+		"input": []map[string]any{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]any{
+					{
+						"type": "input_text",
+						"text": "Reply with exactly OK.",
+					},
+				},
+			},
+		},
+		"instructions":      "You are a health probe. Reply with exactly 'OK'.",
+		"max_output_tokens": 16,
+		"stream":            true,
+	}
+	if isOAuth {
+		payload["store"] = false
+	}
+	return payload
+}
+
 func createOpenAIChatCompletionsTestPayload(modelID string, prompt string) map[string]any {
 	testPrompt := strings.TrimSpace(prompt)
 	if testPrompt == "" {
@@ -2708,6 +2903,22 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 			if delta, ok := data["delta"].(map[string]any); ok {
 				if text, ok := delta["text"].(string); ok {
 					s.sendEvent(c, TestEvent{Type: "content", Text: text})
+				}
+			}
+		case "message_start":
+			if cap := probeCaptureFrom(c.Request.Context()); cap != nil {
+				if msg, ok := data["message"].(map[string]any); ok {
+					if usage, ok := msg["usage"].(map[string]any); ok {
+						if v, ok := usage["input_tokens"].(float64); ok {
+							cap.inputTokens += int64(v)
+						}
+						if v, ok := usage["cache_read_input_tokens"].(float64); ok {
+							cap.cacheReadTokens += int64(v)
+						}
+						if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
+							cap.cacheCreationTokens += int64(v)
+						}
+					}
 				}
 			}
 		case "message_stop":
@@ -2847,6 +3058,18 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 				s.sendEvent(c, TestEvent{Type: "content", Text: delta})
 			}
 		case "response.completed", "response.done":
+			if cap := probeCaptureFrom(c.Request.Context()); cap != nil {
+				if respData, ok := data["response"].(map[string]any); ok {
+					if usage, ok := respData["usage"].(map[string]any); ok {
+						if v, ok := usage["input_tokens"].(float64); ok {
+							cap.inputTokens += int64(v)
+						}
+						if v, ok := usage["cached_tokens"].(float64); ok {
+							cap.cacheReadTokens += int64(v)
+						}
+					}
+				}
+			}
 			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 			return nil
 		case "response.failed":
@@ -2909,7 +3132,7 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create request")
 	}
-	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAIImages))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+authToken)
 
@@ -3012,7 +3235,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create request")
 	}
-	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAIImages))
 	req.Host = "chatgpt.com"
 	if credentialAccount.IsOpenAIAgentIdentity() {
 		authHeaders, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, credentialAccount)
@@ -3095,12 +3318,39 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	return nil
 }
 
+// probeCapture 收集单次健康探测的附加指标（TTFT、缓存 token）。
+// 每次 runTestBackground 创建独立实例并注入 context，保证并发安全。
+type probeCapture struct {
+	firstContentAt      time.Time
+	inputTokens         int64
+	cacheReadTokens     int64
+	cacheCreationTokens int64
+}
+
+type probeCaptureKey struct{}
+
+func withProbeCapture(ctx context.Context, cap *probeCapture) context.Context {
+	return context.WithValue(ctx, probeCaptureKey{}, cap)
+}
+
+func probeCaptureFrom(ctx context.Context) *probeCapture {
+	if cap, ok := ctx.Value(probeCaptureKey{}).(*probeCapture); ok {
+		return cap
+	}
+	return nil
+}
+
 func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
 	if event.Type == "test_complete" {
 		if suppress, ok := c.Get(accountTestSuppressCompletionContextKey); ok {
 			if suppressCompletion, _ := suppress.(bool); suppressCompletion {
 				return
 			}
+		}
+	}
+	if event.Type == "content" && c.Request != nil {
+		if cap := probeCaptureFrom(c.Request.Context()); cap != nil && cap.firstContentAt.IsZero() {
+			cap.firstContentAt = time.Now()
 		}
 	}
 	eventJSON, _ := json.Marshal(event)
@@ -3121,13 +3371,42 @@ func (s *AccountTestService) sendErrorAndEnd(c *gin.Context, errorMsg string) er
 // RunTestBackground executes an account test in-memory (no real HTTP client),
 // capturing SSE output via httptest.NewRecorder, then parses the result.
 func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID int64, modelID string) (*ScheduledTestResult, error) {
+	return s.runTestBackground(ctx, accountID, modelID, AccountTestModeDefault)
+}
+
+// RunHealthProbe runs a minimal health probe for group monitoring. It shares the
+// same background execution path but switches the OpenAI payload to the minimal
+// form (short instructions + tiny output budget) to keep cost negligible.
+func (s *AccountTestService) RunHealthProbe(ctx context.Context, accountID int64, modelID string) (*ScheduledTestResult, error) {
+	return s.runTestBackground(ctx, accountID, modelID, AccountTestModeHealthProbe)
+}
+
+// SuggestProbeModel 返回适合探测该账号的模型名：
+// 优先取账号 model_mapping 的首个映射值（中转站账号的自定义模型名），否则返回空（走平台默认）。
+func (s *AccountTestService) SuggestProbeModel(ctx context.Context, accountID int64) (string, error) {
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return "", err
+	}
+	mapping := account.GetModelMapping()
+	for _, v := range mapping {
+		if strings.TrimSpace(v) != "" {
+			return v, nil
+		}
+	}
+	return "", nil
+}
+
+func (s *AccountTestService) runTestBackground(ctx context.Context, accountID int64, modelID string, mode string) (*ScheduledTestResult, error) {
 	startedAt := time.Now()
+	capture := &probeCapture{}
+	ctx = withProbeCapture(ctx, capture)
 
 	w := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(w)
 	ginCtx.Request = (&http.Request{}).WithContext(ctx)
 
-	testErr := s.TestAccountConnection(ginCtx, accountID, modelID, "", AccountTestModeDefault)
+	testErr := s.TestAccountConnection(ginCtx, accountID, modelID, "", mode)
 
 	finishedAt := time.Now()
 	body := w.Body.String()
@@ -3141,13 +3420,22 @@ func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID in
 		}
 	}
 
+	ttftMs := int64(0)
+	if !capture.firstContentAt.IsZero() {
+		ttftMs = capture.firstContentAt.Sub(startedAt).Milliseconds()
+	}
+
 	return &ScheduledTestResult{
-		Status:       status,
-		ResponseText: responseText,
-		ErrorMessage: errMsg,
-		LatencyMs:    finishedAt.Sub(startedAt).Milliseconds(),
-		StartedAt:    startedAt,
-		FinishedAt:   finishedAt,
+		Status:              status,
+		ResponseText:        responseText,
+		ErrorMessage:        errMsg,
+		LatencyMs:           finishedAt.Sub(startedAt).Milliseconds(),
+		TTFTMs:              ttftMs,
+		InputTokens:         capture.inputTokens,
+		CacheReadTokens:     capture.cacheReadTokens,
+		CacheCreationTokens: capture.cacheCreationTokens,
+		StartedAt:           startedAt,
+		FinishedAt:          finishedAt,
 	}, nil
 }
 

@@ -146,13 +146,17 @@
                       ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
                       : value === 'grok'
                         ? 'bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100'
-                        : value === 'kimi'
-                          ? 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400'
-                          : value === 'zhipu'
-                            ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400'
-                            : value === 'deepseek'
-                              ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400'
-                              : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+                        : value === 'cn'
+                          ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400'
+                          : value === 'video'
+                            ? 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-400'
+                            : value === 'kimi'
+                              ? 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400'
+                              : value === 'zhipu'
+                                ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400'
+                                : value === 'deepseek'
+                                  ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400'
+                                  : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
               ]"
             >
               <PlatformIcon :platform="value" size="xs" />
@@ -475,6 +479,13 @@
         @submit.prevent="handleCreateGroup"
         class="space-y-5"
       >
+        <div data-testid="create-group-section-basic" class="rounded-lg border border-gray-200 dark:border-dark-600">
+          <button type="button" class="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium text-gray-700 dark:text-gray-200" @click="toggleGroupFormSection('create', 'basic')">
+            <span>{{ t("admin.groups.form.sectionBasic") }}</span>
+            <Icon name="chevronDown" size="sm" :class="groupFormSections.create.basic ? 'rotate-180' : ''" />
+          </button>
+          <div v-if="groupFormSections.create.basic" data-testid="create-group-basic-body" class="space-y-5 border-t border-gray-200 px-3 py-4 dark:border-dark-600">
+
         <div>
           <label class="input-label">{{ t("admin.groups.form.name") }}</label>
           <input
@@ -606,7 +617,7 @@
             v-model.number="createForm.rate_multiplier"
             type="number"
             step="0.001"
-            min="0.001"
+            min="0"
             required
             class="input"
             data-tour="group-form-multiplier"
@@ -706,8 +717,54 @@
               }}
             </span>
           </div>
+          <p class="input-hint">{{ t("admin.groups.exclusiveHint") }}</p>
         </div>
 
+        <div class="mt-4">
+          <div class="mb-1.5 flex items-center gap-1">
+            <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+              {{ t("admin.groups.form.userVisible") }}
+            </label>
+          </div>
+          <div class="flex items-center gap-3">
+            <button
+              type="button"
+              data-testid="create-group-user-visible"
+              @click="createForm.user_visible = !createForm.user_visible"
+              :class="[
+                'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                createForm.user_visible
+                  ? 'bg-primary-500'
+                  : 'bg-gray-300 dark:bg-dark-600',
+              ]"
+            >
+              <span
+                :class="[
+                  'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
+                  createForm.user_visible ? 'translate-x-6' : 'translate-x-1',
+                ]"
+              />
+            </button>
+            <span class="text-sm text-gray-500 dark:text-gray-400">
+              {{
+                createForm.user_visible
+                  ? t("admin.groups.userVisibleOn")
+                  : t("admin.groups.userVisibleOff")
+              }}
+            </span>
+          </div>
+          <p class="input-hint">{{ t("admin.groups.userVisibleHint") }}</p>
+        </div>
+
+          </div>
+        </div>
+
+        <div data-testid="create-group-section-billing" class="rounded-lg border border-gray-200 dark:border-dark-600">
+          <button type="button" class="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium text-gray-700 dark:text-gray-200" @click="toggleGroupFormSection('create', 'billing')">
+            <span>{{ t("admin.groups.form.sectionBilling") }}</span>
+            <Icon name="chevronDown" size="sm" :class="groupFormSections.create.billing ? 'rotate-180' : ''" />
+          </button>
+          <div v-if="groupFormSections.create.billing" data-testid="create-group-billing-body" class="space-y-5 border-t border-gray-200 px-3 py-4 dark:border-dark-600">
         <!-- Subscription Configuration -->
         <div class="mt-4 border-t pt-4">
           <div>
@@ -1257,6 +1314,15 @@
           </div>
         </div>
 
+          </div>
+        </div>
+
+        <div data-testid="create-group-section-scheduling" class="rounded-lg border border-gray-200 dark:border-dark-600">
+          <button type="button" class="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium text-gray-700 dark:text-gray-200" @click="toggleGroupFormSection('create', 'scheduling')">
+            <span>{{ t("admin.groups.form.sectionScheduling") }}</span>
+            <Icon name="chevronDown" size="sm" :class="groupFormSections.create.scheduling ? 'rotate-180' : ''" />
+          </button>
+          <div v-if="groupFormSections.create.scheduling" data-testid="create-group-scheduling-body" class="space-y-5 border-t border-gray-200 px-3 py-4 dark:border-dark-600">
         <!-- 支持的模型系列（仅 antigravity 平台） -->
         <div v-if="createForm.platform === 'antigravity'" class="border-t pt-4">
           <div class="mb-1.5 flex items-center gap-1">
@@ -1847,6 +1913,15 @@
           </div>
         </div>
 
+          </div>
+        </div>
+
+        <div data-testid="create-group-section-advanced" class="rounded-lg border border-gray-200 dark:border-dark-600">
+          <button type="button" class="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium text-gray-700 dark:text-gray-200" @click="toggleGroupFormSection('create', 'advanced')">
+            <span>{{ t("admin.groups.form.sectionAdvanced") }}</span>
+            <Icon name="chevronDown" size="sm" :class="groupFormSections.create.advanced ? 'rotate-180' : ''" />
+          </button>
+          <div v-if="groupFormSections.create.advanced" data-testid="create-group-advanced-body" class="space-y-5 border-t border-gray-200 px-3 py-4 dark:border-dark-600">
         <!-- 账号过滤控制 (OpenAI/Antigravity/Anthropic/Gemini) -->
         <div
           v-if="
@@ -2149,6 +2224,8 @@
             {{ t("admin.groups.modelRouting.addRule") }}
           </button>
         </div>
+          </div>
+        </div>
       </form>
 
       <template #footer>
@@ -2206,6 +2283,13 @@
         @submit.prevent="handleUpdateGroup"
         class="space-y-5"
       >
+        <div data-testid="edit-group-section-basic" class="rounded-lg border border-gray-200 dark:border-dark-600">
+          <button type="button" class="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium text-gray-700 dark:text-gray-200" @click="toggleGroupFormSection('edit', 'basic')">
+            <span>{{ t("admin.groups.form.sectionBasic") }}</span>
+            <Icon name="chevronDown" size="sm" :class="groupFormSections.edit.basic ? 'rotate-180' : ''" />
+          </button>
+          <div v-if="groupFormSections.edit.basic" data-testid="edit-group-basic-body" class="space-y-5 border-t border-gray-200 px-3 py-4 dark:border-dark-600">
+
         <div>
           <label class="input-label">{{ t("admin.groups.form.name") }}</label>
           <input
@@ -2337,7 +2421,7 @@
             v-model.number="editForm.rate_multiplier"
             type="number"
             step="0.001"
-            min="0.001"
+            min="0"
             required
             class="input"
             data-tour="group-form-multiplier"
@@ -2433,12 +2517,57 @@
               }}
             </span>
           </div>
+          <p class="input-hint">{{ t("admin.groups.exclusiveHint") }}</p>
+        </div>
+        <div class="mt-4">
+          <div class="mb-1.5 flex items-center gap-1">
+            <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+              {{ t("admin.groups.form.userVisible") }}
+            </label>
+          </div>
+          <div class="flex items-center gap-3">
+            <button
+              type="button"
+              data-testid="edit-group-user-visible"
+              @click="editForm.user_visible = !editForm.user_visible"
+              :class="[
+                'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                editForm.user_visible
+                  ? 'bg-primary-500'
+                  : 'bg-gray-300 dark:bg-dark-600',
+              ]"
+            >
+              <span
+                :class="[
+                  'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
+                  editForm.user_visible ? 'translate-x-6' : 'translate-x-1',
+                ]"
+              />
+            </button>
+            <span class="text-sm text-gray-500 dark:text-gray-400">
+              {{
+                editForm.user_visible
+                  ? t("admin.groups.userVisibleOn")
+                  : t("admin.groups.userVisibleOff")
+              }}
+            </span>
+          </div>
+          <p class="input-hint">{{ t("admin.groups.userVisibleHint") }}</p>
         </div>
         <div>
           <label class="input-label">{{ t("admin.groups.form.status") }}</label>
           <Select v-model="editForm.status" :options="editStatusOptions" />
         </div>
 
+          </div>
+        </div>
+
+        <div data-testid="edit-group-section-billing" class="rounded-lg border border-gray-200 dark:border-dark-600">
+          <button type="button" class="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium text-gray-700 dark:text-gray-200" @click="toggleGroupFormSection('edit', 'billing')">
+            <span>{{ t("admin.groups.form.sectionBilling") }}</span>
+            <Icon name="chevronDown" size="sm" :class="groupFormSections.edit.billing ? 'rotate-180' : ''" />
+          </button>
+          <div v-if="groupFormSections.edit.billing" data-testid="edit-group-billing-body" class="space-y-5 border-t border-gray-200 px-3 py-4 dark:border-dark-600">
         <!-- Subscription Configuration -->
         <div class="mt-4 border-t pt-4">
           <div>
@@ -2989,6 +3118,15 @@
           </div>
         </div>
 
+          </div>
+        </div>
+
+        <div data-testid="edit-group-section-scheduling" class="rounded-lg border border-gray-200 dark:border-dark-600">
+          <button type="button" class="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium text-gray-700 dark:text-gray-200" @click="toggleGroupFormSection('edit', 'scheduling')">
+            <span>{{ t("admin.groups.form.sectionScheduling") }}</span>
+            <Icon name="chevronDown" size="sm" :class="groupFormSections.edit.scheduling ? 'rotate-180' : ''" />
+          </button>
+          <div v-if="groupFormSections.edit.scheduling" data-testid="edit-group-scheduling-body" class="space-y-5 border-t border-gray-200 px-3 py-4 dark:border-dark-600">
         <!-- 支持的模型系列（仅 antigravity 平台） -->
         <div v-if="editForm.platform === 'antigravity'" class="border-t pt-4">
           <div class="mb-1.5 flex items-center gap-1">
@@ -3574,6 +3712,15 @@
           </div>
         </div>
 
+          </div>
+        </div>
+
+        <div data-testid="edit-group-section-advanced" class="rounded-lg border border-gray-200 dark:border-dark-600">
+          <button type="button" class="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium text-gray-700 dark:text-gray-200" @click="toggleGroupFormSection('edit', 'advanced')">
+            <span>{{ t("admin.groups.form.sectionAdvanced") }}</span>
+            <Icon name="chevronDown" size="sm" :class="groupFormSections.edit.advanced ? 'rotate-180' : ''" />
+          </button>
+          <div v-if="groupFormSections.edit.advanced" data-testid="edit-group-advanced-body" class="space-y-5 border-t border-gray-200 px-3 py-4 dark:border-dark-600">
         <!-- 账号过滤控制 (OpenAI/Antigravity/Anthropic/Gemini) -->
         <div
           v-if="
@@ -3875,6 +4022,8 @@
             {{ t("admin.groups.modelRouting.addRule") }}
           </button>
         </div>
+          </div>
+        </div>
       </form>
 
       <template #footer>
@@ -3982,13 +4131,17 @@
                           ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
                           : group.platform === 'grok'
                             ? 'bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100'
-                            : group.platform === 'kimi'
-                              ? 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400'
-                              : group.platform === 'zhipu'
-                                ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400'
-                                : group.platform === 'deepseek'
-                                  ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400'
-                                  : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+                            : group.platform === 'cn'
+                              ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400'
+                              : group.platform === 'video'
+                                ? 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-400'
+                                : group.platform === 'kimi'
+                                  ? 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400'
+                                  : group.platform === 'zhipu'
+                                    ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400'
+                                    : group.platform === 'deepseek'
+                                      ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400'
+                                      : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
                   ]"
                 >
                   {{ t("admin.groups.platforms." + group.platform) }}
@@ -4518,7 +4671,7 @@ import {
 } from "./groupsVideoModelPricing";
 
 const supportsLivePlatform = (platform: string): boolean =>
-  platform === "openai" || platform === "composite";
+  platform === "openai" || platform === "composite" || platform === "adaptive";
 
 const emptyGroupPricing = (): PricingFormEntry => ({
   models: [],
@@ -4961,6 +5114,17 @@ const sortState = reactive({
 
 let abortController: AbortController | null = null;
 
+const groupFormSections = reactive({
+  create: { basic: true, billing: false, scheduling: false, advanced: false },
+  edit: { basic: true, billing: false, scheduling: false, advanced: false },
+});
+const toggleGroupFormSection = (
+  form: "create" | "edit",
+  key: "basic" | "billing" | "scheduling" | "advanced",
+) => {
+  groupFormSections[form][key] = !groupFormSections[form][key];
+};
+
 const showCreateModal = ref(false);
 const showEditModal = ref(false);
 const showDeleteDialog = ref(false);
@@ -4984,7 +5148,7 @@ const rateMultipliersGroup = ref<AdminGroup | null>(null);
 const showRPMOverridesModal = ref(false);
 const rpmOverridesGroup = ref<AdminGroup | null>(null);
 const sortableGroups = ref<AdminGroup[]>([]);
-type ConcreteGroupPlatform = Exclude<GroupPlatform, "composite">;
+type ConcreteGroupPlatform = Exclude<GroupPlatform, "composite" | "adaptive">;
 type CompositeRouteFormState = {
   public_model: string;
   match_type: CompositeRouteMatchType;
@@ -5042,6 +5206,7 @@ const createForm = reactive({
   platform: "anthropic" as GroupPlatform,
   rate_multiplier: 1.0,
   is_exclusive: false,
+  user_visible: true,
   subscription_type: "standard" as SubscriptionType,
   daily_limit_usd: null as number | null,
   weekly_limit_usd: null as number | null,
@@ -5402,6 +5567,7 @@ const editForm = reactive({
   platform: "anthropic" as GroupPlatform,
   rate_multiplier: 1.0,
   is_exclusive: false,
+  user_visible: true,
   status: "active" as "active" | "inactive",
   subscription_type: "standard" as SubscriptionType,
   daily_limit_usd: null as number | null,
@@ -5846,7 +6012,15 @@ const handleSort = (key: string, order: 'asc' | 'desc') => {
   loadGroups();
 };
 
+const resetGroupFormSections = (form: "create" | "edit") => {
+  groupFormSections[form].basic = true;
+  groupFormSections[form].billing = false;
+  groupFormSections[form].scheduling = false;
+  groupFormSections[form].advanced = false;
+};
+
 const openCreateModal = () => {
+  resetGroupFormSections("create");
   showCreateModal.value = true;
   loadModelsListCandidates("create", 0, createForm.platform);
 };
@@ -5862,6 +6036,7 @@ const closeCreateModal = () => {
   createForm.platform = "anthropic";
   createForm.rate_multiplier = 1.0;
   createForm.is_exclusive = false;
+  createForm.user_visible = true;
   createForm.subscription_type = "standard";
   createForm.daily_limit_usd = null;
   createForm.weekly_limit_usd = null;
@@ -6103,6 +6278,7 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.platform = group.platform;
   editForm.rate_multiplier = group.rate_multiplier;
   editForm.is_exclusive = group.is_exclusive;
+  editForm.user_visible = group.user_visible !== false;
   editForm.status = group.status;
   editForm.subscription_type = group.subscription_type || "standard";
   editForm.daily_limit_usd = group.daily_limit_usd;
@@ -6187,6 +6363,7 @@ const handleEdit = async (group: AdminGroup) => {
     group.model_routing,
   );
   loadModelsListCandidates("edit", group.id, group.platform);
+  resetGroupFormSections("edit");
   showEditModal.value = true;
 };
 

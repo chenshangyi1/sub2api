@@ -162,6 +162,10 @@ func isAllowedHost(host string, allowlist []string) bool {
 	return false
 }
 
+func IsBlockedHost(host string) bool {
+	return isBlockedHost(strings.ToLower(strings.TrimSpace(host)))
+}
+
 func isBlockedHost(host string) bool {
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return true

@@ -6,31 +6,80 @@
 -- -----------------------------------------------------------------------------
 -- Historically request_id may be inserted as empty string. Convert it to NULL so
 -- the upcoming unique index does not break on repeated "" values.
-UPDATE usage_logs
-SET request_id = NULL
-WHERE request_id = '';
+--
+-- Cleanup runs in bounded batches (5000 rows each) instead of one full-table
+-- UPDATE: usage_logs is the hottest write table in the gateway, and a single
+-- full-table UPDATE would hold row locks and block billing writes for minutes.
+DO $$
+DECLARE
+    v_rows       INTEGER := 0;
+    v_total_rows INTEGER := 0;
+    v_batch_size INTEGER := 5000;
+BEGIN
+    LOOP
+        WITH batch AS (
+            SELECT id
+            FROM usage_logs
+            WHERE request_id = ''
+            ORDER BY id
+            LIMIT v_batch_size
+        )
+        UPDATE usage_logs ul
+        SET request_id = NULL
+        FROM batch
+        WHERE ul.id = batch.id;
+
+        GET DIAGNOSTICS v_rows = ROW_COUNT;
+        EXIT WHEN v_rows = 0;
+        v_total_rows := v_total_rows + v_rows;
+    END LOOP;
+    RAISE NOTICE 'usage_logs request_id empty-string cleanup rows=%', v_total_rows;
+END
+$$;
 
 -- If duplicates already exist for the same (request_id, api_key_id), keep the
 -- first row and NULL-out request_id for the rest so the unique index can be
--- created without deleting historical logs.
-WITH ranked AS (
-    SELECT
-        id,
-        ROW_NUMBER() OVER (PARTITION BY api_key_id, request_id ORDER BY id) AS rn
-    FROM usage_logs
-    WHERE request_id IS NOT NULL
-)
-UPDATE usage_logs ul
-SET request_id = NULL
-FROM ranked r
-WHERE ul.id = r.id
-  AND r.rn > 1;
+-- created without deleting historical logs. The window scan is read-only; the
+-- UPDATE itself only touches the bounded batch of rows.
+DO $$
+DECLARE
+    v_rows       INTEGER := 0;
+    v_total_rows INTEGER := 0;
+    v_batch_size INTEGER := 5000;
+BEGIN
+    LOOP
+        WITH dup AS (
+            SELECT id
+            FROM (
+                SELECT
+                    id,
+                    ROW_NUMBER() OVER (PARTITION BY api_key_id, request_id ORDER BY id) AS rn
+                FROM usage_logs
+                WHERE request_id IS NOT NULL
+            ) ranked
+            WHERE ranked.rn > 1
+            ORDER BY id
+            LIMIT v_batch_size
+        )
+        UPDATE usage_logs ul
+        SET request_id = NULL
+        FROM dup
+        WHERE ul.id = dup.id;
+
+        GET DIAGNOSTICS v_rows = ROW_COUNT;
+        EXIT WHEN v_rows = 0;
+        v_total_rows := v_total_rows + v_rows;
+    END LOOP;
+    RAISE NOTICE 'usage_logs request_id duplicate cleanup rows=%', v_total_rows;
+END
+$$;
 
 -- -----------------------------------------------------------------------------
 -- 2) Idempotency constraint for usage_logs
 -- -----------------------------------------------------------------------------
-CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_logs_request_id_api_key_unique
-    ON usage_logs (request_id, api_key_id);
+-- The unique index is created in 027_usage_billing_consistency_notx.sql with
+-- CREATE UNIQUE INDEX CONCURRENTLY so building it does not take an exclusive
+-- lock on the hot usage_logs table inside the migration transaction.
 
 -- -----------------------------------------------------------------------------
 -- 3) Reconciliation infrastructure: billing ledger for usage charges
@@ -55,4 +104,3 @@ CREATE INDEX IF NOT EXISTS idx_billing_usage_entries_user_time
 
 CREATE INDEX IF NOT EXISTS idx_billing_usage_entries_created_at
     ON billing_usage_entries (created_at);
-

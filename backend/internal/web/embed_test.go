@@ -638,6 +638,26 @@ func TestFrontendServer_Middleware(t *testing.T) {
 		}
 	})
 
+	t.Run("missing_hashed_assets_return_404_not_index", func(t *testing.T) {
+		provider := &mockSettingsProvider{
+			settings: map[string]string{"test": "value"},
+		}
+
+		server, err := NewFrontendServer(provider)
+		require.NoError(t, err)
+
+		router := gin.New()
+		router.Use(server.Middleware())
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/assets/DashboardView-missing1.js", nil)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+		assert.NotContains(t, w.Body.String(), "<html")
+		assert.Empty(t, w.Header().Get("Cache-Control"))
+	})
+
 	t.Run("serves_static_files", func(t *testing.T) {
 		provider := &mockSettingsProvider{
 			settings: map[string]string{"test": "value"},
@@ -676,6 +696,14 @@ func TestFrontendServer_Middleware(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, assetWriter.Code)
 		assert.Equal(t, staticAssetsCacheControl, assetWriter.Header().Get("Cache-Control"))
+
+		compressed := httptest.NewRecorder()
+		compressedReq := httptest.NewRequest(http.MethodGet, "/"+fingerprintedPath, nil)
+		compressedReq.Header.Set("Accept-Encoding", "gzip, deflate, br")
+		router.ServeHTTP(compressed, compressedReq)
+		assert.Equal(t, http.StatusOK, compressed.Code)
+		assert.NotEmpty(t, compressed.Header().Get("Content-Encoding"))
+		assert.Equal(t, "Accept-Encoding", compressed.Header().Get("Vary"))
 	})
 }
 
@@ -685,6 +713,11 @@ func TestEmbeddedFrontendBypassesBareVideoAPIRoutes(t *testing.T) {
 		"/videos/edits",
 		"/videos/extensions",
 		"/videos/request-123",
+		"/models",
+		"/chat/completions",
+		"/messages",
+		"/embeddings",
+		"/responses",
 	} {
 		require.True(t, shouldBypassEmbeddedFrontend(path), "path=%s", path)
 	}

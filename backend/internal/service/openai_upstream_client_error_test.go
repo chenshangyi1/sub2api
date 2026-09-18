@@ -172,6 +172,13 @@ func TestHandleErrorResponse_NonDeterministicStatusesKeepGeneric502(t *testing.T
 		// 429 保持独立映射。
 		{"rate_limited", http.StatusTooManyRequests, `{"error":{"message":"Rate limit reached"}}`,
 			http.StatusTooManyRequests, "rate_limit_error", "Upstream rate limit exceeded, please retry later"},
+		// 500/502/504 仍是运营故障：继续 502，不把上游 5xx 原文漏给客户端。
+		{"internal", http.StatusInternalServerError, `{"error":{"message":"database exploded at shard-7"}}`,
+			http.StatusBadGateway, "upstream_error", "Upstream request failed"},
+		{"bad_gateway", http.StatusBadGateway, `{"error":{"message":"origin 502 from us-east-1"}}`,
+			http.StatusBadGateway, "upstream_error", "Upstream request failed"},
+		{"timeout", http.StatusGatewayTimeout, `{"error":{"message":"upstream timed out after 120s"}}`,
+			http.StatusBadGateway, "upstream_error", "Upstream request failed"},
 	}
 
 	for _, tc := range cases {
@@ -215,6 +222,35 @@ func TestHandleErrorResponse_PassthroughRuleStillWinsOver400Branch(t *testing.T)
 	require.Error(t, err)
 	require.Equal(t, http.StatusTeapot, rec.Code, "命中透传规则时必须按规则的状态码回写")
 	require.Equal(t, "自定义文案", gjson.Get(rec.Body.String(), "error.message").String())
+}
+
+func TestMapOpenAIUpstreamClientError_OverloadStatusesUseGeneric503(t *testing.T) {
+	cases := []struct {
+		name       string
+		statusCode int
+		body       string
+	}{
+		{"service_unavailable", http.StatusServiceUnavailable, `{"error":{"message":"Our servers are currently overloaded. Please try again later.","type":"server_error"}}`},
+		{"anthropic_overloaded", 529, `{"error":{"message":"Overloaded","type":"overloaded_error"}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, errType, message := mapOpenAIUpstreamClientError(tc.statusCode, []byte(tc.body))
+			require.Equal(t, http.StatusServiceUnavailable, status)
+			require.Equal(t, "overloaded_error", errType)
+			require.Equal(t, "Upstream service overloaded, please retry later", message)
+			require.NotContains(t, message, "Our servers are currently overloaded")
+			require.NotContains(t, message, "Overloaded")
+		})
+	}
+}
+
+func TestMapOpenAIUpstreamClientError_NonOverload5xxStayGeneric502(t *testing.T) {
+	status, errType, message := mapOpenAIUpstreamClientError(http.StatusInternalServerError, []byte(`{"error":{"message":"database exploded at shard-7"}}`))
+	require.Equal(t, http.StatusBadGateway, status)
+	require.Equal(t, "upstream_error", errType)
+	require.Equal(t, "Upstream request failed", message)
+	require.NotContains(t, message, "database exploded")
 }
 
 func TestIsOpenAIDeterministicClientError(t *testing.T) {

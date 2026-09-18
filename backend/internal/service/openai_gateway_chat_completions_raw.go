@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
@@ -67,7 +70,8 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return nil, fmt.Errorf("missing model in request")
 	}
-	clientStream := gjson.GetBytes(body, "stream").Bool()
+	inboundStream := gjson.GetBytes(body, "stream").Bool()
+	upstreamStream := inboundStream || account.RequiresOpenAIStreamOnly()
 
 	// 2. Resolve model mapping (same as ForwardAsChatCompletions)
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
@@ -140,7 +144,14 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		}
 	}
 
-	if clientStream {
+	if upstreamStream {
+		if !gjson.GetBytes(upstreamBody, "stream").Bool() {
+			forcedBody, forceErr := sjson.SetBytes(upstreamBody, "stream", true)
+			if forceErr != nil {
+				return nil, fmt.Errorf("force upstream stream: %w", forceErr)
+			}
+			upstreamBody = forcedBody
+		}
 		var usageErr error
 		upstreamBody, usageErr = ensureOpenAIChatStreamUsage(upstreamBody)
 		if usageErr != nil {
@@ -164,7 +175,9 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		zap.String("original_model", originalModel),
 		zap.String("billing_model", billingModel),
 		zap.String("upstream_model", upstreamModel),
-		zap.Bool("stream", clientStream),
+		zap.Bool("inbound_stream", inboundStream),
+		zap.Bool("upstream_stream", upstreamStream),
+		zap.Bool("openai_stream_only", account.RequiresOpenAIStreamOnly()),
 	)
 
 	// 5. Build and send upstream request via the shared CC pipeline
@@ -177,7 +190,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if customUA == "" && account.IsGrokOAuth() {
 		customUA = defaultGrokUpstreamUserAgent()
 	}
-	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream, token, customUA, grokCacheIdentity)
+	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, upstreamStream, token, customUA, grokCacheIdentity)
 	if err != nil {
 		return nil, err
 	}
@@ -229,8 +242,10 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	// 8. Forward response
 	var result *OpenAIForwardResult
 	var forwardErr error
-	if clientStream {
+	if inboundStream {
 		result, forwardErr = s.streamRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body))
+	} else if upstreamStream {
+		result, forwardErr = s.aggregateRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	} else {
 		result, forwardErr = s.bufferRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
@@ -344,6 +359,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		if line == "" {
 			if !clientDisconnected && clientOutputStarted {
 				c.Writer.Flush()
+			}
+			if account != nil && account.IsGrok() && terminal.sawDone {
+				break
 			}
 			continue
 		}
@@ -476,6 +494,266 @@ func extractCCStreamUsage(payload string) *OpenAIUsage {
 		return nil
 	}
 	return &u
+}
+
+func (s *OpenAIGatewayService) aggregateRawChatCompletions(
+	c *gin.Context,
+	resp *http.Response,
+	account *Account,
+	originalModel string,
+	billingModel string,
+	upstreamModel string,
+	reasoningEffort *string,
+	serviceTier *string,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	requestID := resp.Header.Get("x-request-id")
+	acc, err := s.collectRawChatCompletionSSE(c, resp, originalModel, requestID)
+	if err != nil {
+		return nil, newOpenAIRawStreamTruncatedFailoverError(c, account, requestID, err)
+	}
+
+	chatResp := acc.Response()
+	if requiresBillableGrokChatUsage(account, billingModel, upstreamModel, chatResp.Model) && !hasBillableGrokChatUsage(acc.Usage) {
+		upstreamRequestID := firstNonEmpty(requestID, resp.Header.Get("xai-request-id"))
+		return nil, newGrokMissingUsageFailoverError(c, account, upstreamRequestID)
+	}
+
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	c.JSON(http.StatusOK, chatResp)
+
+	return &OpenAIForwardResult{
+		RequestID:                     requestID,
+		Usage:                         acc.Usage,
+		Model:                         originalModel,
+		BillingModel:                  billingModel,
+		UpstreamModel:                 upstreamModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		UpstreamResponseServiceTier:   observedUpstreamResponseServiceTier(c),
+		ReasoningEffort:               reasoningEffort,
+		ServiceTier:                   resolvedOpenAIUpstreamServiceTier(c, serviceTier),
+		Stream:                        false,
+		Duration:                      time.Since(startTime),
+	}, nil
+}
+
+func (s *OpenAIGatewayService) collectRawChatCompletionSSE(
+	c *gin.Context,
+	resp *http.Response,
+	fallbackModel string,
+	requestID string,
+) (*rawChatCompletionAggregator, error) {
+	observer := upstreamResponseModelObserverFromContext(c)
+	if observer == nil {
+		observer = beginUpstreamResponseModelObservation(c)
+	}
+	acc := newRawChatCompletionAggregator(fallbackModel)
+	var terminal openAIRawStreamTerminalState
+	scanner := s.newUpstreamSSEScanner(resp.Body)
+	for scanner.Scan() {
+		payload, ok := extractOpenAISSEDataLine(scanner.Text())
+		if !ok {
+			continue
+		}
+		trimmed := strings.TrimSpace(payload)
+		terminal.ObserveDataLine(trimmed)
+		if trimmed == "" || trimmed == "[DONE]" {
+			continue
+		}
+		observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
+		acc.Observe(trimmed)
+	}
+	scanErr := scanner.Err()
+	if scanErr != nil && !errors.Is(scanErr, context.Canceled) && !errors.Is(scanErr, context.DeadlineExceeded) {
+		logger.L().Warn("openai chat_completions raw: aggregate stream read error",
+			zap.Error(scanErr),
+			zap.String("request_id", requestID),
+		)
+	}
+	if scanErr != nil || terminal.IsTruncated(false) {
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		return nil, ErrOpenAIUpstreamStreamTruncated
+	}
+	return acc, nil
+}
+
+type rawChatCompletionAggregator struct {
+	id                string
+	created           int64
+	model             string
+	systemFingerprint string
+	serviceTier       string
+	Usage             OpenAIUsage
+	choices           map[int]*rawChatAggregatedChoice
+}
+
+type rawChatAggregatedChoice struct {
+	index         int
+	role          string
+	content       strings.Builder
+	reasoning     strings.Builder
+	finishReason  string
+	toolCalls     map[int]*apicompat.ChatToolCall
+	toolCallOrder []int
+}
+
+func newRawChatCompletionAggregator(fallbackModel string) *rawChatCompletionAggregator {
+	return &rawChatCompletionAggregator{
+		model:   fallbackModel,
+		choices: make(map[int]*rawChatAggregatedChoice),
+	}
+}
+
+func (a *rawChatCompletionAggregator) Observe(payload string) {
+	if a == nil || strings.TrimSpace(payload) == "" {
+		return
+	}
+	if id := gjson.Get(payload, "id").String(); id != "" {
+		a.id = id
+	}
+	if created := gjson.Get(payload, "created").Int(); created != 0 {
+		a.created = created
+	}
+	if model := gjson.Get(payload, "model").String(); model != "" {
+		a.model = model
+	}
+	if fp := gjson.Get(payload, "system_fingerprint").String(); fp != "" {
+		a.systemFingerprint = fp
+	}
+	if tier := gjson.Get(payload, "service_tier").String(); tier != "" {
+		a.serviceTier = tier
+	}
+	if u := extractCCStreamUsage(payload); u != nil {
+		a.Usage = *u
+	}
+	for _, choice := range gjson.Get(payload, "choices").Array() {
+		index := int(choice.Get("index").Int())
+		agg := a.choice(index)
+		delta := choice.Get("delta")
+		if role := delta.Get("role").String(); role != "" {
+			agg.role = role
+		}
+		if content := delta.Get("content"); content.Exists() && content.Type == gjson.String {
+			agg.content.WriteString(content.String())
+		}
+		if reasoning := delta.Get("reasoning_content"); reasoning.Exists() && reasoning.Type == gjson.String {
+			agg.reasoning.WriteString(reasoning.String())
+		} else if reasoning := delta.Get("reasoning"); reasoning.Exists() && reasoning.Type == gjson.String {
+			agg.reasoning.WriteString(reasoning.String())
+		}
+		for _, tool := range delta.Get("tool_calls").Array() {
+			toolIndex := int(tool.Get("index").Int())
+			if !tool.Get("index").Exists() {
+				toolIndex = len(agg.toolCallOrder)
+			}
+			call := agg.toolCall(toolIndex)
+			if id := tool.Get("id").String(); id != "" {
+				call.ID = id
+			}
+			if typ := tool.Get("type").String(); typ != "" {
+				call.Type = typ
+			}
+			if name := tool.Get("function.name").String(); name != "" {
+				call.Function.Name = name
+			}
+			if args := tool.Get("function.arguments"); args.Exists() && args.Type == gjson.String {
+				call.Function.Arguments += args.String()
+			}
+		}
+		if finish := strings.TrimSpace(choice.Get("finish_reason").String()); finish != "" {
+			agg.finishReason = finish
+		}
+	}
+}
+
+func (a *rawChatCompletionAggregator) choice(index int) *rawChatAggregatedChoice {
+	if existing, ok := a.choices[index]; ok {
+		return existing
+	}
+	choice := &rawChatAggregatedChoice{
+		index:     index,
+		role:      "assistant",
+		toolCalls: make(map[int]*apicompat.ChatToolCall),
+	}
+	a.choices[index] = choice
+	return choice
+}
+
+func (c *rawChatAggregatedChoice) toolCall(index int) *apicompat.ChatToolCall {
+	if existing, ok := c.toolCalls[index]; ok {
+		return existing
+	}
+	call := &apicompat.ChatToolCall{Type: "function"}
+	c.toolCalls[index] = call
+	c.toolCallOrder = append(c.toolCallOrder, index)
+	return call
+}
+
+func (a *rawChatCompletionAggregator) Response() apicompat.ChatCompletionsResponse {
+	indexes := make([]int, 0, len(a.choices))
+	for index := range a.choices {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	out := apicompat.ChatCompletionsResponse{
+		ID:                a.id,
+		Object:            "chat.completion",
+		Created:           a.created,
+		Model:             a.model,
+		SystemFingerprint: a.systemFingerprint,
+		ServiceTier:       a.serviceTier,
+		Choices:           make([]apicompat.ChatChoice, 0, len(indexes)),
+	}
+	if a.Usage.InputTokens != 0 || a.Usage.OutputTokens != 0 || a.Usage.CacheReadInputTokens != 0 || a.Usage.CacheCreationInputTokens != 0 {
+		out.Usage = openAIUsageToChatUsage(a.Usage)
+	}
+	for _, index := range indexes {
+		choice := a.choices[index]
+		message := apicompat.ChatMessage{Role: choice.role}
+		if content := choice.content.String(); content != "" {
+			raw, _ := json.Marshal(content)
+			message.Content = raw
+		}
+		if reasoning := choice.reasoning.String(); reasoning != "" {
+			message.ReasoningContent = reasoning
+		}
+		if len(choice.toolCallOrder) > 0 {
+			message.ToolCalls = make([]apicompat.ChatToolCall, 0, len(choice.toolCallOrder))
+			for _, toolIndex := range choice.toolCallOrder {
+				call := *choice.toolCalls[toolIndex]
+				call.Index = nil
+				message.ToolCalls = append(message.ToolCalls, call)
+			}
+		}
+		out.Choices = append(out.Choices, apicompat.ChatChoice{
+			Index:        index,
+			Message:      message,
+			FinishReason: choice.finishReason,
+		})
+	}
+	return out
+}
+
+func openAIUsageToChatUsage(usage OpenAIUsage) *apicompat.ChatUsage {
+	out := &apicompat.ChatUsage{
+		PromptTokens:     usage.InputTokens,
+		CompletionTokens: usage.OutputTokens,
+		TotalTokens:      usage.InputTokens + usage.OutputTokens,
+	}
+	if usage.CacheReadInputTokens != 0 || usage.CacheCreationInputTokens != 0 {
+		out.PromptTokensDetails = &apicompat.ChatTokenDetails{
+			CachedTokens:        usage.CacheReadInputTokens,
+			CacheCreationTokens: usage.CacheCreationInputTokens,
+			CacheWriteTokens:    usage.CacheCreationInputTokens,
+		}
+	}
+	return out
 }
 
 // bufferRawChatCompletions 透传上游 CC 非流式 JSON 响应。

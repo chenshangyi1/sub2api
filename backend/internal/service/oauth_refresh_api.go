@@ -44,6 +44,7 @@ var (
 	errOAuthRefreshAccountRereadFailed = errors.New("oauth refresh account reread failed")
 	errOAuthRefreshAccountStateChanged = errors.New("oauth refresh account state changed")
 	errOAuthRefreshCredentialPersist   = errors.New("oauth refresh credential persistence failed")
+	errOAuthRefreshLockUnavailable     = errors.New("oauth refresh distributed lock unavailable")
 )
 
 type oauthRefreshRequestPathKey struct{}
@@ -194,12 +195,13 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	if api.tokenCache != nil {
 		acquired, lockErr := api.tokenCache.AcquireRefreshLock(ctx, cacheKey, api.lockTTL)
 		if lockErr != nil {
-			// Redis 错误，降级为无锁刷新（进程内互斥锁仍生效）
-			slog.Warn("oauth_refresh_lock_failed_degraded",
+			// Fail closed: another instance may be refreshing the same credential.
+			slog.Warn("oauth_refresh_lock_unavailable",
 				"account_id", account.ID,
 				"cache_key", cacheKey,
 				"error", lockErr,
 			)
+			return nil, fmt.Errorf("%w: %v", errOAuthRefreshLockUnavailable, lockErr)
 		} else if !acquired {
 			// 锁被其他 worker 持有
 			return &OAuthRefreshResult{LockHeld: true}, nil

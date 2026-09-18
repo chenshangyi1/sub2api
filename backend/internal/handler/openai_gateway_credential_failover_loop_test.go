@@ -42,18 +42,34 @@ type grokCredentialHandlerRepo struct {
 func (r *grokCredentialHandlerRepo) ListSchedulableByPlatform(_ context.Context, platform string) ([]service.Account, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.selectionCalls++
 	out := make([]service.Account, 0, len(r.accounts))
 	for _, account := range r.accounts {
 		if account.Platform == platform && account.IsSchedulable() {
 			out = append(out, account)
 		}
 	}
+	// SimpleMode scans every platform bucket. Count only buckets that actually
+	// produce Grok candidates so selectorCalls reflects logical account picks.
+	if len(out) > 0 {
+		r.selectionCalls++
+	}
 	return out, nil
 }
 
 func (r *grokCredentialHandlerRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, _ int64, platform string) ([]service.Account, error) {
 	return r.ListSchedulableByPlatform(ctx, platform)
+}
+
+func (r *grokCredentialHandlerRepo) ListSchedulableByGroupID(_ context.Context, _ int64) ([]service.Account, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]service.Account, 0, len(r.accounts))
+	for _, account := range r.accounts {
+		if account.IsSchedulable() {
+			out = append(out, account)
+		}
+	}
+	return out, nil
 }
 
 func (r *grokCredentialHandlerRepo) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
@@ -933,7 +949,7 @@ func newGrokCredentialFailoverHandler(t *testing.T, mode string) (*OpenAIGateway
 	apiKey := &service.APIKey{
 		ID: 902, GroupID: &groupID,
 		User:  &service.User{ID: 903, Status: service.StatusActive},
-		Group: &service.Group{ID: groupID, Platform: service.PlatformGrok, Status: service.StatusActive, AllowImageGeneration: true},
+		Group: &service.Group{ID: groupID, Platform: service.PlatformGrok, Status: service.StatusActive, Hydrated: true, AllowImageGeneration: true},
 	}
 	router := gin.New()
 	router.Use(func(c *gin.Context) {

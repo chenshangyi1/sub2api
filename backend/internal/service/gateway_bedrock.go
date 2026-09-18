@@ -195,6 +195,7 @@ func (s *GatewayService) executeBedrockUpstream(
 		if err != nil {
 			return nil, err
 		}
+		upstreamReq = WithAccountTrafficRequest(upstreamReq, account)
 
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, nil)
 		if err != nil {
@@ -281,11 +282,12 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 	account *Account,
 ) (*ForwardResult, error) {
 	// retry exhausted + failover
+	respBody, _ := s.readUpstreamErrorBody(resp)
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(respBody))
+
 	if s.shouldRetryUpstreamError(account, resp.StatusCode) {
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
-			respBody, _ := s.readUpstreamErrorBody(resp)
-			_ = resp.Body.Close()
-			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if s.shouldFailoverUpstreamResponse(resp.StatusCode, resp.Header, respBody) {
 
 			logger.LegacyPrintf("service.gateway", "[Bedrock] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d Body=%s",
 				account.ID, account.Name, resp.StatusCode, truncateString(string(respBody), 1000))
@@ -302,17 +304,14 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				RetryableOnSameAccount: PoolModeSameAccountRetry(account, resp.StatusCode, resp.Header, respBody),
 			}
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account)
 	}
 
 	// non-retryable failover
-	if s.shouldFailoverUpstreamError(resp.StatusCode) {
-		respBody, _ := s.readUpstreamErrorBody(resp)
-		_ = resp.Body.Close()
-		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+	if s.shouldFailoverUpstreamResponse(resp.StatusCode, resp.Header, respBody) {
 
 		s.handleFailoverSideEffects(ctx, resp, account)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -326,7 +325,7 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           respBody,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			RetryableOnSameAccount: PoolModeSameAccountRetry(account, resp.StatusCode, resp.Header, respBody),
 		}
 	}
 

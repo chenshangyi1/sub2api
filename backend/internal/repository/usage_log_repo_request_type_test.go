@@ -98,6 +98,18 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			sqlmock.AnyArg(), // billing_tier
 			sqlmock.AnyArg(), // billing_mode
 			sqlmock.AnyArg(), // account_stats_cost
+			sqlmock.AnyArg(), // adaptive_base_cost
+			sqlmock.AnyArg(), // adaptive_management_fee_cost
+			sqlmock.AnyArg(), // adaptive_total_cost
+			sqlmock.AnyArg(), // adaptive_uncapped_base_cost
+			sqlmock.AnyArg(), // adaptive_platform_overage_cost
+			sqlmock.AnyArg(), // adaptive_parent_group_id
+			sqlmock.AnyArg(), // routed_group_id
+			sqlmock.AnyArg(), // adaptive_attempt_no
+			sqlmock.AnyArg(), // adaptive_pricing_snapshot_id
+			sqlmock.AnyArg(), // adaptive_reservation_id
+			sqlmock.AnyArg(), // adaptive_evidence_hash
+			sqlmock.AnyArg(), // adaptive_settlement_status
 			sqlmock.AnyArg(), // session_id
 			createdAt,
 		).
@@ -190,6 +202,18 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			sqlmock.AnyArg(), // billing_tier
 			sqlmock.AnyArg(), // billing_mode
 			sqlmock.AnyArg(), // account_stats_cost
+			sqlmock.AnyArg(), // adaptive_base_cost
+			sqlmock.AnyArg(), // adaptive_management_fee_cost
+			sqlmock.AnyArg(), // adaptive_total_cost
+			sqlmock.AnyArg(), // adaptive_uncapped_base_cost
+			sqlmock.AnyArg(), // adaptive_platform_overage_cost
+			sqlmock.AnyArg(), // adaptive_parent_group_id
+			sqlmock.AnyArg(), // routed_group_id
+			sqlmock.AnyArg(), // adaptive_attempt_no
+			sqlmock.AnyArg(), // adaptive_pricing_snapshot_id
+			sqlmock.AnyArg(), // adaptive_reservation_id
+			sqlmock.AnyArg(), // adaptive_evidence_hash
+			sqlmock.AnyArg(), // adaptive_settlement_status
 			sqlmock.AnyArg(), // session_id
 			createdAt,
 		).
@@ -838,6 +862,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			sql.NullString{},
 			sql.NullFloat64{},
+			sql.NullFloat64{}, sql.NullFloat64{}, sql.NullFloat64{}, sql.NullFloat64{}, sql.NullFloat64{},
+			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
+			sql.NullString{}, sql.NullString{}, sql.NullString{}, sql.NullString{},
 			sql.NullString{},
 			now,
 		}})
@@ -915,6 +942,18 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // billing_tier
 			sql.NullString{},  // billing_mode
 			sql.NullFloat64{}, // account_stats_cost
+			sql.NullFloat64{}, // adaptive_base_cost
+			sql.NullFloat64{}, // adaptive_management_fee_cost
+			sql.NullFloat64{}, // adaptive_total_cost
+			sql.NullFloat64{}, // adaptive_uncapped_base_cost
+			sql.NullFloat64{}, // adaptive_platform_overage_cost
+			sql.NullInt64{},   // adaptive_parent_group_id
+			sql.NullInt64{},   // routed_group_id
+			sql.NullInt64{},   // adaptive_attempt_no
+			sql.NullString{},  // adaptive_pricing_snapshot_id
+			sql.NullString{},  // adaptive_reservation_id
+			sql.NullString{},  // adaptive_evidence_hash
+			sql.NullString{},  // adaptive_settlement_status
 			sql.NullString{},  // session_id
 			now,
 		}})
@@ -975,6 +1014,18 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // billing_tier
 			sql.NullString{},  // billing_mode
 			sql.NullFloat64{}, // account_stats_cost
+			sql.NullFloat64{}, // adaptive_base_cost
+			sql.NullFloat64{}, // adaptive_management_fee_cost
+			sql.NullFloat64{}, // adaptive_total_cost
+			sql.NullFloat64{}, // adaptive_uncapped_base_cost
+			sql.NullFloat64{}, // adaptive_platform_overage_cost
+			sql.NullInt64{},   // adaptive_parent_group_id
+			sql.NullInt64{},   // routed_group_id
+			sql.NullInt64{},   // adaptive_attempt_no
+			sql.NullString{},  // adaptive_pricing_snapshot_id
+			sql.NullString{},  // adaptive_reservation_id
+			sql.NullString{},  // adaptive_evidence_hash
+			sql.NullString{},  // adaptive_settlement_status
 			sql.NullString{},  // session_id
 			now,
 		}})
@@ -1035,6 +1086,18 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // billing_tier
 			sql.NullString{},  // billing_mode
 			sql.NullFloat64{}, // account_stats_cost
+			sql.NullFloat64{}, // adaptive_base_cost
+			sql.NullFloat64{}, // adaptive_management_fee_cost
+			sql.NullFloat64{}, // adaptive_total_cost
+			sql.NullFloat64{}, // adaptive_uncapped_base_cost
+			sql.NullFloat64{}, // adaptive_platform_overage_cost
+			sql.NullInt64{},   // adaptive_parent_group_id
+			sql.NullInt64{},   // routed_group_id
+			sql.NullInt64{},   // adaptive_attempt_no
+			sql.NullString{},  // adaptive_pricing_snapshot_id
+			sql.NullString{},  // adaptive_reservation_id
+			sql.NullString{},  // adaptive_evidence_hash
+			sql.NullString{},  // adaptive_settlement_status
 			sql.NullString{},  // session_id
 			now,
 		}})

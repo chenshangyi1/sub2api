@@ -116,6 +116,14 @@ func (m *sessionWindowMockRepo) SetSchedulable(context.Context, int64, bool) err
 func (m *sessionWindowMockRepo) AutoPauseExpiredAccounts(context.Context, time.Time) (int64, error) {
 	panic("unexpected")
 }
+func (m *sessionWindowMockRepo) BindAccountGroups(context.Context, int64, []AccountGroup) error {
+	return nil
+}
+
+func (m *sessionWindowMockRepo) UpdateAccountGroupPriorities(context.Context, int64, []AccountGroup) error {
+	return nil
+}
+
 func (m *sessionWindowMockRepo) BindGroups(context.Context, int64, []int64) error {
 	panic("unexpected")
 }

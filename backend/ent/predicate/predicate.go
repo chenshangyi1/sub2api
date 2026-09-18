@@ -15,6 +15,12 @@ type Account func(*sql.Selector)
 // AccountGroup is the predicate function for accountgroup builders.
 type AccountGroup func(*sql.Selector)
 
+// AdaptiveGroupConfig is the predicate function for adaptivegroupconfig builders.
+type AdaptiveGroupConfig func(*sql.Selector)
+
+// AdaptiveGroupMembership is the predicate function for adaptivegroupmembership builders.
+type AdaptiveGroupMembership func(*sql.Selector)
+
 // Announcement is the predicate function for announcement builders.
 type Announcement func(*sql.Selector)
 

@@ -102,10 +102,33 @@
         <!-- Token mode -->
         <div v-if="entry.billing_mode === 'token'">
           <!-- Default prices (fallback when no interval matches) -->
-          <label class="mt-3 block text-xs font-medium text-gray-500 dark:text-gray-400">
-            {{ t('admin.channels.form.defaultPrices') }}
-            <span class="ml-1 font-normal text-gray-400">$/MTok</span>
-          </label>
+          <div class="mt-3 flex items-center justify-between gap-2">
+            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400">
+              {{ t('admin.channels.form.defaultPrices') }}
+              <span class="ml-1 font-normal text-gray-400">$/MTok</span>
+            </label>
+            <div class="flex shrink-0 items-center gap-3">
+              <button
+                type="button"
+                data-testid="clear-price-overrides"
+                class="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                @click="clearPriceOverrides"
+              >
+                {{ t('admin.channels.form.clearPriceOverrides') }}
+              </button>
+              <button
+                type="button"
+                data-testid="fill-official-prices"
+                class="text-xs text-primary-600 hover:text-primary-700 disabled:cursor-not-allowed disabled:text-gray-400"
+                :disabled="fillingOfficialPrices || entry.models.length === 0"
+                @click="fillOfficialPrices"
+              >
+                {{ fillingOfficialPrices
+                  ? t('admin.channels.form.fillingOfficialPrices')
+                  : t('admin.channels.form.fillOfficialPrices') }}
+              </button>
+            </div>
+          </div>
           <div class="mt-1 grid grid-cols-2 gap-2 sm:grid-cols-6">
             <div>
               <label class="text-xs text-gray-400">{{ t('admin.channels.form.inputPrice') }}</label>
@@ -290,6 +313,7 @@ const emit = defineEmits<{
 
 // Collapse state: entries with existing models default to collapsed
 const collapsed = ref(props.entry.models.length > 0)
+const fillingOfficialPrices = ref(false)
 
 const billingModeOptions = computed(() => [
   { value: 'token', label: t('admin.channels.billingMode.token') },
@@ -348,37 +372,42 @@ function removeInterval(idx: number) {
   emit('update', { ...props.entry, intervals })
 }
 
-async function onModelsUpdate(newModels: string[]) {
-  const oldModels = props.entry.models
+function onModelsUpdate(newModels: string[]) {
   emit('update', { ...props.entry, models: newModels })
+}
 
-  // 只在新增模型且当前无价格时自动填充
-  const addedModels = newModels.filter(m => !oldModels.includes(m))
-  if (addedModels.length === 0) return
+function clearPriceOverrides() {
+  emit('update', {
+    ...props.entry,
+    input_price: null,
+    output_price: null,
+    cache_write_price: null,
+    cache_read_price: null,
+    image_input_price: null,
+    image_output_price: null,
+  })
+}
 
-  // 检查是否所有价格字段都为空
-  const e = props.entry
-  const hasPrice = e.input_price != null || e.output_price != null ||
-                   e.cache_write_price != null || e.cache_read_price != null
-  if (hasPrice) return
-
-  // 查询第一个新增模型的默认价格
+async function fillOfficialPrices() {
+  const model = props.entry.models[0]
+  if (!model || fillingOfficialPrices.value) return
+  fillingOfficialPrices.value = true
   try {
-    const result = await channelsAPI.getModelDefaultPricing(addedModels[0])
-    if (result.found) {
-      emit('update', {
-        ...props.entry,
-        models: newModels,
-        input_price: perTokenToMTok(result.input_price ?? null),
-        output_price: perTokenToMTok(result.output_price ?? null),
-        cache_write_price: perTokenToMTok(result.cache_write_price ?? null),
-        cache_read_price: perTokenToMTok(result.cache_read_price ?? null),
-        image_input_price: perTokenToMTok(result.image_input_price ?? null),
-        image_output_price: perTokenToMTok(result.image_output_price ?? null),
-      })
-    }
+    const result = await channelsAPI.getModelDefaultPricing(model)
+    if (!result.found) return
+    emit('update', {
+      ...props.entry,
+      input_price: perTokenToMTok(result.input_price ?? null),
+      output_price: perTokenToMTok(result.output_price ?? null),
+      cache_write_price: perTokenToMTok(result.cache_write_price ?? null),
+      cache_read_price: perTokenToMTok(result.cache_read_price ?? null),
+      image_input_price: perTokenToMTok(result.image_input_price ?? null),
+      image_output_price: perTokenToMTok(result.image_output_price ?? null),
+    })
   } catch {
     // 查询失败不影响用户操作
+  } finally {
+    fillingOfficialPrices.value = false
   }
 }
 </script>

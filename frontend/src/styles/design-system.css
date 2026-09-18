@@ -1,0 +1,352 @@
+/* ============================================================================
+   sub2api Design System v2 — unified tokens + dual skins
+   ----------------------------------------------------------------------------
+   One token source of truth. Two skins:
+     .skin-console — user-facing surfaces (brand teal, relaxed, light-first)
+     .skin-panel   — admin/ops surfaces (neutral + status color, dense, dark-first)
+
+   Compatibility: legacy var names (--console-*, --glass-*, --layer-*, --md-*)
+   are re-emitted as aliases so existing vue files keep working untouched.
+   ========================================================================== */
+
+:root {
+  /* ---- Structural (shared by both skins) ---- */
+  --ds-radius-sm: 8px;
+  --ds-radius: 12px;
+  --ds-radius-lg: 16px;
+  --ds-radius-pill: 999px;
+
+  --ds-shadow-xs: 0 1px 2px rgba(15, 18, 22, 0.05);
+  --ds-shadow-sm: 0 1px 2px rgba(15, 18, 22, 0.05), 0 1px 3px rgba(15, 18, 22, 0.07);
+  --ds-shadow-md: 0 4px 10px rgba(15, 18, 22, 0.07), 0 2px 4px rgba(15, 18, 22, 0.05);
+  --ds-shadow-lg: 0 12px 32px rgba(15, 18, 22, 0.12), 0 4px 10px rgba(15, 18, 22, 0.06);
+  --ds-shadow-menu: 0 12px 32px rgba(15, 18, 22, 0.14), 0 2px 6px rgba(15, 18, 22, 0.08);
+
+  --ds-space-page: 28px;
+  --ds-space-section: 20px;
+
+  /* Frosted glass fill — mixes with each skin's surface color.
+     Keep these opaque enough that character art cannot wash out controls. */
+  --ds-frost: color-mix(in srgb, var(--ds-surface) 62%, transparent);
+  --ds-frost-muted: color-mix(in srgb, var(--ds-surface-muted) 72%, transparent);
+  --ds-frost-hover: color-mix(in srgb, var(--ds-surface) 96%, transparent);
+  --ds-frost-blur: blur(18px) saturate(1.5);
+
+  --ds-font-sans: "Site PingFang UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --ds-font-mono: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
+
+  /* Stacking order (low → high). Names kept for legacy consumers. */
+  --layer-base: 0;
+  --layer-sticky: 10;
+  --layer-table-sticky: 20;
+  --layer-table-sticky-head: 30;
+  --layer-header: 70;
+  --layer-sidebar-overlay: 55;
+  --layer-sidebar: 60;
+  --layer-modal: 200;
+  --layer-modal-nested: 220;
+  --layer-announcement: 240;
+  --layer-popover: 250;
+  --layer-dropdown: 260;
+  --layer-toast: 300;
+  --layer-tooltip: 320;
+  --layer-onboarding: 400;
+}
+
+/* ============================================================================
+   SKIN: console (user-facing) — light-first, brand teal, relaxed
+   ========================================================================== */
+:root,
+.skin-console {
+  --ds-bg: #faf9f7;
+  --ds-surface: #ffffff;
+  --ds-surface-muted: #f4f2ee;
+  --ds-surface-sunken: #f0eee9;
+  --ds-border: #e7e3db;
+  --ds-border-strong: #d6d0c4;
+  --ds-divider: #efece5;
+  --ds-ink: #1c1917;
+  --ds-ink-muted: #6b6560;
+  --ds-ink-faint: #a39e94;
+
+  --ds-primary: #0f766e;
+  --ds-primary-hover: #0d9488;
+  --ds-primary-active: #115e59;
+  --ds-primary-soft: #e9faf6;
+  --ds-primary-ink: #0f766e;
+  --ds-on-primary: #ffffff;
+
+  --ds-accent: #0891b2;
+  --ds-accent-soft: #ecfeff;
+  --ds-violet: #7c3aed;
+  --ds-violet-soft: #f5f3ff;
+  --ds-indigo: #4f46e5;
+  --ds-indigo-soft: #eef2ff;
+
+  --ds-ok: #15803d;
+  --ds-ok-soft: #f0fdf4;
+  --ds-warn: #b45309;
+  --ds-warn-soft: #fffbeb;
+  --ds-danger: #be123c;
+  --ds-danger-soft: #fff1f2;
+  --ds-info: #0369a1;
+  --ds-info-soft: #f0f9ff;
+
+  --ds-table-header: #faf9f7;
+  --ds-table-row-hover: #f7f5f1;
+
+  color-scheme: light;
+}
+
+html.dark,
+html.dark.skin-console,
+.skin-console.dark {
+  --ds-bg: #12100e;
+  --ds-surface: #1c1917;
+  --ds-surface-muted: #232019;
+  --ds-surface-sunken: #17140f;
+  --ds-border: #2e2a24;
+  --ds-border-strong: #403a31;
+  --ds-divider: #262219;
+  --ds-ink: #f5f3ef;
+  --ds-ink-muted: #a8a29e;
+  --ds-ink-faint: #78716c;
+
+  --ds-primary: #2dd4bf;
+  --ds-primary-hover: #5eead4;
+  --ds-primary-active: #14b8a6;
+  --ds-primary-soft: #123f3a;
+  --ds-primary-ink: #5eead4;
+  --ds-on-primary: #042f2e;
+
+  --ds-accent: #67e8f9;
+  --ds-accent-soft: #164e63;
+  --ds-violet: #c4b5fd;
+  --ds-violet-soft: #4c1d95;
+  --ds-indigo: #a5b4fc;
+  --ds-indigo-soft: #312e81;
+
+  --ds-ok: #86efac;
+  --ds-ok-soft: #14532d;
+  --ds-warn: #fdba74;
+  --ds-warn-soft: #7c2d12;
+  --ds-danger: #fda4af;
+  --ds-danger-soft: #881337;
+  --ds-info: #7dd3fc;
+  --ds-info-soft: #0c4a6e;
+
+  --ds-table-header: #211e1a;
+  --ds-table-row-hover: #26221c;
+
+  --ds-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --ds-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.25);
+  --ds-shadow-md: 0 4px 10px rgba(0, 0, 0, 0.32), 0 2px 4px rgba(0, 0, 0, 0.24);
+  --ds-shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.45), 0 4px 10px rgba(0, 0, 0, 0.3);
+  --ds-shadow-menu: 0 16px 36px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.35);
+
+  color-scheme: dark;
+}
+
+/* ============================================================================
+   SKIN: panel (admin/ops) — dense, neutral + status color, dark-first
+   ========================================================================== */
+.skin-panel {
+  --ds-bg: #f7f7f8;
+  --ds-surface: #ffffff;
+  --ds-surface-muted: #f1f1f3;
+  --ds-surface-sunken: #ececef;
+  --ds-border: #e4e4e7;
+  --ds-border-strong: #d4d4d8;
+  --ds-divider: #ededf0;
+  --ds-ink: #18181b;
+  --ds-ink-muted: #52525b;
+  --ds-ink-faint: #a1a1aa;
+
+  --ds-primary: #4f46e5;
+  --ds-primary-hover: #6366f1;
+  --ds-primary-active: #4338ca;
+  --ds-primary-soft: #eef2ff;
+  --ds-primary-ink: #4f46e5;
+  --ds-on-primary: #ffffff;
+
+  --ds-accent: #0891b2;
+  --ds-accent-soft: #ecfeff;
+  --ds-violet: #7c3aed;
+  --ds-violet-soft: #f5f3ff;
+  --ds-indigo: #4f46e5;
+  --ds-indigo-soft: #eef2ff;
+
+  --ds-ok: #16a34a;
+  --ds-ok-soft: #f0fdf4;
+  --ds-warn: #d97706;
+  --ds-warn-soft: #fffbeb;
+  --ds-danger: #dc2626;
+  --ds-danger-soft: #fef2f2;
+  --ds-info: #0284c7;
+  --ds-info-soft: #f0f9ff;
+
+  --ds-table-header: #fafafa;
+  --ds-table-row-hover: #f5f5f6;
+
+  --ds-radius-sm: 7px;
+  --ds-radius: 10px;
+  --ds-radius-lg: 13px;
+
+  color-scheme: light;
+}
+
+html.dark.skin-panel,
+.skin-panel.dark {
+  --ds-bg: #0b0b0d;
+  --ds-surface: #141416;
+  --ds-surface-muted: #1b1b1f;
+  --ds-surface-sunken: #101013;
+  --ds-border: #26262b;
+  --ds-border-strong: #34343b;
+  --ds-divider: #1f1f24;
+  --ds-ink: #f4f4f5;
+  --ds-ink-muted: #a1a1aa;
+  --ds-ink-faint: #71717a;
+
+  --ds-primary: #818cf8;
+  --ds-primary-hover: #a5b4fc;
+  --ds-primary-active: #6366f1;
+  --ds-primary-soft: #232347;
+  --ds-primary-ink: #a5b4fc;
+  --ds-on-primary: #1e1b4b;
+
+  --ds-accent: #67e8f9;
+  --ds-accent-soft: #164e63;
+  --ds-violet: #c4b5fd;
+  --ds-violet-soft: #4c1d95;
+  --ds-indigo: #a5b4fc;
+  --ds-indigo-soft: #312e81;
+
+  --ds-ok: #4ade80;
+  --ds-ok-soft: #14532d;
+  --ds-warn: #fbbf24;
+  --ds-warn-soft: #78350f;
+  --ds-danger: #f87171;
+  --ds-danger-soft: #7f1d1d;
+  --ds-info: #38bdf8;
+  --ds-info-soft: #0c4a6e;
+
+  --ds-table-header: #17171a;
+  --ds-table-row-hover: #1d1d21;
+
+  --ds-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --ds-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --ds-shadow-md: 0 4px 10px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.3);
+  --ds-shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5), 0 4px 10px rgba(0, 0, 0, 0.35);
+  --ds-shadow-menu: 0 16px 36px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
+
+  color-scheme: dark;
+}
+
+/* ============================================================================
+   Legacy aliases — keep existing var() references working.
+   ========================================================================== */
+:root,
+.skin-console,
+.skin-panel {
+  --console-bg: var(--ds-bg);
+  --console-surface: var(--ds-surface);
+  --console-surface-muted: var(--ds-surface-muted);
+  --console-border: var(--ds-border);
+  --console-border-strong: var(--ds-border-strong);
+  --console-ink: var(--ds-ink);
+  --console-ink-muted: var(--ds-ink-muted);
+  --console-primary: var(--ds-primary);
+  --console-primary-hover: var(--ds-primary-hover);
+  --console-primary-soft: var(--ds-primary-soft);
+  --console-primary-ink: var(--ds-primary-ink);
+  --console-blue: var(--ds-primary);
+  --console-blue-hover: var(--ds-primary-hover);
+  --console-blue-soft: var(--ds-primary-soft);
+  --console-teal: var(--ds-primary);
+  --console-teal-soft: var(--ds-primary-soft);
+  --console-cyan: var(--ds-accent);
+  --console-cyan-soft: var(--ds-accent-soft);
+  --console-violet: var(--ds-violet);
+  --console-violet-soft: var(--ds-violet-soft);
+  --console-indigo: var(--ds-indigo);
+  --console-indigo-soft: var(--ds-indigo-soft);
+  --console-coral: var(--ds-danger);
+  --console-coral-soft: var(--ds-danger-soft);
+  --console-green: var(--ds-ok);
+  --console-green-soft: var(--ds-ok-soft);
+  --console-amber: var(--ds-warn);
+  --console-amber-soft: var(--ds-warn-soft);
+  --console-red: var(--ds-danger);
+  --console-red-soft: var(--ds-danger-soft);
+  --console-sky: var(--ds-info);
+  --console-sky-soft: var(--ds-info-soft);
+  --console-shadow: var(--ds-shadow-sm);
+  --console-shadow-menu: var(--ds-shadow-menu);
+  --console-radius: var(--ds-radius);
+  --console-radius-sm: var(--ds-radius-sm);
+  --console-table-header: var(--ds-table-header);
+  --console-table-row-hover: var(--ds-table-row-hover);
+  --console-table-divider: var(--ds-divider);
+  --console-status-ok: var(--ds-ok);
+  --console-status-ok-soft: var(--ds-ok-soft);
+  --console-space-page: var(--ds-space-page);
+  --console-space-section: var(--ds-space-section);
+
+  /* Material-style aliases (style.css consumers) */
+  --md-primary: var(--ds-primary);
+  --md-on-primary: var(--ds-on-primary);
+  --md-background: var(--ds-bg);
+  --md-surface: var(--ds-surface);
+  --md-on-surface: var(--ds-ink);
+  --md-on-surface-variant: var(--ds-ink-muted);
+  --md-error: var(--ds-danger);
+
+  /* Glass aliases now resolve to flat surfaces (glass removed in v2) */
+  --glass-surface: var(--ds-surface);
+  --glass-surface-strong: var(--ds-surface);
+  --glass-border: var(--ds-border);
+  --glass-divider: var(--ds-divider);
+  --glass-shadow: var(--ds-shadow-sm);
+  --glass-shadow-soft: var(--ds-shadow-xs);
+
+  --surface-page: var(--ds-bg);
+  --surface-panel: var(--ds-surface);
+  --ink-strong: var(--ds-ink);
+  --ink-muted: var(--ds-ink-muted);
+}
+
+/* ============================================================================
+   Base element resets
+   ========================================================================== */
+html {
+  background: var(--ds-bg);
+}
+
+body {
+  font-family: var(--ds-font-sans);
+  font-feature-settings: "tnum" 1, "cv01" 1;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  color: var(--ds-ink);
+  background: var(--ds-bg);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--ds-primary) 22%, transparent);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--ds-primary);
+}
+
+/* Thin, unobtrusive scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+*:hover,
+*:focus-within {
+  scrollbar-color: color-mix(in srgb, var(--ds-ink-faint) 55%, transparent) transparent;
+}

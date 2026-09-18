@@ -22,6 +22,7 @@ var monitorProviders = map[string]struct{}{
 	MonitorProviderKimi:        {},
 	MonitorProviderZhipu:       {},
 	MonitorProviderDeepseek:    {},
+	MonitorProviderMiniMax:     {},
 }
 
 // probeCapableProviders 支持探活（probe / quota_probe）的 provider。
@@ -36,6 +37,7 @@ var probeCapableProviders = map[string]struct{}{
 	MonitorProviderKimi:      {},
 	MonitorProviderZhipu:     {},
 	MonitorProviderDeepseek:  {},
+	MonitorProviderMiniMax:   {},
 }
 
 // validateProvider 校验 provider 字符串。
@@ -218,18 +220,19 @@ func normalizeMonitorPrimaryModel(provider, checkMode, model string) string {
 //   - openai：OAuth（API-Key 型无 usage 通道）
 //   - gemini/grok/antigravity：本地统计/值通道降级，不会永久 error，放行
 func monitorAccountQuotaCapability(account *Account) error {
-	switch account.Platform {
-	case PlatformKimi, PlatformZhipu, PlatformDeepseek:
+	if account.IsCNProvider() {
 		if account.IsCodingPlan() {
-			if p := account.GetCodingPlanProvider(); p != PlatformKimi && p != PlatformZhipu {
+			if p := account.GetCodingPlanProvider(); p != PlatformKimi && p != PlatformZhipu && p != CNVendorMiniMax {
 				return ErrChannelMonitorAccountNotSupportable
 			}
 			return nil
 		}
-		if account.Platform == PlatformZhipu {
+		if account.GetCNVendor() == CNVendorZhipu {
 			return ErrChannelMonitorAccountNotSupportable
 		}
 		return nil
+	}
+	switch account.Platform {
 	case PlatformAnthropic:
 		if account.Type == AccountTypeOAuth || account.Type == AccountTypeSetupToken {
 			return nil

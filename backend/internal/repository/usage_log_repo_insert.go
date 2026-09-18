@@ -81,6 +81,18 @@ var usageLogInsertArgTypes = [...]string{
 	"text",        // billing_tier
 	"text",        // billing_mode
 	"numeric",     // account_stats_cost
+	"numeric",     // adaptive_base_cost
+	"numeric",     // adaptive_management_fee_cost
+	"numeric",     // adaptive_total_cost
+	"numeric",     // adaptive_uncapped_base_cost
+	"numeric",     // adaptive_platform_overage_cost
+	"bigint",      // adaptive_parent_group_id
+	"bigint",      // routed_group_id
+	"integer",     // adaptive_attempt_no
+	"text",        // adaptive_pricing_snapshot_id
+	"uuid",        // adaptive_reservation_id
+	"text",        // adaptive_evidence_hash
+	"text",        // adaptive_settlement_status
 	"text",        // session_id
 	"timestamptz", // created_at
 }
@@ -151,6 +163,12 @@ func (r *usageLogRepository) Create(ctx context.Context, log *service.UsageLog) 
 	if log == nil {
 		return false, nil
 	}
+	if log.HasAdaptiveUsageEvidence() {
+		if dbent.TxFromContext(ctx) != nil {
+			return false, fmt.Errorf("%w: ambient ent transaction", service.ErrAdaptiveUsageEvidenceTransaction)
+		}
+		return r.createAdaptiveEvidence(ctx, log)
+	}
 
 	if tx := dbent.TxFromContext(ctx); tx != nil {
 		return r.createSingle(ctx, tx.Client(), log)
@@ -166,6 +184,9 @@ func (r *usageLogRepository) Create(ctx context.Context, log *service.UsageLog) 
 func (r *usageLogRepository) CreateBestEffort(ctx context.Context, log *service.UsageLog) error {
 	if log == nil {
 		return nil
+	}
+	if log.HasAdaptiveUsageEvidence() {
+		return service.ErrAdaptiveUsageEvidenceTransaction
 	}
 
 	if tx := dbent.TxFromContext(ctx); tx != nil {
@@ -209,6 +230,189 @@ func (r *usageLogRepository) CreateBestEffort(ctx context.Context, log *service.
 	case <-ctx.Done():
 		return service.MarkUsageLogCreateDropped(ctx.Err())
 	}
+}
+
+func (r *usageLogRepository) createAdaptiveEvidence(ctx context.Context, log *service.UsageLog) (_ bool, err error) {
+	if err := log.ValidatePendingAdaptiveUsageEvidence(); err != nil {
+		return false, err
+	}
+	db := r.db
+	if db == nil {
+		db, _ = r.sql.(*sql.DB)
+	}
+	if db == nil {
+		return false, fmt.Errorf("%w: raw sql database is unavailable", service.ErrAdaptiveUsageEvidenceTransaction)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	reservationID := strings.TrimSpace(*log.AdaptiveReservationID)
+	var lockedReservationID string
+	if err := scanSingleRow(ctx, tx, `
+		SELECT id::text
+		FROM usage_billing_reservations
+		WHERE id = $1
+		FOR UPDATE
+	`, []any{reservationID}, &lockedReservationID); errors.Is(err, sql.ErrNoRows) {
+		return false, service.ErrUsageReservationNotFound
+	} else if err != nil {
+		return false, err
+	}
+
+	existing, err := findUniqueAdaptiveUsageEvidence(ctx, tx, reservationID)
+	if err != nil {
+		return false, err
+	}
+	if existing != nil {
+		if err := service.ValidateAdaptiveUsageEvidenceBinding(log, existing); err != nil {
+			return false, err
+		}
+		copyAdaptiveUsageEvidenceState(log, existing)
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		tx = nil
+		return false, nil
+	}
+
+	inserted, err := r.createSingle(ctx, tx, log)
+	if err != nil {
+		return false, err
+	}
+	if !inserted {
+		existing, err = findUniqueAdaptiveUsageEvidence(ctx, tx, reservationID)
+		if err != nil {
+			return false, err
+		}
+		if existing == nil {
+			return false, service.ErrAdaptiveUsageEvidenceConflict
+		}
+		if err := service.ValidateAdaptiveUsageEvidenceBinding(log, existing); err != nil {
+			return false, err
+		}
+		copyAdaptiveUsageEvidenceState(log, existing)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	tx = nil
+	return inserted, nil
+}
+
+func findUniqueAdaptiveUsageEvidence(ctx context.Context, q sqlQueryer, reservationID string) (_ *service.UsageLog, err error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT id, created_at, user_id, api_key_id, account_id, request_id,
+			actual_cost, adaptive_base_cost, adaptive_management_fee_cost,
+			adaptive_total_cost, adaptive_uncapped_base_cost,
+			adaptive_platform_overage_cost, adaptive_parent_group_id, routed_group_id,
+			adaptive_attempt_no, adaptive_pricing_snapshot_id,
+			adaptive_reservation_id::text, adaptive_evidence_hash,
+			adaptive_settlement_status
+		FROM usage_logs
+		WHERE adaptive_reservation_id = $1
+		ORDER BY created_at, id
+		LIMIT 2
+	`, reservationID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	log, err := scanAdaptiveUsageEvidence(rows)
+	if err != nil {
+		return nil, err
+	}
+	if rows.Next() {
+		return nil, service.ErrAdaptiveUsageEvidenceConflict
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return log, nil
+}
+
+func scanAdaptiveUsageEvidence(scanner interface{ Scan(...any) error }) (*service.UsageLog, error) {
+	var (
+		log                                     service.UsageLog
+		requestID                               sql.NullString
+		baseCost, managementFee, totalCost      sql.NullFloat64
+		uncappedBaseCost, platformOverageCost   sql.NullFloat64
+		parentGroupID, routedGroupID, attemptNo sql.NullInt64
+		pricingSnapshotID, reservationID        sql.NullString
+		evidenceHash, settlementStatus          sql.NullString
+	)
+	if err := scanner.Scan(
+		&log.ID, &log.CreatedAt, &log.UserID, &log.APIKeyID, &log.AccountID, &requestID,
+		&log.ActualCost, &baseCost, &managementFee, &totalCost,
+		&uncappedBaseCost, &platformOverageCost,
+		&parentGroupID, &routedGroupID, &attemptNo, &pricingSnapshotID,
+		&reservationID, &evidenceHash, &settlementStatus,
+	); err != nil {
+		return nil, err
+	}
+	if requestID.Valid {
+		log.RequestID = requestID.String
+	}
+	log.AdaptiveBaseCost = nullFloat64Ptr(baseCost)
+	log.AdaptiveManagementFeeCost = nullFloat64Ptr(managementFee)
+	log.AdaptiveTotalCost = nullFloat64Ptr(totalCost)
+	log.AdaptiveUncappedBaseCost = nullFloat64Ptr(uncappedBaseCost)
+	log.AdaptivePlatformOverageCost = nullFloat64Ptr(platformOverageCost)
+	if parentGroupID.Valid {
+		value := parentGroupID.Int64
+		log.AdaptiveParentGroupID = &value
+	}
+	if routedGroupID.Valid {
+		value := routedGroupID.Int64
+		log.RoutedGroupID = &value
+	}
+	if attemptNo.Valid {
+		value := int(attemptNo.Int64)
+		log.AdaptiveAttemptNo = &value
+	}
+	if pricingSnapshotID.Valid {
+		value := pricingSnapshotID.String
+		log.AdaptivePricingSnapshotID = &value
+	}
+	if reservationID.Valid {
+		value := reservationID.String
+		log.AdaptiveReservationID = &value
+	}
+	if evidenceHash.Valid {
+		value := evidenceHash.String
+		log.AdaptiveEvidenceHash = &value
+	}
+	if settlementStatus.Valid {
+		value := settlementStatus.String
+		log.AdaptiveSettlementStatus = &value
+	}
+	return &log, nil
+}
+
+func copyAdaptiveUsageEvidenceState(target, persisted *service.UsageLog) {
+	if target == nil || persisted == nil {
+		return
+	}
+	target.ID = persisted.ID
+	target.CreatedAt = persisted.CreatedAt
 }
 
 func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor, log *service.UsageLog) (bool, error) {
@@ -279,6 +483,18 @@ func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor,
 			billing_tier,
 			billing_mode,
 			account_stats_cost,
+			adaptive_base_cost,
+			adaptive_management_fee_cost,
+			adaptive_total_cost,
+			adaptive_uncapped_base_cost,
+			adaptive_platform_overage_cost,
+			adaptive_parent_group_id,
+			routed_group_id,
+			adaptive_attempt_no,
+			adaptive_pricing_snapshot_id,
+			adaptive_reservation_id,
+			adaptive_evidence_hash,
+			adaptive_settlement_status,
 			session_id,
 			created_at
 		) VALUES (
@@ -287,7 +503,7 @@ func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor,
 			$12, $13, $14, $15,
 			$16, $17, $18, $19,
 			$20, $21, $22, $23, $24, $25,
-			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59
+			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 		RETURNING id, created_at
@@ -736,13 +952,24 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 			billing_tier,
 			billing_mode,
 			account_stats_cost,
+			adaptive_base_cost,
+			adaptive_management_fee_cost,
+			adaptive_total_cost,
+			adaptive_uncapped_base_cost,
+			adaptive_platform_overage_cost,
+			adaptive_parent_group_id,
+			routed_group_id,
+			adaptive_attempt_no,
+			adaptive_pricing_snapshot_id,
+			adaptive_reservation_id,
+			adaptive_evidence_hash,
+			adaptive_settlement_status,
 			session_id,
 			created_at
 		) AS (VALUES `)
 
-	// Each batch row prepends the synthetic input_index before the 59
-	// usage-log column values.
-	args := make([]any, 0, len(keys)*60)
+	// Each batch row prepends the synthetic input_index before the usage-log values.
+	args := make([]any, 0, len(keys)*(len(usageLogInsertArgTypes)+1))
 	argPos := 1
 	for idx, key := range keys {
 		if idx > 0 {
@@ -828,6 +1055,18 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				billing_tier,
 				billing_mode,
 				account_stats_cost,
+				adaptive_base_cost,
+				adaptive_management_fee_cost,
+				adaptive_total_cost,
+				adaptive_uncapped_base_cost,
+				adaptive_platform_overage_cost,
+				adaptive_parent_group_id,
+				routed_group_id,
+				adaptive_attempt_no,
+				adaptive_pricing_snapshot_id,
+				adaptive_reservation_id,
+				adaptive_evidence_hash,
+				adaptive_settlement_status,
 				session_id,
 				created_at
 			)
@@ -889,6 +1128,18 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				billing_tier,
 				billing_mode,
 				account_stats_cost,
+				adaptive_base_cost,
+				adaptive_management_fee_cost,
+				adaptive_total_cost,
+				adaptive_uncapped_base_cost,
+				adaptive_platform_overage_cost,
+				adaptive_parent_group_id,
+				routed_group_id,
+				adaptive_attempt_no,
+				adaptive_pricing_snapshot_id,
+				adaptive_reservation_id,
+				adaptive_evidence_hash,
+				adaptive_settlement_status,
 				session_id,
 				created_at
 			FROM input
@@ -990,11 +1241,23 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			billing_tier,
 			billing_mode,
 			account_stats_cost,
+			adaptive_base_cost,
+			adaptive_management_fee_cost,
+			adaptive_total_cost,
+			adaptive_uncapped_base_cost,
+			adaptive_platform_overage_cost,
+			adaptive_parent_group_id,
+			routed_group_id,
+			adaptive_attempt_no,
+			adaptive_pricing_snapshot_id,
+			adaptive_reservation_id,
+			adaptive_evidence_hash,
+			adaptive_settlement_status,
 			session_id,
 			created_at
 		) AS (VALUES `)
 
-	args := make([]any, 0, len(preparedList)*59)
+	args := make([]any, 0, len(preparedList)*len(usageLogInsertArgTypes))
 	argPos := 1
 	for idx, prepared := range preparedList {
 		if idx > 0 {
@@ -1077,6 +1340,18 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			billing_tier,
 			billing_mode,
 			account_stats_cost,
+			adaptive_base_cost,
+			adaptive_management_fee_cost,
+			adaptive_total_cost,
+			adaptive_uncapped_base_cost,
+			adaptive_platform_overage_cost,
+			adaptive_parent_group_id,
+			routed_group_id,
+			adaptive_attempt_no,
+			adaptive_pricing_snapshot_id,
+			adaptive_reservation_id,
+			adaptive_evidence_hash,
+			adaptive_settlement_status,
 			session_id,
 			created_at
 		)
@@ -1138,6 +1413,18 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			billing_tier,
 			billing_mode,
 			account_stats_cost,
+			adaptive_base_cost,
+			adaptive_management_fee_cost,
+			adaptive_total_cost,
+			adaptive_uncapped_base_cost,
+			adaptive_platform_overage_cost,
+			adaptive_parent_group_id,
+			routed_group_id,
+			adaptive_attempt_no,
+			adaptive_pricing_snapshot_id,
+			adaptive_reservation_id,
+			adaptive_evidence_hash,
+			adaptive_settlement_status,
 			session_id,
 			created_at
 		FROM input
@@ -1207,6 +1494,18 @@ func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared 
 			billing_tier,
 			billing_mode,
 			account_stats_cost,
+			adaptive_base_cost,
+			adaptive_management_fee_cost,
+			adaptive_total_cost,
+			adaptive_uncapped_base_cost,
+			adaptive_platform_overage_cost,
+			adaptive_parent_group_id,
+			routed_group_id,
+			adaptive_attempt_no,
+			adaptive_pricing_snapshot_id,
+			adaptive_reservation_id,
+			adaptive_evidence_hash,
+			adaptive_settlement_status,
 			session_id,
 			created_at
 		) VALUES (
@@ -1215,7 +1514,7 @@ func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared 
 			$12, $13, $14, $15,
 			$16, $17, $18, $19,
 			$20, $21, $22, $23, $24, $25,
-			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59
+			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 	`, prepared.args...)
@@ -1333,7 +1632,19 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 			billingTier,
 			billingMode,
 			log.AccountStatsCost, // account_stats_cost
-			sessionID,            // session_id
+			log.AdaptiveBaseCost,
+			log.AdaptiveManagementFeeCost,
+			log.AdaptiveTotalCost,
+			log.AdaptiveUncappedBaseCost,
+			log.AdaptivePlatformOverageCost,
+			nullInt64(log.AdaptiveParentGroupID),
+			nullInt64(log.RoutedGroupID),
+			nullInt(log.AdaptiveAttemptNo),
+			nullString(log.AdaptivePricingSnapshotID),
+			nullString(log.AdaptiveReservationID),
+			nullString(log.AdaptiveEvidenceHash),
+			nullString(log.AdaptiveSettlementStatus),
+			sessionID, // session_id
 			createdAt,
 		},
 	}

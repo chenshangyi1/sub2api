@@ -13,12 +13,17 @@ const (
 	// AccountTestModeCompact drives the remote-compaction probe test
 	// (native v2: streaming /responses with a compaction_trigger input item).
 	AccountTestModeCompact = "compact"
+	// AccountTestModeHealthProbe drives the minimal group-monitor health probe:
+	// 用一句话 instructions + 极小输出预算，避免烧完整 Codex base prompt 的 Token。
+	AccountTestModeHealthProbe = "health_probe"
 )
 
 func normalizeAccountTestMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case AccountTestModeCompact:
 		return AccountTestModeCompact
+	case AccountTestModeHealthProbe:
+		return AccountTestModeHealthProbe
 	default:
 		return AccountTestModeDefault
 	}

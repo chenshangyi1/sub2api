@@ -129,6 +129,14 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
 		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
+			if resp.StatusCode == http.StatusNotFound {
+				respBody, _ := s.readUpstreamErrorBody(resp)
+				_ = resp.Body.Close()
+				resp.Body = io.NopCloser(bytes.NewReader(respBody))
+				if isUpstreamRouteNotFound(resp.StatusCode, respBody) {
+					break
+				}
+			}
 			if attempt < maxRetryAttempts {
 				elapsed := time.Since(retryStart)
 				if elapsed >= maxRetryElapsed {
@@ -181,10 +189,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
-			respBody, _ := s.readUpstreamErrorBody(resp)
-			_ = resp.Body.Close()
-			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		respBody, _ := s.readUpstreamErrorBody(resp)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if s.shouldFailoverUpstreamResponse(resp.StatusCode, resp.Header, respBody) {
 
 			logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
 				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
@@ -209,45 +217,43 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				RetryableOnSameAccount: PoolModeSameAccountRetry(account, resp.StatusCode, resp.Header, respBody),
 			}
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account)
 	}
 
-	if resp.StatusCode >= 400 && s.shouldFailoverUpstreamError(resp.StatusCode) {
+	if resp.StatusCode >= 400 {
 		respBody, _ := s.readUpstreamErrorBody(resp)
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if s.shouldFailoverUpstreamResponse(resp.StatusCode, resp.Header, respBody) {
+			logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
+				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
 
-		logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
-
-		s.handleFailoverSideEffects(ctx, resp, account, input.RequestModel)
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: resp.StatusCode,
-			UpstreamRequestID:  resp.Header.Get("x-request-id"),
-			Passthrough:        true,
-			Kind:               "failover",
-			Message:            extractUpstreamErrorMessage(respBody),
-			Detail: func() string {
-				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-					return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
-				}
-				return ""
-			}(),
-		})
-		return nil, &UpstreamFailoverError{
-			StatusCode:             resp.StatusCode,
-			ResponseBody:           respBody,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			s.handleFailoverSideEffects(ctx, resp, account, input.RequestModel)
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				Passthrough:        true,
+				Kind:               "failover",
+				Message:            extractUpstreamErrorMessage(respBody),
+				Detail: func() string {
+					if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+						return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+					}
+					return ""
+				}(),
+			})
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           respBody,
+				RetryableOnSameAccount: PoolModeSameAccountRetry(account, resp.StatusCode, resp.Header, respBody),
+			}
 		}
-	}
-
-	if resp.StatusCode >= 400 {
 		return s.handleErrorResponse(ctx, resp, c, account, input.RequestModel)
 	}
 
@@ -332,6 +338,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if err != nil {
 		return nil, nil, err
 	}
+	req = WithAccountTrafficRequest(req, account)
 
 	if c != nil && c.Request != nil {
 		for key, values := range c.Request.Header {
@@ -351,7 +358,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	req.Header.Del("x-api-key")
 	req.Header.Del("x-goog-api-key")
 	req.Header.Del("cookie")
-	setAnthropicAPIKeyAuthHeader(req.Header, account, token)
+	setAnthropicAPIKeyAuthHeader(req.Header, account, token, account.GetBaseURL())
 
 	if getHeaderRaw(req.Header, "content-type") == "" {
 		setHeaderRaw(req.Header, "content-type", "application/json")
@@ -417,7 +424,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanBuf := getSSEScannerBuf64K()
-	scanner.Buffer(scanBuf[:0], maxLineSize)
+	attachSSEScannerBuffer(scanner, scanBuf[:], maxLineSize)
 
 	type scanEvent struct {
 		line string

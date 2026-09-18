@@ -85,6 +85,18 @@ func TestInstanceSupportsType(t *testing.T) {
 			target:         "alipay",
 			expected:       true,
 		},
+		{
+			name:           "epusdt instance supports network-specific checkout method",
+			supportedTypes: "epusdt",
+			target:         "epusdt_bsc",
+			expected:       true,
+		},
+		{
+			name:           "epusdt network method does not match unrelated type",
+			supportedTypes: "epusdt",
+			target:         "alipay",
+			expected:       false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -30,9 +30,25 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 		h.errorResponse(c, http.StatusUnauthorized, "invalid_request_error", "API key group is required")
 		return
 	}
-	if apiKey.Group.Platform != service.PlatformOpenAI && apiKey.Group.Platform != service.PlatformComposite {
-		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Codex models manifest is only available for OpenAI and Composite groups")
+	if apiKey.Group.Platform != service.PlatformOpenAI && apiKey.Group.Platform != service.PlatformComposite && apiKey.Group.Platform != service.PlatformAdaptive {
+		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Codex models manifest is only available for OpenAI, Composite, and Adaptive groups")
 		return
+	}
+	if h.gatewayService == nil {
+		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Gateway service not configured")
+		return
+	}
+
+	parentGroupID := apiKey.Group.ID
+	if parentGroupID <= 0 && apiKey.GroupID != nil {
+		parentGroupID = *apiKey.GroupID
+	}
+	if adaptiveModels := collectAdaptiveCatalogModels(c.Request.Context(), h.adaptivePlanner, h.anthropicGateway, parentGroupID, apiKey.AdaptiveLeafGroupIDs); len(adaptiveModels) > 0 {
+		body := service.CodexManifestFromModelIDs(adaptiveModels)
+		if len(body) > 0 {
+			c.Data(http.StatusOK, "application/json", body)
+			return
+		}
 	}
 
 	maxAccountSwitches := h.maxAccountSwitches

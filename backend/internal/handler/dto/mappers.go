@@ -85,6 +85,7 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		Key:                k.Key,
 		Name:               k.Name,
 		GroupID:            k.GroupID,
+		GroupIDs:           k.RouteGroupIDs,
 		Status:             k.Status,
 		IPWhitelist:        k.IPWhitelist,
 		IPBlacklist:        k.IPBlacklist,
@@ -105,8 +106,11 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		Window5hStart:      k.Window5hStart,
 		Window1dStart:      k.Window1dStart,
 		Window7dStart:      k.Window7dStart,
-		User:               UserFromServiceShallow(k.User),
-		Group:              GroupFromServiceShallow(k.Group),
+		User:                          UserFromServiceShallow(k.User),
+		Group:                         GroupFromServiceShallow(k.Group),
+		AdaptiveRoutingPreference:     k.AdaptiveRoutingPreference,
+		AdaptiveMaxRateMultiplier:     k.AdaptiveMaxRateMultiplier,
+		AdaptiveLeafGroupIDs:          k.AdaptiveLeafGroupIDs,
 	}
 	if k.Window5hStart != nil && !service.IsWindowExpired(k.Window5hStart, service.RateLimitWindow5h) {
 		t := k.Window5hStart.Add(service.RateLimitWindow5h)
@@ -180,6 +184,7 @@ func groupFromServiceBase(g *service.Group) Group {
 		Platform:                        g.Platform,
 		RateMultiplier:                  g.RateMultiplier,
 		IsExclusive:                     g.IsExclusive,
+		UserVisible:                     g.UserVisible,
 		Status:                          g.Status,
 		SubscriptionType:                g.SubscriptionType,
 		DailyLimitUSD:                   g.DailyLimitUSD,
@@ -222,7 +227,24 @@ func groupFromServiceBase(g *service.Group) Group {
 		ReasoningEffortMappings:         g.ReasoningEffortMappings,
 		CreatedAt:                       g.CreatedAt,
 		UpdatedAt:                       g.UpdatedAt,
+		AdaptiveLeaves:                  adaptiveLeafOptionsFromService(g.AdaptiveLeaves),
 	}
+}
+
+func adaptiveLeafOptionsFromService(in []service.AdaptiveLeafOption) []AdaptiveLeafOption {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]AdaptiveLeafOption, 0, len(in))
+	for _, leaf := range in {
+		out = append(out, AdaptiveLeafOption{
+			ID:             leaf.ID,
+			Name:           leaf.Name,
+			Platform:       leaf.Platform,
+			RateMultiplier: leaf.RateMultiplier,
+		})
+	}
+	return out
 }
 
 func AccountFromServiceShallow(a *service.Account) *Account {
@@ -236,6 +258,9 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		ollamaCloudUsage = state
 	}
 	out := &Account{
+		AntiDegradation:         a.AntiDegradationEnabled(),
+		ProtectionScope:         a.ProtectionScope(),
+		ProtectionMode:          a.ProtectionMode(),
 		ID:                      a.ID,
 		Name:                    a.Name,
 		Notes:                   a.Notes,

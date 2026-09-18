@@ -63,16 +63,37 @@
           />
         </div>
         <div v-else>
-          <label class="input-label">{{ t('admin.accounts.cnProviders.apiProtocol.endpoints') }}</label>
-          <div class="mt-2 space-y-3">
-            <div v-for="item in editAdaptiveProtocolOptions" :key="item.value">
+          <label class="input-label">{{ t('admin.accounts.cnProviders.apiProtocol.primary') }}</label>
+          <input
+            v-model="editAdaptiveBaseUrls.chat_completions"
+            type="text"
+            class="input"
+            data-testid="cn-adaptive-base-url-chat_completions"
+            @input="syncEditAdaptiveUrlsFromPrimary"
+          />
+          <p class="input-hint">{{ t('admin.accounts.cnProviders.apiProtocol.primaryHint') }}</p>
+          <CnBaseUrlPresets
+            class="mt-2"
+            :platform="cnPresetPlatform"
+            :mode="editAccountMode"
+            protocol="chat_completions"
+            :current-url="editAdaptiveBaseUrls.chat_completions"
+            @select="onCnPresetSelect"
+          />
+          <div class="mt-3 space-y-3">
+            <div v-for="item in editAdaptiveOverrideOptions" :key="item.value">
               <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
                 {{ t(`admin.accounts.cnProviders.apiProtocol.${item.labelKey}`) }}
               </label>
-              <input v-model="editAdaptiveBaseUrls[item.value]" type="text" class="input" />
+              <input
+                v-model="editAdaptiveBaseUrls[item.value]"
+                type="text"
+                class="input"
+                :data-testid="`cn-adaptive-base-url-${item.value}`"
+              />
             </div>
           </div>
-          <p v-if="account.platform !== 'deepseek'" class="input-hint">
+          <p v-if="cnPresetPlatform !== 'deepseek' && cnPresetPlatform !== 'minimax'" class="input-hint">
             {{ t('admin.accounts.cnProviders.apiProtocol.responsesFallbackDesc') }}
           </p>
         </div>
@@ -1517,8 +1538,9 @@
       <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <div>
           <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
-          <input v-model.number="form.concurrency" type="number" min="1" class="input"
-            @input="form.concurrency = Math.max(1, form.concurrency || 1)" />
+          <input v-model.number="form.concurrency" type="number" min="0" class="input"
+            @input="form.concurrency = Math.max(0, Number.isFinite(form.concurrency) ? form.concurrency : 0)" />
+          <p class="input-hint">{{ t('admin.accounts.concurrencyHint') }}</p>
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.loadFactor') }}</label>
@@ -1526,17 +1548,6 @@
             class="input" :placeholder="String(form.concurrency || 1)"
             @input="form.load_factor = (form.load_factor &amp;&amp; form.load_factor >= 1) ? form.load_factor : null" />
           <p class="input-hint">{{ t('admin.accounts.loadFactorHint') }}</p>
-        </div>
-        <div>
-          <label class="input-label">{{ t('admin.accounts.priority') }}</label>
-          <input
-            v-model.number="form.priority"
-            type="number"
-            min="1"
-            class="input"
-            data-tour="account-form-priority"
-          />
-          <p class="input-hint">{{ t('admin.accounts.priorityHint') }}</p>
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
@@ -1577,6 +1588,66 @@
               @update:model-value="handleUpstreamBillingRateSyncChange"
             />
           </div>
+        </div>
+      </div>
+      <AccountTrafficControls
+        ref="trafficControls"
+        v-model="trafficPolicyDraft"
+        :account-id="account.id"
+        :platform="account.platform"
+        :hard-limit="form.concurrency"
+        :disabled="submitting || antiDegradeBusy"
+        embedded
+      />
+      <div
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+        data-testid="anti-degrade-panel"
+      >
+        <div>
+          <label class="input-label mb-0">{{ t('admin.accounts.antiDegrade') }}</label>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.antiDegradeDesc') }}
+          </p>
+          <p
+            class="mt-1 text-xs font-medium text-primary-700 dark:text-primary-300"
+            data-testid="anti-degrade-status"
+          >
+            {{ antiDegradeStatusLabel }}
+          </p>
+        </div>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <button
+            v-for="strategy in knownAntiDegradeStrategies"
+            :key="strategy.id"
+            type="button"
+            class="btn btn-sm"
+            :class="antiDegradeCurrentMode === strategy.id ? 'btn-primary' : 'btn-secondary'"
+            :disabled="submitting || antiDegradeBusy || !strategy.apply_supported"
+            :aria-pressed="antiDegradeCurrentMode === strategy.id"
+            @click="openAntiDegradePreview(strategy.id)"
+          >
+            {{ antiDegradeModeLabel(strategy.id) }}
+          </button>
+          <button
+            v-if="knownAntiDegradeStrategies.length === 0"
+            type="button"
+            class="btn btn-sm btn-secondary"
+            data-testid="anti-degrade-apply"
+            :disabled="submitting || antiDegradeBusy"
+            @click="openAntiDegradePreview()"
+          >
+            {{ t('admin.accounts.antiDegradeApply') }}
+          </button>
+          <button
+            v-if="antiDegradeOn"
+            type="button"
+            class="btn btn-sm btn-secondary"
+            data-testid="anti-degrade-revert"
+            :disabled="submitting || antiDegradeBusy"
+            @click="revertAntiDegrade"
+          >
+            {{ t('admin.accounts.antiDegradeRevert') }}
+          </button>
         </div>
       </div>
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -2775,9 +2846,11 @@
       <GroupSelector
         v-if="!authStore.isSimpleMode"
         v-model="form.group_ids"
+        v-model:priorities="membershipPriorityByGroup"
         :groups="groups"
         :platform="account?.platform"
         :mixed-scheduling="mixedScheduling"
+        show-priority
         data-tour="account-form-groups"
       />
 
@@ -2832,6 +2905,88 @@
     @confirm="handleMixedChannelConfirm"
     @cancel="handleMixedChannelCancel"
   />
+  <ConfirmDialog
+    :show="antiDegradeDisableConfirm"
+    :title="t('admin.accounts.antiDegradeRevert')"
+    :message="t('admin.accounts.antiDegradeRevertHint')"
+    :confirm-text="t('common.confirm')"
+    :cancel-text="t('common.cancel')"
+    :danger="true"
+    @cancel="antiDegradeDisableConfirm = false"
+    @confirm="confirmRevertAntiDegrade"
+  />
+  <BaseDialog
+    :show="antiDegradeDialog"
+    :title="antiDegradeModeLabel(antiDegradeSelectedMode)"
+    width="normal"
+    @close="antiDegradeDialog = false"
+  >
+    <div v-if="antiDegradePreview" class="space-y-2" data-testid="anti-degrade-preview">
+      <div>{{ t('admin.accounts.antiDegradeConfiguration') }}: {{ antiDegradeStatusLabel }}</div>
+      <div>{{ t('admin.accounts.antiDegradeActiveMode') }}: {{ antiDegradeModeLabel(antiDegradePreview.active_mode) }}</div>
+      <div>{{ t('admin.accounts.antiDegradePolicyVersion') }}: {{ antiDegradePolicyVersionLabel(antiDegradePreview) }}</div>
+      <div>
+        {{ t('admin.accounts.antiDegradeIdentity') }}:
+        {{
+          antiDegradePreview.identity_ready === true
+            ? t('admin.accounts.antiDegradeIdentityReady')
+            : antiDegradePreview.identity_ready === false
+              ? t('admin.accounts.antiDegradeIdentityMissing')
+              : t('admin.accounts.antiDegradeUnverified')
+        }}
+      </div>
+      <div>{{ t('admin.accounts.antiDegradeTLSProfile') }}: {{ antiDegradePreview.tls_profile || t('admin.accounts.antiDegradeNotConfigured') }}</div>
+      <template v-if="antiDegradePreview.runtime">
+        <div>{{ t('admin.accounts.antiDegradeEffectiveTransport') }}: {{ antiDegradePreview.runtime.effective_tls }}</div>
+        <div>{{ t('admin.accounts.antiDegradeEffectiveConcurrency') }}: {{ antiDegradePreview.runtime.concurrency }}</div>
+        <p v-if="antiDegradePreview.runtime.tls_reason" class="text-amber-700 dark:text-amber-300">
+          {{ antiDegradePreview.runtime.tls_reason }}
+        </p>
+      </template>
+      <ul
+        v-if="antiDegradePreview.issues?.length"
+        data-testid="anti-degrade-issues"
+        class="list-inside list-disc text-sm text-amber-700 dark:text-amber-300"
+      >
+        <li v-for="issue in antiDegradePreview.issues" :key="issue">{{ issue }}</li>
+      </ul>
+      <p v-if="antiDegradePreview.reason" class="text-sm text-gray-500 dark:text-gray-400">
+        {{ antiDegradeReasonLabel(antiDegradePreview.reason) }}
+      </p>
+      <div
+        v-for="chg in antiDegradeVisibleChanges"
+        :key="chg.key"
+        class="rounded-lg bg-gray-50 p-3 text-sm dark:bg-dark-900"
+      >
+        <p class="font-medium text-gray-900 dark:text-white">{{ antiDegradeChangeLabel(chg.key) }}</p>
+        <p class="mt-1 text-gray-900 dark:text-white">
+          <span class="text-gray-400">{{ fmtAntiDegradeValue(chg.from) }}</span>
+          <span class="mx-1">→</span>
+          <span class="font-medium">{{ fmtAntiDegradeValue(chg.to) }}</span>
+        </p>
+      </div>
+      <p v-if="antiDegradePreview.enabled" class="text-xs text-amber-600 dark:text-amber-400">
+        {{ t('admin.accounts.antiDegradeRevertHint') }}
+      </p>
+    </div>
+    <template #footer>
+      <div class="flex justify-end gap-3">
+        <button type="button" class="btn btn-secondary" @click="antiDegradeDialog = false">
+          {{ t('common.cancel') }}
+        </button>
+        <button
+          v-if="antiDegradePreview?.eligible"
+          type="button"
+          class="btn btn-primary"
+          data-testid="anti-degrade-confirm"
+          :disabled="submitting || antiDegradeBusy"
+          @click="confirmAntiDegrade"
+        >
+          {{ t('common.confirm') }}
+        </button>
+      </div>
+    </template>
+  </BaseDialog>
 </template>
 
 <script setup lang="ts">
@@ -2849,7 +3004,8 @@ import type {
   OpenAICompactMode,
   OpenAIResponsesMode,
   OpenAIEndpointCapability,
-  OllamaCloudUsageState
+  OllamaCloudUsageState,
+  AccountGroupMembership
 } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -2865,6 +3021,10 @@ import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
+import AccountTrafficControls from '@/components/account/AccountTrafficControls.vue'
+import { defaultTrafficPolicy, normalizeTrafficDraft, trafficPolicyError, type AccountTrafficPolicy } from '@/api/admin/accountTraffic'
+import { DEFAULT_ANTI_DEGRADE_MODE } from '@/utils/accountProtection'
+import type { AntiDegradeMode, AntiDegradePreview, AntiDegradeStrategyProfile } from '@/api/admin/accounts'
 import {
   applyAntigravityProjectID,
   applyHeaderOverride,
@@ -2876,8 +3036,14 @@ import {
   isHeaderOverrideCapable,
   splitHeaderOverridesObject,
   validateHeaderOverrideRows,
-  defaultCNAdaptiveBaseUrls,
+  cnSupportsNativeResponses,
+  cnVendorFromAccount,
   defaultCNBaseUrl,
+  deriveCNAdaptiveBaseUrlsFromPrimary,
+  resolveCNAdaptiveBaseUrls,
+  isCNPlatform,
+  isVideoPlatform,
+  videoVendorFromAccount,
   HEADER_OVERRIDE_ENABLED_CREDENTIAL_KEY,
   HEADER_OVERRIDES_CREDENTIAL_KEY,
   type CnAccountMode,
@@ -2972,18 +3138,11 @@ const editApiKey = ref('')
 const isCNApiKeyAccount = computed(
   () =>
     props.account?.type === 'apikey' &&
-    (props.account.platform === 'kimi' ||
-      props.account.platform === 'zhipu' ||
-      props.account.platform === 'deepseek')
+    (isCNPlatform(props.account.platform) || isVideoPlatform(props.account.platform))
 )
-// CnBaseUrlPresets 的 platform prop 是平台字面量联合类型，模板里不能写
-// `as` 断言（其中的 `|` 会被 eslint 误判为 Vue2 filter 语法），经此 computed 传递。
-const cnPresetPlatform = computed<'kimi' | 'zhipu' | 'deepseek'>(() => {
-  const platform = props.account?.platform
-  if (platform === 'kimi' || platform === 'zhipu' || platform === 'deepseek') {
-    return platform
-  }
-  return 'kimi'
+const cnPresetPlatform = computed(() => {
+  if (!props.account) return 'kimi'
+  return cnVendorFromAccount(props.account.platform, props.account.credentials as Record<string, unknown> | undefined)
 })
 const editApiProtocol = ref<CnApiProtocol>('adaptive')
 const editAccountMode = ref<CnAccountMode>('payg')
@@ -3000,7 +3159,7 @@ const syncingForm = ref(false)
 const cnAccountModeOptions = computed<Array<{ value: CnAccountMode; labelKey: 'payg' | 'coding' }>>(
   () => {
     // DeepSeek 无 coding 套餐（与创建弹窗一致），仅保留按量付费。
-    if (props.account?.platform === 'deepseek') {
+    if (cnPresetPlatform.value === 'deepseek') {
       return [{ value: 'payg', labelKey: 'payg' }]
     }
     return [
@@ -3015,55 +3174,67 @@ const cnProtocolOptions = computed<Array<{ value: CnApiProtocol; labelKey: strin
     { value: 'chat_completions', labelKey: 'chatCompletions' },
     { value: 'anthropic', labelKey: 'anthropic' }
   ]
-  if (props.account?.platform === 'deepseek') {
+  if (cnSupportsNativeResponses(props.account?.platform ?? '', cnPresetPlatform.value)) {
     opts.push({ value: 'responses', labelKey: 'responses' })
   }
   return opts
 })
-const editAdaptiveProtocolOptions = computed<Array<{ value: CnNativeApiProtocol; labelKey: string }>>(() => {
+const editAdaptiveOverrideOptions = computed<Array<{ value: CnNativeApiProtocol; labelKey: string }>>(() => {
   const opts: Array<{ value: CnNativeApiProtocol; labelKey: string }> = [
-    { value: 'chat_completions', labelKey: 'chatCompletions' },
     { value: 'anthropic', labelKey: 'anthropic' }
   ]
-  if (props.account?.platform === 'deepseek') opts.push({ value: 'responses', labelKey: 'responses' })
+  if (cnSupportsNativeResponses(props.account?.platform ?? '', cnPresetPlatform.value)) opts.push({ value: 'responses', labelKey: 'responses' })
   return opts
 })
+function syncEditAdaptiveUrlsFromPrimary() {
+  editAdaptiveBaseUrls.value = deriveCNAdaptiveBaseUrlsFromPrimary(
+    cnPresetPlatform.value,
+    editAccountMode.value,
+    editAdaptiveBaseUrls.value.chat_completions || editBaseUrl.value
+  )
+  editBaseUrl.value = editAdaptiveBaseUrls.value.chat_completions
+}
 watch(editApiProtocol, (protocol, previousProtocol) => {
   if (!isCNApiKeyAccount.value || syncingForm.value) return
   if (protocol === 'adaptive') {
-    const defaults = defaultCNAdaptiveBaseUrls(cnPresetPlatform.value, editAccountMode.value)
-    for (const item of editAdaptiveProtocolOptions.value) {
-      if (!editAdaptiveBaseUrls.value[item.value]) editAdaptiveBaseUrls.value[item.value] = defaults[item.value]
+    const fallback = previousProtocol !== 'adaptive' && editBaseUrl.value.trim()
+      ? editBaseUrl.value.trim()
+      : editAdaptiveBaseUrls.value.chat_completions
+    const stored: Record<string, string> = { ...editAdaptiveBaseUrls.value }
+    if (previousProtocol !== 'adaptive' && fallback) {
+      stored[previousProtocol] = fallback
     }
-    if (previousProtocol !== 'adaptive' && editBaseUrl.value.trim()) {
-      editAdaptiveBaseUrls.value[previousProtocol] = editBaseUrl.value.trim()
-    }
+    editAdaptiveBaseUrls.value = resolveCNAdaptiveBaseUrls(
+      cnPresetPlatform.value,
+      editAccountMode.value,
+      stored,
+      fallback
+    )
     editBaseUrl.value = editAdaptiveBaseUrls.value.chat_completions
     return
   }
   if (previousProtocol === 'adaptive') {
     editBaseUrl.value = editAdaptiveBaseUrls.value[protocol] ||
-      defaultCNBaseUrl(props.account!.platform, editAccountMode.value, protocol)
+      defaultCNBaseUrl(cnPresetPlatform.value, editAccountMode.value, protocol)
     return
   }
-  editBaseUrl.value = defaultCNBaseUrl(props.account!.platform, editAccountMode.value, protocol)
+  editBaseUrl.value = defaultCNBaseUrl(cnPresetPlatform.value, editAccountMode.value, protocol)
 })
-watch(editAccountMode, (mode, previousMode) => {
+watch(editAccountMode, (mode) => {
   if (!isCNApiKeyAccount.value || syncingForm.value) return
   // deepseek 无 coding 套餐：防御性回退（UI 已隐藏该选项）。
-  const effectiveMode = props.account!.platform === 'deepseek' && mode === 'coding' ? 'payg' : mode
+  const effectiveMode = cnPresetPlatform.value === 'deepseek' && mode === 'coding' ? 'payg' : mode
   if (effectiveMode !== mode) {
     editAccountMode.value = effectiveMode
     return
   }
   if (editApiProtocol.value === 'adaptive') {
-    const previousDefaults = defaultCNAdaptiveBaseUrls(cnPresetPlatform.value, previousMode)
-    const nextDefaults = defaultCNAdaptiveBaseUrls(cnPresetPlatform.value, mode)
-    for (const item of editAdaptiveProtocolOptions.value) {
-      if (!editAdaptiveBaseUrls.value[item.value] || editAdaptiveBaseUrls.value[item.value] === previousDefaults[item.value]) {
-        editAdaptiveBaseUrls.value[item.value] = nextDefaults[item.value]
-      }
-    }
+    editAdaptiveBaseUrls.value = resolveCNAdaptiveBaseUrls(
+      cnPresetPlatform.value,
+      mode,
+      editAdaptiveBaseUrls.value,
+      editAdaptiveBaseUrls.value.chat_completions
+    )
     editBaseUrl.value = editAdaptiveBaseUrls.value.chat_completions
     return
   }
@@ -3077,6 +3248,9 @@ function onCnPresetSelect(preset: { mode: CnAccountMode; protocol: CnApiProtocol
   editAccountMode.value = preset.mode
   editApiProtocol.value = preset.protocol
   editBaseUrl.value = preset.url
+  if (preset.protocol === 'adaptive') {
+    editAdaptiveBaseUrls.value = deriveCNAdaptiveBaseUrlsFromPrimary(cnPresetPlatform.value, preset.mode, preset.url)
+  }
 }
 // Bedrock credentials
 const editBedrockAccessKeyId = ref('')
@@ -3222,7 +3396,8 @@ const openaiPassthroughEnabled = ref(false)
 // OpenAI Codex namespace 工具摊平兼容开关（仅 OAuth），缺省关闭即原样保留
 const openaiFlattenNamespacesEnabled = ref(false)
 const openAILongContextBillingEnabled = ref(false)
-// OpenAI 订阅档位（Plus/Pro/Free）手动覆盖值,存于 credentials.plan_type;'' 表示清空/自动识别
+// OpenAI 订阅档位（Plus / Pro 20x / Pro 5x / Business Standard / Business Premium / Free）手动覆盖值,
+// 存于 credentials.plan_type;'' 表示清空/自动识别
 const editPlanType = ref<string>('')
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
@@ -3526,12 +3701,8 @@ const defaultBaseUrl = computed(() => {
   if (props.account?.platform === 'grok') return 'https://api.x.ai/v1'
   // CN 供应商：按当前模式/协议回落到官方预设（清空输入框提交时使用），
   // 不能落到 anthropic 默认值（会被当 CC base 拼出错误端点）。
-  if (
-    props.account?.platform === 'kimi' ||
-    props.account?.platform === 'zhipu' ||
-    props.account?.platform === 'deepseek'
-  ) {
-    return defaultCNBaseUrl(props.account.platform, editAccountMode.value, editApiProtocol.value)
+  if (props.account && (isCNPlatform(props.account.platform) || isVideoPlatform(props.account.platform))) {
+    return defaultCNBaseUrl(cnPresetPlatform.value, editAccountMode.value, editApiProtocol.value)
   }
   return 'https://api.anthropic.com'
 })
@@ -3543,13 +3714,133 @@ const mixedChannelWarningMessageText = computed(() => {
   return mixedChannelWarningRawMessage.value
 })
 
+const trafficControls = ref<InstanceType<typeof AccountTrafficControls> | null>(null)
+const trafficPolicyDraft = ref<AccountTrafficPolicy>(defaultTrafficPolicy())
+const antiDegradeBusy = ref(false)
+const antiDegradeDialog = ref(false)
+const antiDegradeDisableConfirm = ref(false)
+const antiDegradePreview = ref<AntiDegradePreview | null>(null)
+const antiDegradeSelectedMode = ref<AntiDegradeMode>(DEFAULT_ANTI_DEGRADE_MODE)
+const antiDegradeStrategies = ref<AntiDegradeStrategyProfile[]>([])
+const knownAntiDegradeStrategies = computed(() =>
+  (antiDegradeStrategies.value.length ? antiDegradeStrategies.value : []).slice().sort((a, b) => Number(b.id === DEFAULT_ANTI_DEGRADE_MODE) - Number(a.id === DEFAULT_ANTI_DEGRADE_MODE))
+)
+const antiDegradeOn = computed(() => props.account?.anti_degradation === true || (props.account?.extra as Record<string, unknown> | undefined)?.anti_degradation === true)
+const antiDegradeCurrentMode = computed<AntiDegradeMode | ''>(() => {
+  const mode = props.account?.protection_mode
+  return typeof mode === 'string' ? mode as AntiDegradeMode : ''
+})
+const antiDegradeStatusLabel = computed(() => {
+  if (!antiDegradeOn.value) return t('admin.accounts.antiDegradeNotConfigured')
+  const mode = antiDegradeCurrentMode.value
+  return mode ? `${t('admin.accounts.antiDegradeEnabled')} · ${antiDegradeModeLabel(mode)}` : t('admin.accounts.antiDegradeEnabled')
+})
+const antiDegradeModeLabel = (mode?: string) => {
+  if (mode === 'mode1') return t('admin.accounts.antiDegradeMode1')
+  if (mode === 'mode2') return t('admin.accounts.antiDegradeMode2')
+  if (mode === 'legacy') return t('admin.accounts.antiDegradeModeLegacy')
+  return knownAntiDegradeStrategies.value.find(strategy => strategy.id === mode)?.name || t('admin.accounts.antiDegradeNotConfigured')
+}
+const antiDegradeReasonLabel = (reason?: string) => {
+  if (reason === 'account not found') return t('admin.accounts.antiDegradeAccountNotFound')
+  if (reason === 'already enabled, can revert') return t('admin.accounts.antiDegradeAlreadyEnabled')
+  if (reason === 'platform has no fingerprint convergence; only generic items apply') {
+    return t('admin.accounts.antiDegradeGenericOnly')
+  }
+  if (!reason || reason === 'nothing to change') return t('admin.accounts.antiDegradeNoChange')
+  return reason
+}
+const antiDegradeVisibleChanges = computed(() =>
+  (antiDegradePreview.value?.changes || []).filter(change => !/seed|identity_secret/i.test(change.key))
+)
+const fmtAntiDegradeValue = (v: unknown): string => {
+  if (v === undefined || v === null || v === '') return '-'
+  if (typeof v === 'boolean') return v ? t('common.enabled') : t('common.disabled')
+  return String(v)
+}
+const antiDegradeChangeLabel = (key: string): string => {
+  if (key === 'strategy') return t('admin.accounts.antiDegradeChangeStrategy')
+  if (key === 'extra.codex_fingerprint_mode') return t('admin.accounts.antiDegradeChangeFingerprint')
+  if (key === 'extra.enable_tls_fingerprint' || key === 'extra.tls_fingerprint_builtin' || key === 'transport') {
+    return t('admin.accounts.antiDegradeChangeTLS')
+  }
+  if (key === 'policy_version') return t('admin.accounts.antiDegradePolicyVersion')
+  if (key === 'concurrency') return t('admin.accounts.antiDegradeChangeConcurrency')
+  return key
+}
+const antiDegradePolicyVersionLabel = (preview: AntiDegradePreview | null): string => {
+  if (!preview) return '-'
+  if (preview.active_mode === 'legacy' || antiDegradeSelectedMode.value === 'legacy') {
+    return t('admin.accounts.antiDegradeLegacyVersion')
+  }
+  return preview.policy_version == null || preview.policy_version === 0 ? '-' : String(preview.policy_version)
+}
+const openAntiDegradePreview = async (mode: AntiDegradeMode = DEFAULT_ANTI_DEGRADE_MODE) => {
+  if (props.account == null || antiDegradeBusy.value || submitting.value) return
+  antiDegradeBusy.value = true
+  try {
+    antiDegradeSelectedMode.value = mode
+    antiDegradePreview.value = await adminAPI.accounts.previewAntiDegrade(props.account.id, mode)
+    antiDegradeDialog.value = true
+  } catch (error) {
+    appStore.showError((error as Error).message || t('admin.accounts.antiDegradeFailed'))
+  } finally {
+    antiDegradeBusy.value = false
+  }
+}
+const confirmAntiDegrade = async () => {
+  if (props.account == null || antiDegradeBusy.value) return
+  antiDegradeBusy.value = true
+  try {
+    const updated = await adminAPI.accounts.applyAntiDegrade(props.account.id, antiDegradeSelectedMode.value)
+    emit('updated', updated)
+    antiDegradeDialog.value = false
+    appStore.showSuccess(t('admin.accounts.antiDegradeApplied'))
+  } catch (error) {
+    appStore.showError((error as Error).message || t('admin.accounts.antiDegradeFailed'))
+  } finally {
+    antiDegradeBusy.value = false
+  }
+}
+const revertAntiDegrade = () => { if (!antiDegradeBusy.value) antiDegradeDisableConfirm.value = true }
+const confirmRevertAntiDegrade = async () => {
+  antiDegradeDisableConfirm.value = false
+  if (props.account == null || antiDegradeBusy.value) return
+  antiDegradeBusy.value = true
+  try {
+    const updated = await adminAPI.accounts.revertAntiDegrade(props.account.id, true)
+    emit('updated', updated)
+    appStore.showSuccess(t('admin.accounts.antiDegradeReverted'))
+  } catch (error) {
+    appStore.showError((error as Error).message || t('admin.accounts.antiDegradeFailed'))
+  } finally {
+    antiDegradeBusy.value = false
+  }
+}
+
+const membershipPriorityByGroup = ref<Record<number, number>>({})
+
+const normalizeMembershipPriority = (value: unknown): number => {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return 1
+  }
+  return Math.trunc(parsed)
+}
+
+const buildAccountGroupsPayload = (groupIds: number[]): AccountGroupMembership[] =>
+  groupIds.map((groupId) => ({
+    account_id: props.account?.id ?? 0,
+    group_id: groupId,
+    priority: normalizeMembershipPriority(membershipPriorityByGroup.value[groupId])
+  }))
+
 const form = reactive({
   name: '',
   notes: '',
   proxy_id: null as number | null,
   concurrency: 1,
   load_factor: null as number | null,
-  priority: 1,
   rate_multiplier: 1,
   status: 'active' as 'active' | 'inactive' | 'error',
   group_ids: [] as number[],
@@ -3655,15 +3946,23 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   form.name = newAccount.name
   form.notes = newAccount.notes || ''
   form.proxy_id = newAccount.proxy_id
-  form.concurrency = newAccount.concurrency
+  form.concurrency = newAccount.concurrency ?? 0
   form.load_factor = newAccount.load_factor ?? null
-  form.priority = newAccount.priority
+  const memberships = newAccount.account_groups || []
+  membershipPriorityByGroup.value = Object.fromEntries(
+    memberships.map((item) => [item.group_id, normalizeMembershipPriority(item.priority)])
+  )
   form.rate_multiplier = newAccount.rate_multiplier ?? 1
   form.status = (newAccount.status === 'active' || newAccount.status === 'inactive' || newAccount.status === 'error')
     ? newAccount.status
     : 'active'
   form.group_ids = newAccount.group_ids || []
   form.expires_at = newAccount.expires_at ?? null
+  const extra = newAccount.extra as Record<string, unknown> | undefined
+  trafficPolicyDraft.value = { ...defaultTrafficPolicy(), ...((extra?.account_traffic_control as Partial<AccountTrafficPolicy>) || {}) }
+  if (props.show && antiDegradeStrategies.value.length === 0) {
+    void adminAPI.accounts.listAntiDegradeStrategies().then(list => { antiDegradeStrategies.value = list }).catch(() => {})
+  }
 
   // Load intercept warmup requests setting (applies to all account types)
   const credentials = newAccount.credentials as Record<string, unknown> | undefined
@@ -3682,7 +3981,6 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Load mixed scheduling setting (only for antigravity accounts)
   mixedScheduling.value = false
   allowOverages.value = false
-	const extra = newAccount.extra as Record<string, unknown> | undefined
 	mixedScheduling.value = extra?.mixed_scheduling === true
 	allowOverages.value = extra?.allow_overages === true
 	autoPause5hThreshold.value = typeof extra?.auto_pause_5h_threshold === 'number' ? extra.auto_pause_5h_threshold * 100 : null
@@ -3895,7 +4193,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     const credentials = newAccount.credentials as Record<string, unknown>
     // 国产供应商：读取 account_mode 与 api_protocol 作为可编辑初始值
     // （编辑弹窗允许修正两者，用于修复早期存错默认值的账号）。
-    if (newAccount.platform === 'kimi' || newAccount.platform === 'zhipu' || newAccount.platform === 'deepseek') {
+    if (isCNPlatform(newAccount.platform) || isVideoPlatform(newAccount.platform)) {
       editAccountMode.value = credentials.account_mode === 'coding' ? 'coding' : 'payg'
       const storedProtocol = credentials.api_protocol
       editApiProtocol.value =
@@ -3904,39 +4202,37 @@ const syncFormFromAccount = (newAccount: Account | null) => {
         storedProtocol === 'anthropic' ||
         storedProtocol === 'responses'
           ? storedProtocol
-          : 'chat_completions'
-      if (newAccount.platform !== 'deepseek' && editApiProtocol.value === 'responses') {
+          : 'adaptive'
+      const vendor = cnVendorFromAccount(newAccount.platform, credentials)
+      if (vendor === 'zhipu' && editApiProtocol.value === 'responses') {
         editApiProtocol.value = 'chat_completions'
       }
-      const adaptiveDefaults = defaultCNAdaptiveBaseUrls(newAccount.platform, editAccountMode.value)
       const storedBaseUrls = (credentials.api_base_urls as Record<string, unknown> | undefined) || {}
       const legacyBaseUrl = typeof credentials.base_url === 'string' ? credentials.base_url.trim() : ''
-      const storedChatBaseUrl = typeof storedBaseUrls.chat_completions === 'string'
-        ? storedBaseUrls.chat_completions.trim()
-        : ''
-      const storedAnthropicBaseUrl = typeof storedBaseUrls.anthropic === 'string'
-        ? storedBaseUrls.anthropic.trim()
-        : ''
-      const storedResponsesBaseUrl = typeof storedBaseUrls.responses === 'string'
-        ? storedBaseUrls.responses.trim()
-        : ''
-      const nextAdaptiveBaseUrls: Record<CnNativeApiProtocol, string> = {
-        chat_completions: storedChatBaseUrl || adaptiveDefaults.chat_completions,
-        anthropic: storedAnthropicBaseUrl || adaptiveDefaults.anthropic,
-        responses: storedResponsesBaseUrl || adaptiveDefaults.responses
-      }
+      const nextAdaptiveBaseUrls = resolveCNAdaptiveBaseUrls(
+        vendor,
+        editAccountMode.value,
+        storedBaseUrls,
+        legacyBaseUrl
+      )
       const legacyProtocol: CnNativeApiProtocol = editApiProtocol.value === 'anthropic'
         ? 'anthropic'
         : editApiProtocol.value === 'responses'
           ? 'responses'
           : 'chat_completions'
-      const storedLegacyBaseUrl = legacyProtocol === 'anthropic'
-        ? storedAnthropicBaseUrl
-        : legacyProtocol === 'responses'
-          ? storedResponsesBaseUrl
-          : storedChatBaseUrl
+      const storedLegacyBaseUrl = typeof storedBaseUrls[legacyProtocol] === 'string'
+        ? String(storedBaseUrls[legacyProtocol]).trim()
+        : ''
       if (legacyBaseUrl && !storedLegacyBaseUrl) {
         nextAdaptiveBaseUrls[legacyProtocol] = legacyBaseUrl
+        if (editApiProtocol.value === 'adaptive') {
+          Object.assign(nextAdaptiveBaseUrls, resolveCNAdaptiveBaseUrls(
+            vendor,
+            editAccountMode.value,
+            nextAdaptiveBaseUrls,
+            legacyBaseUrl
+          ))
+        }
       }
       editAdaptiveBaseUrls.value = nextAdaptiveBaseUrls
     }
@@ -3947,10 +4243,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
           ? 'https://generativelanguage.googleapis.com'
           : newAccount.platform === 'grok'
             ? 'https://api.x.ai/v1'
-            : newAccount.platform === 'kimi' ||
-                newAccount.platform === 'zhipu' ||
-                newAccount.platform === 'deepseek'
-              ? defaultCNBaseUrl(newAccount.platform, editAccountMode.value, editApiProtocol.value)
+            : isCNPlatform(newAccount.platform) || isVideoPlatform(newAccount.platform)
+              ? defaultCNBaseUrl(cnVendorFromAccount(newAccount.platform, credentials), editAccountMode.value, editApiProtocol.value)
               : 'https://api.anthropic.com'
     editBaseUrl.value = isCNApiKeyAccount.value && editApiProtocol.value === 'adaptive'
       ? editAdaptiveBaseUrls.value.chat_completions
@@ -4596,6 +4890,12 @@ const handleSubmit = async () => {
 
   const updatePayload: Record<string, unknown> = { ...form }
   try {
+    if (form.concurrency == null || Number.isNaN(form.concurrency) || form.concurrency < 0) {
+      appStore.showError(t('admin.users.concurrencyNonNegative'))
+      return
+    }
+    updatePayload.account_groups = buildAccountGroupsPayload(form.group_ids)
+    delete updatePayload.priority
     // 后端期望 proxy_id: 0 表示清除代理，而不是 null
     if (updatePayload.proxy_id === null) {
       updatePayload.proxy_id = 0
@@ -4633,12 +4933,19 @@ const handleSubmit = async () => {
       if (isCNApiKeyAccount.value) {
         newCredentials.account_mode = editAccountMode.value
         newCredentials.api_protocol = editApiProtocol.value
+        if (isCNPlatform(props.account.platform)) {
+          newCredentials.cn_vendor = cnPresetPlatform.value
+        }
+        if (isVideoPlatform(props.account.platform)) {
+          newCredentials.video_vendor = videoVendorFromAccount(props.account.credentials as Record<string, unknown> | undefined)
+        }
         if (editApiProtocol.value === 'adaptive') {
-          const defaults = defaultCNAdaptiveBaseUrls(cnPresetPlatform.value, editAccountMode.value)
-          const protocolBaseUrls: Record<string, string> = {}
-          for (const item of editAdaptiveProtocolOptions.value) {
-            protocolBaseUrls[item.value] = (editAdaptiveBaseUrls.value[item.value] || defaults[item.value]).trim()
-          }
+          const protocolBaseUrls = resolveCNAdaptiveBaseUrls(
+            cnPresetPlatform.value,
+            editAccountMode.value,
+            editAdaptiveBaseUrls.value,
+            editBaseUrl.value
+          )
           newCredentials.api_base_urls = protocolBaseUrls
           newCredentials.base_url = protocolBaseUrls.chat_completions
         } else {
@@ -4930,7 +5237,8 @@ const handleSubmit = async () => {
       updatePayload.extra = newExtra
     }
 
-    // OpenAI: 手动覆盖订阅档位 plan_type（Plus/Pro/Free）。仅 OAuth 非影子账号：
+    // OpenAI: 手动覆盖订阅档位 plan_type（Plus / Pro 20x / Pro 5x / Business Standard / Business Premium / Free）。
+    // 仅 OAuth 非影子账号：
     // 影子账号凭据由母账号管理(且后端会 sanitize),setup-token 无订阅调度语义。
     if (props.account.platform === 'openai' && props.account.type === 'oauth' && !isSparkShadow.value) {
       const currentCredentials = (updatePayload.credentials as Record<string, unknown>) ||
@@ -5271,6 +5579,15 @@ const handleSubmit = async () => {
       writeQuotaNotifyToExtra(newExtra, 'update')
       updatePayload.extra = newExtra
     }
+
+    const traffic = normalizeTrafficDraft(trafficPolicyDraft.value)
+    const trafficError = trafficPolicyError(traffic, form.concurrency)
+    if (trafficError) {
+      appStore.showError(trafficError)
+      return
+    }
+    trafficPolicyDraft.value = traffic
+    updatePayload.extra = { ...((updatePayload.extra as Record<string, unknown>) || props.account.extra || {}), account_traffic_control: { ...traffic } }
 
     const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {
       await submitUpdateAccount(accountID, updatePayload)

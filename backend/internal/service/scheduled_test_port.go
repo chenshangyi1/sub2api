@@ -31,6 +31,15 @@ type ScheduledTestResult struct {
 	StartedAt    time.Time `json:"started_at"`
 	FinishedAt   time.Time `json:"finished_at"`
 	CreatedAt    time.Time `json:"created_at"`
+
+	// TTFTMs 首个内容 token 的耗时（毫秒）；健康探测附加指标。
+	TTFTMs int64 `json:"ttft_ms,omitempty"`
+	// InputTokens 上游 usage 的非缓存输入 token 数（Claude usage.input_tokens / OpenAI usage.input_tokens）。
+	InputTokens int64 `json:"input_tokens,omitempty"`
+	// CacheReadTokens 命中的缓存输入 token 数（Claude cache_read_input_tokens / OpenAI cached_tokens）。
+	CacheReadTokens int64 `json:"cache_read_tokens,omitempty"`
+	// CacheCreationTokens 新增的缓存输入 token 数（Claude cache_creation_input_tokens）。
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 }
 
 // ScheduledTestPlanRepository defines the data access interface for test plans.

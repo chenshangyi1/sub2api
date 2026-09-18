@@ -1017,6 +1017,7 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		// round-trip even though forwarding still treats it as passthrough.
 		"openai_passthrough",
 		"openai_oauth_passthrough",
+		service.AccountTrafficPolicyKey,
 		"codex_fingerprint_mode",
 		"codex_fingerprint_seed",
 		"codex_5h_used_percent",

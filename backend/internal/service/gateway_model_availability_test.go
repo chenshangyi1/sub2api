@@ -89,7 +89,7 @@ func TestDiagnoseModelAvailabilityForPlatform_EmptyMappingAllowsAll(t *testing.T
 
 	diag := svc.DiagnoseModelAvailabilityForPlatform(context.Background(), nil, "gpt-5.1-codex-mini", PlatformOpenAI)
 
-	require.True(t, diag.HasModelSupport, "empty model_mapping must be treated as 'allow all' (Account.IsModelSupported semantics)")
+	require.True(t, diag.HasModelSupport, "empty OpenAI mapping still admits gpt-/codex- family models")
 }
 
 func TestDiagnoseModelAvailabilityForPlatform_WildcardMappingMatches(t *testing.T) {

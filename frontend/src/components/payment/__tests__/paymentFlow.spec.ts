@@ -71,6 +71,29 @@ describe('getVisibleMethods', () => {
       usdt_trc20: methodLimit({ fee_rate: 1 }),
     })
   })
+
+  it('keeps EPUSDT as a visible recharge method', () => {
+    const visible = getVisibleMethods({
+      epusdt: methodLimit({ single_min: 10 }),
+      alipay: methodLimit(),
+      wxpay: methodLimit(),
+    })
+
+    expect(visible.epusdt.single_min).toBe(10)
+    expect(visible.alipay).toBeDefined()
+  })
+
+  it('keeps EPUSDT networks as separate visible methods', () => {
+    const visible = getVisibleMethods({
+      epusdt_bsc: methodLimit({ display_name: 'BNB Smart Chain / BSC (BEP20)' }),
+      epusdt_trc20: methodLimit({ display_name: 'TRON (TRC20)' }),
+      alipay: methodLimit(),
+    })
+
+    expect(visible.epusdt_bsc.display_name).toBe('BNB Smart Chain / BSC (BEP20)')
+    expect(visible.epusdt_trc20.display_name).toBe('TRON (TRC20)')
+    expect(visible.epusdt).toBeUndefined()
+  })
 })
 
 describe('decidePaymentLaunch', () => {
@@ -371,6 +394,19 @@ describe('buildCreateOrderPayload', () => {
       forceQRCode: true,
     })).toMatchObject({
       is_mobile: true,
+    })
+  })
+
+  it('keeps EPUSDT network checkout types instead of collapsing them to epusdt', () => {
+    expect(buildCreateOrderPayload({
+      amount: 10,
+      paymentType: 'epusdt_trc20',
+      orderType: 'balance',
+      origin: 'https://app.example.com',
+      isMobile: false,
+      isWechatBrowser: false,
+    })).toMatchObject({
+      payment_type: 'epusdt_trc20',
     })
   })
 })

@@ -163,7 +163,7 @@ func ResponsesEventToChatChunks(evt *ResponsesStreamEvent, state *ResponsesEvent
 		return nil
 	// response.done 是 Realtime/WS 与项目透传路径使用的终止别名；
 	// 普通 Responses HTTP SSE 的公开终止事件仍以 response.completed 为主。
-	case "response.completed", "response.done", "response.incomplete", "response.failed":
+	case "response.completed", "response.done", "response.incomplete", "response.failed", "response.cancelled", "response.canceled":
 		return resToChatHandleCompleted(evt, state)
 	default:
 		return nil
@@ -331,6 +331,12 @@ func resToChatHandleCompleted(evt *ResponsesStreamEvent, state *ResponsesEventTo
 	}
 
 	var chunks []ChatCompletionsChunk
+	if !state.SawText {
+		if text := responsesTerminalText(evt); text != "" {
+			chunks = append(chunks, resToChatHandleCreated(evt, state)...)
+			chunks = append(chunks, resToChatHandleTextDelta(&ResponsesStreamEvent{Delta: text}, state)...)
+		}
+	}
 	chunks = append(chunks, makeChatFinishChunk(state, finishReason))
 
 	if state.IncludeUsage && state.Usage != nil {
@@ -346,6 +352,31 @@ func resToChatHandleCompleted(evt *ResponsesStreamEvent, state *ResponsesEventTo
 	}
 
 	return chunks
+}
+
+// Some upstreams send text only in the terminal snapshot. Callers use this
+// only when no text delta was emitted, so normal streams are never replayed.
+func responsesTerminalText(evt *ResponsesStreamEvent) string {
+	if evt.Response == nil {
+		return ""
+	}
+	switch evt.Type {
+	case "response.completed", "response.done", "response.incomplete":
+	default:
+		return ""
+	}
+	var text strings.Builder
+	for _, item := range evt.Response.Output {
+		if item.Type != "message" {
+			continue
+		}
+		for _, part := range item.Content {
+			if part.Type == "output_text" {
+				_, _ = text.WriteString(part.Text)
+			}
+		}
+	}
+	return text.String()
 }
 
 func chatUsageFromResponsesUsage(u *ResponsesUsage) *ChatUsage {

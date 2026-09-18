@@ -285,6 +285,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
   it('submits adaptive Kimi protocol endpoints', async () => {
     const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'admin.accounts.platforms.cn')
     await selectButtonByText(wrapper, 'Kimi')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('Kimi adaptive')
     await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-kimi')
@@ -293,7 +294,9 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await flushPromises()
 
     expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.platform).toBe('cn')
     expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      cn_vendor: 'kimi',
       account_mode: 'payg',
       api_protocol: 'adaptive',
       base_url: 'https://api.moonshot.cn/v1',
@@ -304,8 +307,34 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     })
   })
 
+  it('submits MiniMax as a CN vendor with official adaptive endpoints', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'admin.accounts.platforms.cn')
+    await selectButtonByText(wrapper, 'MiniMax')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('MiniMax adaptive')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-minimax')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.platform).toBe('cn')
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      cn_vendor: 'minimax',
+      account_mode: 'payg',
+      api_protocol: 'adaptive',
+      base_url: 'https://api.minimaxi.com/v1',
+      api_base_urls: {
+        chat_completions: 'https://api.minimaxi.com/v1',
+        anthropic: 'https://api.minimaxi.com/anthropic',
+        responses: 'https://api.minimaxi.com/v1'
+      }
+    })
+  })
+
   it('uses the edited adaptive Chat endpoint when previewing upstream models', async () => {
     const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'admin.accounts.platforms.cn')
     await selectButtonByText(wrapper, 'Kimi')
     await wrapper
       .get('[data-testid="cn-adaptive-base-url-chat_completions"]')
@@ -313,11 +342,23 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-relay')
 
     expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toMatchObject({
-      platform: 'kimi',
+      platform: 'cn',
       type: 'apikey',
       base_url: 'https://relay.example.com/v1',
       api_key: 'sk-relay'
     })
+  })
+
+  it('shows every adaptive protocol URL field without a hidden override toggle', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'admin.accounts.platforms.cn')
+    await selectButtonByText(wrapper, 'Kimi')
+
+    expect(wrapper.get('[data-testid="cn-adaptive-base-url-chat_completions"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="cn-adaptive-base-url-anthropic"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="cn-adaptive-base-url-responses"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('admin.accounts.cnProviders.apiProtocol.showOverrides')
+    expect(wrapper.text()).not.toContain('admin.accounts.cnProviders.apiProtocol.hideOverrides')
   })
 
   it('exposes Agent Identity in the OpenAI authorization methods', async () => {
@@ -443,5 +484,35 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await flushPromises()
 
     expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
+  })
+})
+
+describe('CreateAccountModal Gemini Responses entry', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = false
+    createAccountMock.mockReset().mockResolvedValue({ id: 99, platform: 'openai', type: 'apikey' })
+    probeUpstreamBillingMock.mockReset().mockResolvedValue({})
+  })
+
+  it('creates an OpenAI apikey account from the Gemini Responses option', async () => {
+    const wrapper = mountModal([
+      { id: 7, platform: 'gemini', long_context_pricing_enabled: false },
+    ])
+
+    await selectButtonByText(wrapper, 'Gemini')
+    await wrapper.get('[data-testid="gemini-account-type-openai-responses"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('gemini responses upstream')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-test-responses')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    expect(payload.platform).toBe('openai')
+    expect(payload.type).toBe('apikey')
+    expect(payload.group_ids).toEqual([7])
+    expect(payload.account_groups).toEqual([{ account_id: 0, group_id: 7, priority: 1 }])
+    expect(payload.extra?.openai_responses_mode).toBe('force_responses')
+    expect(payload.credentials?.api_key).toBe('sk-test-responses')
   })
 })

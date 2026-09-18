@@ -32,6 +32,18 @@ func stageCodexFingerprintIDs(c *gin.Context, ids *codexFingerprintIDs) {
 }
 
 func stagedCodexFingerprintIDs(c *gin.Context, account *Account) *codexFingerprintIDs {
+	if c != nil && account != nil {
+		if value, ok := c.Get(codexFingerprintIDsContextKey); ok {
+			if ids, ok := value.(*codexFingerprintIDs); ok && ids != nil && ids.accountID == account.ID {
+				return ids
+			}
+		}
+	}
+	// Native WS ingress may bypass Forward. Device-only mode1 has no per-turn
+	// random fields, so it can resolve the same persisted identity on every path.
+	if isMode1ProtectionEnabled(account) || (antiDegradeEnabled(account) && account.GetCodexFingerprintMode() == codexFingerprintDevice) {
+		return resolveCodexFingerprintIDs(account, "", codexFingerprintDevice)
+	}
 	if c == nil || account == nil || !account.UsesOpenAICodexProtocol() {
 		return nil
 	}
@@ -51,6 +63,13 @@ func stagedCodexFingerprintIDs(c *gin.Context, account *Account) *codexFingerpri
 // snapshot 的 OAuth 账号可读取，避免 stale context 跨账号 failover 泄漏。
 func applyStagedCodexFingerprintHeaders(c *gin.Context, account *Account, h http.Header) {
 	applyCodexFingerprintHeaders(h, stagedCodexFingerprintIDs(c, account))
+	if isMode1ProtectionEnabled(account) && c != nil && c.Request != nil && h != nil {
+		if session := extractClientSessionID(c.Request.Header); session != "" {
+			isolated := isolateOpenAIUpstreamSessionID(getAPIKeyIDFromContext(c), codexAccountIdentitySource(c, account), session)
+			h.Set("session-id", isolated)
+			h.Set("session_id", isolated)
+		}
+	}
 }
 
 func applyStagedCodexFingerprintClientMetadata(c *gin.Context, account *Account, reqBody map[string]any) bool {
@@ -229,6 +248,9 @@ func deriveStableUUIDv4(seed string) string {
 func resolveConvergedInstallationID(account *Account, seed string) string {
 	if account == nil {
 		return ""
+	}
+	if isMode1ProtectionEnabled(account) && seed != "" {
+		return deriveStableUUIDv4("sub2api:mode1-install-id:v2:" + seed)
 	}
 	if deviceID := account.GetOpenAIDeviceID(); deviceID != "" {
 		return deviceID

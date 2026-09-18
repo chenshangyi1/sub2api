@@ -65,6 +65,30 @@ func TestCNProviderBalanceCheckRunOnceProbesCodingPlanQuota(t *testing.T) {
 	require.ElementsMatch(t, []int64{1, 2, 4}, prober.probed)
 }
 
+func TestCNProviderBalanceCheckRunOnceProbesUnifiedCNCodingPlan(t *testing.T) {
+	cnKimi := Account{ID: 11, Platform: PlatformCN, Type: AccountTypeAPIKey, Status: StatusActive,
+		Credentials: map[string]any{"account_mode": "coding", "cn_vendor": CNVendorKimi}}
+	cnZhipu := Account{ID: 12, Platform: PlatformCN, Type: AccountTypeAPIKey, Status: StatusActive,
+		Credentials: map[string]any{"account_mode": "coding", "cn_vendor": CNVendorZhipu}}
+	legacyKimi := Account{ID: 13, Platform: PlatformKimi, Type: AccountTypeAPIKey, Status: StatusActive,
+		Credentials: map[string]any{"account_mode": "coding"}}
+
+	repo := &fakeCNCheckRepo{byPlatform: map[string][]Account{
+		PlatformCN:   {cnKimi, cnZhipu},
+		PlatformKimi: {legacyKimi},
+	}}
+	prober := &fakeCNQuotaProber{}
+	svc := &CNProviderBalanceCheckService{
+		accountRepo:  repo,
+		quotaService: prober,
+		cfg:          &config.Config{},
+	}
+
+	svc.runOnce()
+
+	require.ElementsMatch(t, []int64{11, 12, 13}, prober.probed)
+}
+
 // runOnceZhipuQuota 在 quotaService 缺失时安全跳过（Start 门控不启动的老部署路径）。
 func TestCNProviderBalanceCheckRunOnceWithoutQuotaService(t *testing.T) {
 	repo := &fakeCNCheckRepo{byPlatform: map[string][]Account{

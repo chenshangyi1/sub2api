@@ -64,5 +64,11 @@ declare module 'vue-router' {
      * i18n key for the page description
      */
     descriptionKey?: string
+
+    /**
+     * Drop the main content padding so an embedded full-bleed page
+     * (image studio iframe) can fill the remaining viewport exactly.
+     */
+    flushContent?: boolean
   }
 }

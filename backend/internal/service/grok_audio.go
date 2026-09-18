@@ -93,7 +93,7 @@ func (s *OpenAIGatewayService) ForwardGrokVoice(ctx context.Context, c *gin.Cont
 		proxyURL = account.Proxy.URL()
 	}
 	started := time.Now()
-	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	resp, err := s.httpUpstream.Do(WithAccountTrafficRequest(req, account), proxyURL, account.ID, account.Concurrency)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(started).Milliseconds())
 	if err != nil {
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
@@ -160,6 +160,9 @@ func (s *OpenAIGatewayService) OpenGrokRealtime(ctx context.Context, account *Ac
 	if s == nil || account == nil || account.Platform != PlatformGrok {
 		return nil, fmt.Errorf("grok realtime account is required")
 	}
+	if err := validateGrokRealtimeTrafficPolicy(account); err != nil {
+		return nil, err
+	}
 	base, err := buildGrokVoiceURL(account, s.cfg, "realtime")
 	if err != nil {
 		return nil, err
@@ -190,6 +193,17 @@ func (s *OpenAIGatewayService) OpenGrokRealtime(ctx context.Context, account *Ac
 
 // HandleGrokRealtimeUpstreamError applies the shared Grok account policy to a
 // failed pre-accept WebSocket handshake.
+func validateGrokRealtimeTrafficPolicy(account *Account) error {
+	plan, err := AccountTrafficPlanFor(account)
+	if err != nil {
+		return err
+	}
+	if plan.Policy.Enforces() {
+		return (&AccountTrafficLimitError{Status: http.StatusBadRequest, Reason: "Grok 实时语音的自动生成暂不支持逐轮硬限制。请使用 HTTP 语音接口，或将此账号流量控制设为仅观察（关闭严格 RPM 和自动并发）。"}).FailoverError()
+	}
+	return nil
+}
+
 func (s *OpenAIGatewayService) HandleGrokRealtimeUpstreamError(ctx context.Context, account *Account, statusCode int, body []byte) {
 	if statusCode <= 0 {
 		statusCode = http.StatusBadGateway

@@ -115,7 +115,7 @@ func normalizeCompositeRouteMatchType(matchType string) string {
 func normalizeCompositeRouteInput(input CompositeRouteInput) CompositeRouteInput {
 	input.PublicModel = strings.TrimSpace(input.PublicModel)
 	input.MatchType = normalizeCompositeRouteMatchType(input.MatchType)
-	input.TargetPlatform = strings.TrimSpace(input.TargetPlatform)
+	input.TargetPlatform = CanonicalAccountPlatform(strings.TrimSpace(input.TargetPlatform))
 	input.UpstreamModel = strings.TrimSpace(input.UpstreamModel)
 	input.Endpoint = normalizeCompositeRouteEndpoint(input.Endpoint)
 	// 仅对 exact 路由把空 upstream_model 回填成 public_model：exact 命中时请求模型

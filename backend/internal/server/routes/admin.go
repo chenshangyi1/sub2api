@@ -43,6 +43,9 @@ func RegisterAdminRoutes(
 		// 分组管理
 		registerGroupRoutes(admin, h)
 
+		// Adaptive 父组拓扑
+		registerAdaptiveRoutes(admin, h)
+
 		// 账号管理
 		registerAccountRoutes(admin, h, stepUpAuth)
 
@@ -117,6 +120,7 @@ func RegisterAdminRoutes(
 
 		// 渠道监控
 		registerChannelMonitorRoutes(admin, h, settingService)
+		registerGroupMonitorRoutes(admin, h)
 		registerChannelMonitorV2Routes(admin, h, settingService)
 
 		// 风控中心
@@ -326,6 +330,21 @@ func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 }
 
+func registerAdaptiveRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.Adaptive == nil {
+		return
+	}
+	adaptive := admin.Group("/adaptive-groups")
+	{
+		adaptive.GET("", h.Admin.Adaptive.List)
+		adaptive.GET("/:parent_group_id", h.Admin.Adaptive.GetByParentID)
+		adaptive.PUT("/:parent_group_id", h.Admin.Adaptive.Put)
+		adaptive.DELETE("/:parent_group_id", h.Admin.Adaptive.Delete)
+	}
+	admin.GET("/anti-stall-pro", h.Admin.Adaptive.GetAntiStallPro)
+	admin.PUT("/anti-stall-pro", h.Admin.Adaptive.PutAntiStallPro)
+}
+
 func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	groups := admin.Group("/groups")
 	{
@@ -365,7 +384,13 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/upstream-billing-probe/batch", h.Admin.Account.ProbeUpstreamBillingBatch)
 		accounts.GET("/ollama-cloud-usage/settings", h.Admin.Account.GetOllamaCloudUsageSettings)
 		accounts.PUT("/ollama-cloud-usage/settings", h.Admin.Account.UpdateOllamaCloudUsageSettings)
+		accounts.GET("/anti-degrade/strategies", h.Admin.AntiDegrade.Strategies)
 		accounts.GET("/:id", h.Admin.Account.GetByID)
+		accounts.GET("/:id/traffic-control", h.Admin.AccountTraffic.Get)
+		accounts.PUT("/:id/traffic-control", h.Admin.AccountTraffic.Update)
+		accounts.GET("/:id/anti-degrade", h.Admin.AntiDegrade.Preview)
+		accounts.POST("/:id/anti-degrade/apply", h.Admin.AntiDegrade.Apply)
+		accounts.POST("/:id/anti-degrade/revert", h.Admin.AntiDegrade.Revert)
 		accounts.POST("", h.Admin.Account.Create)
 		accounts.POST("/:id/duplicate", h.Admin.Account.Duplicate)
 		accounts.POST("/check-mixed-channel", h.Admin.Account.CheckMixedChannel)
@@ -771,6 +796,20 @@ func registerChannelRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		channels.PUT("/:id", h.Admin.Channel.Update)
 		channels.DELETE("/:id", h.Admin.Channel.Delete)
 	}
+}
+
+func registerGroupMonitorRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.GroupMonitor == nil {
+		return
+	}
+	monitors := admin.Group("/group-monitors")
+	monitors.GET("", h.Admin.GroupMonitor.List)
+	monitors.POST("", h.Admin.GroupMonitor.Create)
+	monitors.POST("/batch", h.Admin.GroupMonitor.BatchCreate)
+	monitors.PUT("/:id", h.Admin.GroupMonitor.Update)
+	monitors.DELETE("/:id", h.Admin.GroupMonitor.Delete)
+	monitors.POST("/:id/run", h.Admin.GroupMonitor.Run)
+	monitors.GET("/:id/results", h.Admin.GroupMonitor.ListResults)
 }
 
 func registerChannelMonitorRoutes(admin *gin.RouterGroup, h *handler.Handlers, settingService *service.SettingService) {

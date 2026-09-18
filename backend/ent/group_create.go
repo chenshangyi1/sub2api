@@ -4,7 +4,7 @@ package ent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"time"
@@ -172,6 +172,20 @@ func (_c *GroupCreate) SetIsExclusive(v bool) *GroupCreate {
 func (_c *GroupCreate) SetNillableIsExclusive(v *bool) *GroupCreate {
 	if v != nil {
 		_c.SetIsExclusive(*v)
+	}
+	return _c
+}
+
+// SetUserVisible sets the "user_visible" field.
+func (_c *GroupCreate) SetUserVisible(v bool) *GroupCreate {
+	_c.mutation.SetUserVisible(v)
+	return _c
+}
+
+// SetNillableUserVisible sets the "user_visible" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableUserVisible(v *bool) *GroupCreate {
+	if v != nil {
+		_c.SetUserVisible(*v)
 	}
 	return _c
 }
@@ -575,7 +589,7 @@ func (_c *GroupCreate) SetNillableLongContextPricingEnabled(v *bool) *GroupCreat
 }
 
 // SetModelPricing sets the "model_pricing" field.
-func (_c *GroupCreate) SetModelPricing(v json.RawMessage) *GroupCreate {
+func (_c *GroupCreate) SetModelPricing(v jsontext.Value) *GroupCreate {
 	_c.mutation.SetModelPricing(v)
 	return _c
 }
@@ -1015,6 +1029,10 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultIsExclusive
 		_c.mutation.SetIsExclusive(v)
 	}
+	if _, ok := _c.mutation.UserVisible(); !ok {
+		v := group.DefaultUserVisible
+		_c.mutation.SetUserVisible(v)
+	}
 	if _, ok := _c.mutation.Status(); !ok {
 		v := group.DefaultStatus
 		_c.mutation.SetStatus(v)
@@ -1185,6 +1203,9 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.IsExclusive(); !ok {
 		return &ValidationError{Name: "is_exclusive", err: errors.New(`ent: missing required field "Group.is_exclusive"`)}
+	}
+	if _, ok := _c.mutation.UserVisible(); !ok {
+		return &ValidationError{Name: "user_visible", err: errors.New(`ent: missing required field "Group.user_visible"`)}
 	}
 	if _, ok := _c.mutation.Status(); !ok {
 		return &ValidationError{Name: "status", err: errors.New(`ent: missing required field "Group.status"`)}
@@ -1399,6 +1420,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.IsExclusive(); ok {
 		_spec.SetField(group.FieldIsExclusive, field.TypeBool, value)
 		_node.IsExclusive = value
+	}
+	if value, ok := _c.mutation.UserVisible(); ok {
+		_spec.SetField(group.FieldUserVisible, field.TypeBool, value)
+		_node.UserVisible = value
 	}
 	if value, ok := _c.mutation.Status(); ok {
 		_spec.SetField(group.FieldStatus, field.TypeString, value)
@@ -1901,6 +1926,18 @@ func (u *GroupUpsert) SetIsExclusive(v bool) *GroupUpsert {
 // UpdateIsExclusive sets the "is_exclusive" field to the value that was provided on create.
 func (u *GroupUpsert) UpdateIsExclusive() *GroupUpsert {
 	u.SetExcluded(group.FieldIsExclusive)
+	return u
+}
+
+// SetUserVisible sets the "user_visible" field.
+func (u *GroupUpsert) SetUserVisible(v bool) *GroupUpsert {
+	u.Set(group.FieldUserVisible, v)
+	return u
+}
+
+// UpdateUserVisible sets the "user_visible" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateUserVisible() *GroupUpsert {
+	u.SetExcluded(group.FieldUserVisible)
 	return u
 }
 
@@ -2445,7 +2482,7 @@ func (u *GroupUpsert) UpdateLongContextPricingEnabled() *GroupUpsert {
 }
 
 // SetModelPricing sets the "model_pricing" field.
-func (u *GroupUpsert) SetModelPricing(v json.RawMessage) *GroupUpsert {
+func (u *GroupUpsert) SetModelPricing(v jsontext.Value) *GroupUpsert {
 	u.Set(group.FieldModelPricing, v)
 	return u
 }
@@ -2981,6 +3018,20 @@ func (u *GroupUpsertOne) SetIsExclusive(v bool) *GroupUpsertOne {
 func (u *GroupUpsertOne) UpdateIsExclusive() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateIsExclusive()
+	})
+}
+
+// SetUserVisible sets the "user_visible" field.
+func (u *GroupUpsertOne) SetUserVisible(v bool) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetUserVisible(v)
+	})
+}
+
+// UpdateUserVisible sets the "user_visible" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateUserVisible() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateUserVisible()
 	})
 }
 
@@ -3615,7 +3666,7 @@ func (u *GroupUpsertOne) UpdateLongContextPricingEnabled() *GroupUpsertOne {
 }
 
 // SetModelPricing sets the "model_pricing" field.
-func (u *GroupUpsertOne) SetModelPricing(v json.RawMessage) *GroupUpsertOne {
+func (u *GroupUpsertOne) SetModelPricing(v jsontext.Value) *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.SetModelPricing(v)
 	})
@@ -4374,6 +4425,20 @@ func (u *GroupUpsertBulk) UpdateIsExclusive() *GroupUpsertBulk {
 	})
 }
 
+// SetUserVisible sets the "user_visible" field.
+func (u *GroupUpsertBulk) SetUserVisible(v bool) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetUserVisible(v)
+	})
+}
+
+// UpdateUserVisible sets the "user_visible" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateUserVisible() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateUserVisible()
+	})
+}
+
 // SetStatus sets the "status" field.
 func (u *GroupUpsertBulk) SetStatus(v string) *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
@@ -5005,7 +5070,7 @@ func (u *GroupUpsertBulk) UpdateLongContextPricingEnabled() *GroupUpsertBulk {
 }
 
 // SetModelPricing sets the "model_pricing" field.
-func (u *GroupUpsertBulk) SetModelPricing(v json.RawMessage) *GroupUpsertBulk {
+func (u *GroupUpsertBulk) SetModelPricing(v jsontext.Value) *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.SetModelPricing(v)
 	})

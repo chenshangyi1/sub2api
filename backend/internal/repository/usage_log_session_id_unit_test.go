@@ -32,7 +32,7 @@ func newSessionIDUsageLog(sessionID *string) *service.UsageLog {
 // arg slice / arg-type table so the five INSERT column lists stay in sync. session_id
 // is the penultimate arg (created_at is always last).
 func TestPrepareUsageLogInsert_SessionIDArgWiring(t *testing.T) {
-	require.Len(t, usageLogInsertArgTypes, 59, "arg-type table must include session_id")
+	require.Len(t, usageLogInsertArgTypes, 71, "arg-type table must include adaptive fields and session_id")
 
 	sessionID := "sess-persisted-123"
 	prepared := prepareUsageLogInsert(newSessionIDUsageLog(&sessionID))
@@ -71,6 +71,12 @@ func TestPrepareUsageLogInsert_SessionIDNullWhenAbsent(t *testing.T) {
 func TestUsageLogInsertQueries_IncludeSessionID(t *testing.T) {
 	require.Contains(t, usageLogSelectColumns, "session_id",
 		"SELECT column list must include session_id")
+	require.Greater(t, strings.Index(usageLogSelectColumns, "adaptive_settlement_status"),
+		strings.Index(usageLogSelectColumns, "account_stats_cost"),
+		"Adaptive columns must follow account_stats_cost")
+	require.Greater(t, strings.Index(usageLogSelectColumns, "session_id"),
+		strings.Index(usageLogSelectColumns, "adaptive_settlement_status"),
+		"session_id must follow Adaptive columns")
 
 	sessionID := "sess-in-query"
 	log := newSessionIDUsageLog(&sessionID)

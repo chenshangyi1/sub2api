@@ -233,8 +233,10 @@ type OpenAIUsage struct {
 type OpenAIForwardResult struct {
 	RequestID  string
 	ResponseID string
-	Usage      OpenAIUsage
-	Model      string // 原始模型（用于响应和日志显示）
+	// UpstreamHeaders 是直接上游的响应头，用于按账户配置解析上游请求标识。
+	UpstreamHeaders http.Header
+	Usage           OpenAIUsage
+	Model           string // 原始模型（用于响应和日志显示）
 	// BillingModel is the model used for cost calculation.
 	// When non-empty, CalculateCost uses this instead of Model.
 	// This is set by the Anthropic Messages conversion path where
@@ -259,7 +261,10 @@ type OpenAIForwardResult struct {
 	// ReasoningEffort is extracted from request body (reasoning.effort) or derived from model suffix.
 	// Stored for usage records display; nil means not provided / not applicable.
 	ReasoningEffort *string
-	Stream          bool
+	// RequestedReasoningEffort is the client-requested effort before mapping.
+	// Empty/nil means it should fall back to ReasoningEffort at persistence.
+	RequestedReasoningEffort *string
+	Stream                   bool
 	OpenAIWSMode    bool
 	// UpstreamTerminalEvent is the normalized terminal event observed on an
 	// upstream Responses WebSocket turn. Empty preserves legacy/non-WS success.
@@ -271,16 +276,19 @@ type OpenAIForwardResult struct {
 	ResponseHeaders          http.Header
 	Duration                 time.Duration
 	FirstTokenMs             *int
-	ClientDisconnect         bool
-	ImageCount               int
-	ImageSize                string
-	ImageInputSize           string
-	ImageOutputSize          string
-	ImageOutputSizes         []string
-	ImageSizeSource          string
-	ImageSizeBreakdown       map[string]int
-	VideoCount               int
-	VideoResolution          string
+	// SemanticFirstTokenMs preserves the first meaningful output timing when
+	// FirstTokenMs is intentionally reported from an earlier protocol event.
+	SemanticFirstTokenMs *int
+	ClientDisconnect     bool
+	ImageCount           int
+	ImageSize            string
+	ImageInputSize       string
+	ImageOutputSize      string
+	ImageOutputSizes     []string
+	ImageSizeSource      string
+	ImageSizeBreakdown   map[string]int
+	VideoCount           int
+	VideoResolution      string
 	// VideoDurationSeconds 是提交时请求的生成时长（xAI 按输出秒数计费），已归一化到 1-15 秒。
 	VideoDurationSeconds int
 	// WebSearchCalls 是 Codex alpha/search 网页搜索调用次数（每次成功请求为 1）。
@@ -309,6 +317,16 @@ func (r *OpenAIForwardResult) SucceededForScheduling() bool {
 	default:
 		return false
 	}
+}
+
+func (r *OpenAIForwardResult) FirstTokenMsForScheduling() *int {
+	if r == nil {
+		return nil
+	}
+	if r.SemanticFirstTokenMs != nil {
+		return r.SemanticFirstTokenMs
+	}
+	return r.FirstTokenMs
 }
 
 // SetActualOpenAIUpstreamEndpoint records the endpoint selected by the current
@@ -438,6 +456,7 @@ type OpenAIGatewayService struct {
 	balanceNotifyService  *BalanceNotifyService
 	settingService        *SettingService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	adaptiveBilling       *AdaptiveBillingCoordinator
 	liveAttestation       liveattestation.Provider
 	liveAttestationCipher SecretEncryptor
 
@@ -474,7 +493,7 @@ type OpenAIGatewayService struct {
 	openaiWSRetryMetrics                openAIWSRetryMetrics
 	responseHeaderFilter                *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle               *accountWriteThrottle
-	codexModelsManifestCache            codexModelsManifestCache
+	openAIModelsCache                   openAIModelsCache
 	openaiCompatSessionResponses        sync.Map
 	openaiCompatAnthropicDigestSessions sync.Map
 	// openaiCodexTurnStateOrigins: 下游会话 seed → openAICodexTurnStateOrigin，
@@ -484,7 +503,14 @@ type OpenAIGatewayService struct {
 	openaiCodexTurnStateWrites  atomic.Uint64
 }
 
-// NewOpenAIGatewayService creates a new OpenAIGatewayService
+// SetAdaptiveBillingCoordinator wires the Adaptive authorize/capture path used
+// by OpenAI usage recording.
+func (s *OpenAIGatewayService) SetAdaptiveBillingCoordinator(coordinator *AdaptiveBillingCoordinator) {
+	if s != nil {
+		s.adaptiveBilling = coordinator
+	}
+}
+
 func NewOpenAIGatewayService(
 	accountRepo AccountRepository,
 	usageLogRepo UsageLogRepository,

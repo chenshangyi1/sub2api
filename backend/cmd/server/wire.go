@@ -94,6 +94,7 @@ func provideCleanup(
 	opsIngressReject *service.OpsIngressRejectAggregator,
 	apiKeyService *service.APIKeyService,
 	authCacheInvalidationWorker *service.AuthCacheInvalidationWorker,
+	adaptiveReservationReconciler *service.AdaptiveReservationReconciler,
 	schedulerSnapshot *service.SchedulerSnapshotService,
 	tokenRefresh *service.TokenRefreshService,
 	accountExpiry *service.AccountExpiryService,
@@ -164,6 +165,12 @@ func provideCleanup(
 			{"AuthCacheInvalidationWorker", func() error {
 				if authCacheInvalidationWorker != nil {
 					authCacheInvalidationWorker.Stop()
+				}
+				return nil
+			}},
+			{"AdaptiveReservationReconciler", func() error {
+				if adaptiveReservationReconciler != nil {
+					adaptiveReservationReconciler.Stop()
 				}
 				return nil
 			}},

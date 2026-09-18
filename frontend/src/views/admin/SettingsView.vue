@@ -1184,6 +1184,7 @@
                           | 'all'
                           | 'priority'
                           | 'flex'
+                          | 'missing'
                       "
                       :options="openaiFastPolicyTierOptions"
                     />
@@ -5037,6 +5038,38 @@
               </div>
 
               <div
+                class="flex flex-col items-stretch gap-3 border-t border-gray-100 pt-5 sm:flex-row sm:items-start sm:justify-between sm:gap-6 dark:border-dark-700"
+              >
+                <div class="min-w-0">
+                  <label
+                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                    for="adaptive-service-fee-percent"
+                  >
+                    {{ t("admin.settings.adaptiveServiceFee.title") }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.adaptiveServiceFee.description") }}
+                  </p>
+                </div>
+                <div class="relative w-full shrink-0 sm:w-32">
+                  <input
+                    id="adaptive-service-fee-percent"
+                    v-model.number="form.adaptive_service_fee_percent"
+                    class="input pr-8"
+                    data-testid="adaptive-service-fee-percent"
+                    min="0"
+                    max="100"
+                    required
+                    step="0.01"
+                    type="number"
+                  />
+                  <span
+                    class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-gray-400"
+                  >%</span>
+                </div>
+              </div>
+
+              <div
                 v-if="!form.openai_advanced_scheduler_enabled"
                 class="flex items-center justify-between border-t border-gray-100 pt-5 dark:border-dark-700"
               >
@@ -6585,19 +6618,6 @@
                 <p class="mt-2 text-xs text-amber-600 dark:text-amber-400">
                   {{ t("admin.settings.site.homeContentIframeWarning") }}
                 </p>
-              </div>
-
-              <!-- Compact Home Page -->
-              <div class="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-dark-700">
-                <div>
-                  <label class="font-medium text-gray-900 dark:text-white">{{
-                    t("admin.settings.site.compactHome")
-                  }}</label>
-                  <p class="text-sm text-gray-500 dark:text-gray-400">
-                    {{ t("admin.settings.site.compactHomeHint") }}
-                  </p>
-                </div>
-                <Toggle v-model="form.compact_home_enabled" data-testid="compact-home-toggle" />
               </div>
 
               <!-- Hide CCS Import Button -->
@@ -8242,6 +8262,7 @@
                     ></textarea>
                   </div>
                 </div>
+
               </template>
             </div>
           </div>
@@ -9506,6 +9527,7 @@ type SettingsForm = Omit<
   force_email_on_third_party_signup: boolean;
   openai_low_upstream_rate_priority_enabled: boolean;
   openai_oauth_scheduling_rate_multiplier: number;
+  adaptive_service_fee_percent: number;
   codex_quota_overdraft_enabled: boolean;
   codex_quota_overdraft_business_injection_enabled: boolean;
   openai_advanced_scheduler_enabled: boolean;
@@ -9750,6 +9772,7 @@ const form = reactive<SettingsForm>({
   allow_ungrouped_key_scheduling: false,
   openai_low_upstream_rate_priority_enabled: false,
   openai_oauth_scheduling_rate_multiplier: 1,
+  adaptive_service_fee_percent: 15,
   // Codex 5h/7d detector stays on for compatibility; real-request injection
   // is opt-in because upstream may count the synthetic tool pair.
   codex_quota_overdraft_enabled: true,
@@ -11013,6 +11036,17 @@ function findDuplicateDefaultSubscription(
 async function saveSettings() {
   saving.value = true;
   try {
+    const adaptiveServiceFeePercent = Number(form.adaptive_service_fee_percent);
+    if (
+      !Number.isFinite(adaptiveServiceFeePercent) ||
+      adaptiveServiceFeePercent < 0 ||
+      adaptiveServiceFeePercent > 100
+    ) {
+      appStore.showError(t("admin.settings.adaptiveServiceFee.description"));
+      return;
+    }
+    form.adaptive_service_fee_percent = adaptiveServiceFeePercent;
+
     const normalizedTableDefaultPageSize = Math.floor(
       Number(form.table_default_page_size),
     );
@@ -11416,6 +11450,11 @@ async function saveSettings() {
         form.openai_low_upstream_rate_priority_enabled,
       openai_oauth_scheduling_rate_multiplier:
         form.openai_oauth_scheduling_rate_multiplier,
+      adaptive_service_fee_percent: Number.isFinite(
+        Number(form.adaptive_service_fee_percent),
+      )
+        ? Number(form.adaptive_service_fee_percent)
+        : 15,
       codex_quota_overdraft_enabled: form.codex_quota_overdraft_enabled,
       // Keep the subordinate preference when the master switch is temporarily
       // off; runtime still requires master=true before any injection occurs.
@@ -12095,6 +12134,7 @@ const openaiFastPolicyTierOptions = computed(() => [
     label: t("admin.settings.openaiFastPolicy.tierPriority"),
   },
   { value: "flex", label: t("admin.settings.openaiFastPolicy.tierFlex") },
+  { value: "missing", label: t("admin.settings.openaiFastPolicy.tierMissing") },
 ]);
 
 const openaiFastPolicyActionOptions = computed(() => [

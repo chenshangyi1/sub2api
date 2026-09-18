@@ -3,6 +3,7 @@
 package admin
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -557,4 +558,58 @@ func TestSyncPricingModels_ValidPlatform_EmptyService(t *testing.T) {
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 		require.NotNil(t, body.Data.Models, "models must not be null for platform=%s", platform)
 	}
+}
+
+func bindChannelJSON(t *testing.T, target any, body string) error {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPut, "/admin/channels/6", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	return c.ShouldBindJSON(target)
+}
+
+func TestBindUpdateChannelRequest_FrontendOpenAITokenPricing(t *testing.T) {
+	// Frontend formToAPI payload: $/MTok 3/9 converted to per-token, time_pricing null, empty intervals.
+	body := `{
+		"name": "国模",
+		"status": "active",
+		"group_ids": [115],
+		"model_pricing": [{
+			"platform": "openai",
+			"models": ["kimi-k3"],
+			"billing_mode": "token",
+			"input_price": 0.000003,
+			"output_price": 0.000009,
+			"cache_write_price": null,
+			"cache_read_price": null,
+			"fast_multiplier": null,
+			"flex_multiplier": null,
+			"image_input_price": null,
+			"image_output_price": null,
+			"per_request_price": null,
+			"intervals": [],
+			"time_pricing": null
+		}],
+		"model_mapping": {},
+		"billing_model_source": "channel_mapped",
+		"restrict_models": false,
+		"features_config": {"codex_image_generation_bridge": {"openai": false}},
+		"apply_pricing_to_account_stats": false,
+		"account_stats_pricing_rules": []
+	}`
+
+	var req updateChannelRequest
+	require.NoError(t, bindChannelJSON(t, &req, body))
+	require.NotNil(t, req.ModelPricing, "jsonv2 must not drop model_pricing into nil")
+	require.Len(t, *req.ModelPricing, 1)
+
+	pricing := pricingRequestToService(*req.ModelPricing, true)
+	require.Equal(t, "openai", pricing[0].Platform)
+	require.Equal(t, []string{"kimi-k3"}, pricing[0].Models)
+	require.Equal(t, service.BillingModeToken, pricing[0].BillingMode)
+	require.NotNil(t, pricing[0].InputPrice)
+	require.InDelta(t, 0.000003, *pricing[0].InputPrice, 1e-12)
+	require.NotNil(t, pricing[0].OutputPrice)
+	require.InDelta(t, 0.000009, *pricing[0].OutputPrice, 1e-12)
 }

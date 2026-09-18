@@ -40,6 +40,9 @@ func RegisterUserRoutes(
 			user.POST("/auth-identities/bind/start", h.User.StartIdentityBinding)
 			user.GET("/api-keys/:id/usage/daily", panelRateLimiter.Heavy(), h.Usage.GetMyAPIKeyDailyUsage)
 			user.GET("/platform-quotas", h.User.GetMyPlatformQuotas)
+			user.GET("/cf-allowlist", h.User.GetCFAllowlist)
+			user.POST("/cf-allowlist", h.User.AddCFAllowlist)
+			user.DELETE("/cf-allowlist/:id", h.User.DeleteCFAllowlist)
 
 			// 通知邮箱管理
 			notifyEmail := user.Group("/notify-email")
@@ -141,6 +144,13 @@ func RegisterUserRoutes(
 		{
 			monitors.GET("", h.ChannelMonitor.List)
 			monitors.GET("/:id/status", h.ChannelMonitor.GetStatus)
+		}
+
+		// 分组监控（用户只读）
+		groupMonitors := authenticated.Group("/group-monitors")
+		{
+			groupMonitors.GET("", h.GroupMonitor.List)
+			groupMonitors.GET("/:id/results", h.GroupMonitor.GetResults)
 		}
 
 		// V2 passive views require feature on + mode=v2.

@@ -34,6 +34,37 @@
         <ToggleSwitch :label="t('common.enabled')" :checked="form.enabled" @toggle="form.enabled = !form.enabled" />
         <ToggleSwitch :label="t('admin.settings.payment.refundEnabled')" :checked="form.refund_enabled" @toggle="form.refund_enabled = !form.refund_enabled; if (!form.refund_enabled) form.allow_user_refund = false" />
         <ToggleSwitch v-if="form.refund_enabled" :label="t('admin.settings.payment.allowUserRefund')" :checked="form.allow_user_refund" @toggle="form.allow_user_refund = !form.allow_user_refund" />
+        <div class="flex items-center gap-2">
+          <label class="text-xs font-medium text-gray-500 dark:text-gray-400" for="instance-recharge-fee-rate">
+            {{ t('admin.settings.payment.instanceRechargeFeeRate') }}
+          </label>
+          <input
+            id="instance-recharge-fee-rate"
+            v-model="form.recharge_fee_rate"
+            type="number"
+            min="0"
+            max="100"
+            step="0.01"
+            class="input w-24"
+            data-testid="instance-recharge-fee-rate"
+            :placeholder="t('admin.settings.payment.instanceRechargeFeeRatePlaceholder')"
+          />
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-xs font-medium text-gray-500 dark:text-gray-400" for="instance-balance-recharge-multiplier">
+            {{ t('admin.settings.payment.instanceBalanceMultiplier') }}
+          </label>
+          <input
+            id="instance-balance-recharge-multiplier"
+            v-model="form.balance_recharge_multiplier"
+            type="number"
+            min="0"
+            step="0.01"
+            class="input w-24"
+            data-testid="instance-balance-recharge-multiplier"
+            :placeholder="t('admin.settings.payment.instanceBalanceMultiplierPlaceholder')"
+          />
+        </div>
         <div v-if="supportsPaymentMode" class="flex items-center gap-2">
           <span class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.settings.payment.paymentMode') }}</span>
           <div class="flex gap-1.5">
@@ -209,6 +240,30 @@
               {{ t(field.hintKey) }}
             </p>
           </div>
+          <div v-if="form.provider_key === 'epusdt'">
+            <label class="input-label">
+              {{ t('admin.settings.payment.field_networks') }}
+              <span class="text-red-500"> *</span>
+            </label>
+            <div class="flex flex-wrap gap-1.5">
+              <button
+                v-for="network in EPUSDT_NETWORK_OPTIONS"
+                :key="network.value"
+                type="button"
+                :data-testid="`epusdt-network-${network.value}`"
+                @click="toggleEpusdtNetwork(network.value)"
+                :class="[
+                  'rounded-lg border px-2.5 py-1 text-xs font-medium transition-all',
+                  isEpusdtNetworkSelected(network.value)
+                    ? 'border-primary-500 bg-primary-500 text-white shadow-sm'
+                    : 'border-gray-300 bg-white text-gray-600 hover:border-gray-400 hover:bg-gray-50 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300 dark:hover:border-dark-500',
+                ]"
+              >{{ network.label }}</button>
+            </div>
+            <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.payment.field_networksHint') }}
+            </p>
+          </div>
         </div>
 
         <!-- Callback URLs (each = editable URL + fixed path) -->
@@ -327,6 +382,9 @@ import {
   extractBaseUrl,
   parseEasyPayCustomMethods,
   serializeEasyPayCustomMethods,
+  EPUSDT_NETWORK_OPTIONS,
+  parseEpusdtNetworks,
+  serializeEpusdtNetworks,
 } from './providerConfig'
 
 /** Default payment_mode per provider key — "" means "no preference, use
@@ -380,6 +438,8 @@ const emit = defineEmits<{
     allow_user_refund: boolean
     config: Record<string, string>
     limits: string
+    recharge_fee_rate?: number | null
+    balance_recharge_multiplier?: number | null
   }]
 }>()
 
@@ -407,6 +467,8 @@ const form = reactive({
   payment_mode: PAYMENT_MODE_QRCODE,
   refund_enabled: false,
   allow_user_refund: false,
+  recharge_fee_rate: '',
+  balance_recharge_multiplier: '',
 })
 const config = reactive<Record<string, string>>({})
 const limits = reactive<Record<string, Record<string, number>>>({})
@@ -415,6 +477,7 @@ const returnBaseUrl = ref('')
 const limitsExpanded = ref(false)
 const visibleFields = reactive<Record<string, boolean>>({})
 const easyPayCustomMethods = reactive<EasyPayCustomMethod[]>([])
+const epusdtNetworks = reactive<string[]>([])
 
 // --- Computed ---
 const defaultBaseUrl = typeof window !== 'undefined' ? window.location.origin : ''
@@ -573,6 +636,19 @@ function toggleType(type: string) {
   }
 }
 
+function isEpusdtNetworkSelected(network: string): boolean {
+  return epusdtNetworks.includes(network)
+}
+
+function toggleEpusdtNetwork(network: string) {
+  if (epusdtNetworks.includes(network)) {
+    const next = epusdtNetworks.filter(item => item !== network)
+    epusdtNetworks.splice(0, epusdtNetworks.length, ...next)
+    return
+  }
+  epusdtNetworks.push(network)
+}
+
 function normalizedEasyPayCustomMethods(): EasyPayCustomMethod[] {
   return easyPayCustomMethods
     .map(method => ({
@@ -610,11 +686,15 @@ function clearConfig() {
   returnBaseUrl.value = ''
   limitsExpanded.value = false
   easyPayCustomMethods.splice(0, easyPayCustomMethods.length)
+  epusdtNetworks.splice(0, epusdtNetworks.length)
 }
 
 function applyDefaults() {
   for (const f of PROVIDER_CONFIG_FIELDS[form.provider_key] || []) {
     if (f.defaultValue && !config[f.key]) config[f.key] = f.defaultValue
+  }
+  if (form.provider_key === 'epusdt' && epusdtNetworks.length === 0) {
+    epusdtNetworks.push('bsc')
   }
 }
 
@@ -675,6 +755,10 @@ function handleSave() {
     }
     syncEasyPayCustomMethods()
   }
+  if (form.provider_key === 'epusdt' && parseEpusdtNetworks(epusdtNetworks.join(',')).length === 0) {
+    emitValidationError(t('admin.settings.payment.validationFieldRequired', { field: t('admin.settings.payment.field_networks') }))
+    return
+  }
   // Validate required config fields — all non-optional fields must be filled.
   // In edit mode, sensitive fields may be left blank to preserve the stored
   // value (backend merges blanks by preserving the existing secret).
@@ -707,6 +791,11 @@ function handleSave() {
   if (form.provider_key === 'easypay') {
     filteredConfig.customMethods = serializeEasyPayCustomMethods(normalizedEasyPayCustomMethods())
   }
+  if (form.provider_key === 'epusdt') {
+    const networks = serializeEpusdtNetworks(epusdtNetworks)
+    filteredConfig.networks = networks
+    filteredConfig.network = parseEpusdtNetworks(networks)[0] || ''
+  }
 
   // Inject computed callback URLs (each URL = independent base + fixed path)
   // If base URL is empty, auto-fill with current domain
@@ -720,7 +809,19 @@ function handleSave() {
     if (paths.returnUrl) filteredConfig['returnUrl'] = returnBase + paths.returnUrl
   }
 
-  emit('save', {
+  const payload: {
+    provider_key: string
+    name: string
+    supported_types: string[]
+    enabled: boolean
+    payment_mode: string
+    refund_enabled: boolean
+    allow_user_refund: boolean
+    config: Record<string, string>
+    limits: string
+    recharge_fee_rate?: number | null
+    balance_recharge_multiplier?: number | null
+  } = {
     provider_key: form.provider_key,
     name: form.name,
     supported_types: form.supported_types,
@@ -730,7 +831,22 @@ function handleSave() {
     allow_user_refund: form.refund_enabled ? form.allow_user_refund : false,
     config: filteredConfig,
     limits: serializeLimits(),
-  })
+  }
+  const feeRaw = String(form.recharge_fee_rate ?? '').trim()
+  const feeRate = Number(feeRaw)
+  if (feeRaw !== '' && Number.isFinite(feeRate)) {
+    payload.recharge_fee_rate = feeRate
+  } else if (props.editing) {
+    payload.recharge_fee_rate = null
+  }
+  const multiplierRaw = String(form.balance_recharge_multiplier ?? '').trim()
+  const multiplier = Number(multiplierRaw)
+  if (multiplierRaw !== '' && Number.isFinite(multiplier)) {
+    payload.balance_recharge_multiplier = multiplier
+  } else if (props.editing) {
+    payload.balance_recharge_multiplier = null
+  }
+  emit('save', payload)
 }
 
 function syncEasyPayCustomMethods(): string[] {
@@ -766,7 +882,7 @@ function validateEasyPayCustomMethods(): string | null {
     if (!/^[a-z0-9_-]+$/.test(method.type)) {
       return t('admin.settings.payment.validationEasyPayCustomMethodTypeInvalid')
     }
-    if (!/^[a-z0-9_-]+$/.test(method.upstreamType)) {
+    if (!/^[a-z0-9_.-]+$/.test(method.upstreamType)) {
       return t('admin.settings.payment.validationEasyPayCustomMethodUpstreamTypeInvalid')
     }
     if ((PROVIDER_SUPPORTED_TYPES.easypay || []).includes(method.type)) {
@@ -798,6 +914,8 @@ function reset(defaultKey: string) {
   form.payment_mode = defaultPaymentMode(defaultKey)
   form.refund_enabled = false
   form.allow_user_refund = false
+  form.recharge_fee_rate = ''
+  form.balance_recharge_multiplier = ''
   clearConfig()
   applyDefaults()
 }
@@ -817,6 +935,8 @@ function loadProvider(provider: ProviderInstance) {
     : defaultPaymentMode(provider.provider_key)
   form.refund_enabled = provider.refund_enabled
   form.allow_user_refund = provider.allow_user_refund
+  form.recharge_fee_rate = provider.recharge_fee_rate == null ? '' : String(provider.recharge_fee_rate)
+  form.balance_recharge_multiplier = provider.balance_recharge_multiplier == null ? '' : String(provider.balance_recharge_multiplier)
   clearConfig()
   // Pre-fill config from API response. Backend omits sensitive fields entirely,
   // so those inputs stay blank — submitting blank preserves the stored secret.
@@ -828,6 +948,9 @@ function loadProvider(provider: ProviderInstance) {
         easyPayCustomMethods.push(...parseEasyPayCustomMethods(v))
         continue
       }
+      if ((k === 'networks' || k === 'network') && provider.provider_key === 'epusdt') {
+        continue
+      }
       config[k] = v
     }
     // Extract base URLs from existing callback URLs
@@ -837,6 +960,10 @@ function loadProvider(provider: ProviderInstance) {
     }
     if (paths?.returnUrl && provider.config['returnUrl']) {
       returnBaseUrl.value = extractBaseUrl(provider.config['returnUrl'], paths.returnUrl)
+    }
+    if (provider.provider_key === 'epusdt') {
+      const networks = parseEpusdtNetworks(provider.config.networks || provider.config.network || '')
+      epusdtNetworks.splice(0, epusdtNetworks.length, ...networks)
     }
   }
   applyDefaults()

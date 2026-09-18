@@ -44,7 +44,8 @@ type ResolvedPricing struct {
 }
 
 // ModelPricingResolver 统一模型定价解析器。
-// 解析链：Group → Channel → LiteLLM → Fallback。
+// 解析链：Channel → Group → LiteLLM → Fallback。
+// 渠道填价覆盖分组价卡；没有渠道定价时才用分组价卡。
 type ModelPricingResolver struct {
 	channelService *ChannelService
 	billingService *BillingService
@@ -66,22 +67,11 @@ type PricingInput struct {
 }
 
 // Resolve 解析模型定价。
-// 1. 获取基础定价（LiteLLM → Fallback）
-// 2. 如果指定了 GroupID，查找渠道定价并覆盖
+// 1. 有渠道定价则用渠道填价（覆盖分组价卡）
+// 2. 无渠道定价时用分组价卡
+// 3. 再回落 LiteLLM / Fallback
 func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) *ResolvedPricing {
 	longContextPricingEnabled := input.Group == nil || input.Group.LongContextPricingEnabled
-	if groupPricing := matchGroupModelPricing(input.Group, input.Model); groupPricing != nil {
-		// Group token cards only override the first-tier / flat rates.
-		// Long-context ladders come from official presets, gated by the checkbox.
-		if groupPricing.BillingMode == "" || groupPricing.BillingMode == BillingModeToken {
-			stripped := groupPricing.Clone()
-			stripped.Intervals = nil
-			groupPricing = &stripped
-		}
-		resolved := r.resolveConfiguredPricing(groupPricing, input.Model, PricingSourceGroup)
-		resolved.longContextPricingEnabled = longContextPricingEnabled
-		return resolved
-	}
 
 	var chPricing *ChannelModelPricing
 	if input.GroupID != nil && r.channelService != nil {
@@ -101,6 +91,21 @@ func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) 
 				r.applyRequestTierOverrides(chPricing, resolved)
 				return resolved
 			}
+		}
+	}
+
+	if chPricing == nil {
+		if groupPricing := matchGroupModelPricing(input.Group, input.Model); groupPricing != nil {
+			// Group token cards only override the first-tier / flat rates.
+			// Long-context ladders come from official presets, gated by the checkbox.
+			if groupPricing.BillingMode == "" || groupPricing.BillingMode == BillingModeToken {
+				stripped := groupPricing.Clone()
+				stripped.Intervals = nil
+				groupPricing = &stripped
+			}
+			resolved := r.resolveConfiguredPricing(groupPricing, input.Model, PricingSourceGroup)
+			resolved.longContextPricingEnabled = longContextPricingEnabled
+			return resolved
 		}
 	}
 

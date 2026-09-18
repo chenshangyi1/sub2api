@@ -259,6 +259,76 @@ var (
 			},
 		},
 	}
+	// AdaptiveGroupConfigsColumns holds the columns for the "adaptive_group_configs" table.
+	AdaptiveGroupConfigsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "enabled", Type: field.TypeBool, Default: true},
+		{Name: "config_generation", Type: field.TypeInt64, Default: 1},
+		{Name: "parent_group_id", Type: field.TypeInt64},
+	}
+	// AdaptiveGroupConfigsTable holds the schema information for the "adaptive_group_configs" table.
+	AdaptiveGroupConfigsTable = &schema.Table{
+		Name:       "adaptive_group_configs",
+		Columns:    AdaptiveGroupConfigsColumns,
+		PrimaryKey: []*schema.Column{AdaptiveGroupConfigsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "adaptive_group_configs_groups_parent_group",
+				Columns:    []*schema.Column{AdaptiveGroupConfigsColumns[5]},
+				RefColumns: []*schema.Column{GroupsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+	}
+	// AdaptiveGroupMembershipsColumns holds the columns for the "adaptive_group_memberships" table.
+	AdaptiveGroupMembershipsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "enabled", Type: field.TypeBool, Default: true},
+		{Name: "sort_order", Type: field.TypeInt, Default: 0},
+		{Name: "config_id", Type: field.TypeInt64},
+		{Name: "leaf_group_id", Type: field.TypeInt64},
+	}
+	// AdaptiveGroupMembershipsTable holds the schema information for the "adaptive_group_memberships" table.
+	AdaptiveGroupMembershipsTable = &schema.Table{
+		Name:       "adaptive_group_memberships",
+		Columns:    AdaptiveGroupMembershipsColumns,
+		PrimaryKey: []*schema.Column{AdaptiveGroupMembershipsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "adaptive_group_memberships_adaptive_group_configs_config",
+				Columns:    []*schema.Column{AdaptiveGroupMembershipsColumns[5]},
+				RefColumns: []*schema.Column{AdaptiveGroupConfigsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "adaptive_group_memberships_groups_leaf_group",
+				Columns:    []*schema.Column{AdaptiveGroupMembershipsColumns[6]},
+				RefColumns: []*schema.Column{GroupsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "adaptivegroupmembership_config_id_leaf_group_id",
+				Unique:  true,
+				Columns: []*schema.Column{AdaptiveGroupMembershipsColumns[5], AdaptiveGroupMembershipsColumns[6]},
+			},
+			{
+				Name:    "adaptivegroupmembership_config_id_enabled_sort_order",
+				Unique:  false,
+				Columns: []*schema.Column{AdaptiveGroupMembershipsColumns[5], AdaptiveGroupMembershipsColumns[3], AdaptiveGroupMembershipsColumns[4]},
+			},
+			{
+				Name:    "adaptivegroupmembership_leaf_group_id",
+				Unique:  false,
+				Columns: []*schema.Column{AdaptiveGroupMembershipsColumns[6]},
+			},
+		},
+	}
 	// AnnouncementsColumns holds the columns for the "announcements" table.
 	AnnouncementsColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt64, Increment: true},
@@ -914,6 +984,7 @@ var (
 		{Name: "peak_end", Type: field.TypeString, Size: 5, Default: ""},
 		{Name: "peak_rate_multiplier", Type: field.TypeFloat64, Default: 1, SchemaType: map[string]string{"postgres": "decimal(10,4)"}},
 		{Name: "is_exclusive", Type: field.TypeBool, Default: false},
+		{Name: "user_visible", Type: field.TypeBool, Default: true},
 		{Name: "status", Type: field.TypeString, Size: 20, Default: "active"},
 		{Name: "duplicate_operation_id", Type: field.TypeString, Nullable: true, Size: 64},
 		{Name: "platform", Type: field.TypeString, Size: 50, Default: "anthropic"},
@@ -975,17 +1046,17 @@ var (
 			{
 				Name:    "group_status",
 				Unique:  false,
-				Columns: []*schema.Column{GroupsColumns[12]},
+				Columns: []*schema.Column{GroupsColumns[13]},
 			},
 			{
 				Name:    "group_platform",
 				Unique:  false,
-				Columns: []*schema.Column{GroupsColumns[14]},
+				Columns: []*schema.Column{GroupsColumns[15]},
 			},
 			{
 				Name:    "group_subscription_type",
 				Unique:  false,
-				Columns: []*schema.Column{GroupsColumns[15]},
+				Columns: []*schema.Column{GroupsColumns[16]},
 			},
 			{
 				Name:    "group_is_exclusive",
@@ -1000,12 +1071,12 @@ var (
 			{
 				Name:    "group_sort_order",
 				Unique:  false,
-				Columns: []*schema.Column{GroupsColumns[49]},
+				Columns: []*schema.Column{GroupsColumns[50]},
 			},
 			{
 				Name:    "idx_groups_duplicate_operation_id_active",
 				Unique:  true,
-				Columns: []*schema.Column{GroupsColumns[13]},
+				Columns: []*schema.Column{GroupsColumns[14]},
 				Annotation: &entsql.IndexAnnotation{
 					Where: "duplicate_operation_id IS NOT NULL AND deleted_at IS NULL",
 				},
@@ -1230,6 +1301,8 @@ var (
 		{Name: "limits", Type: field.TypeString, Default: "", SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "refund_enabled", Type: field.TypeBool, Default: false},
 		{Name: "allow_user_refund", Type: field.TypeBool, Default: false},
+		{Name: "recharge_fee_rate", Type: field.TypeFloat64, Nullable: true},
+		{Name: "balance_recharge_multiplier", Type: field.TypeFloat64, Nullable: true},
 		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
 	}
@@ -2087,6 +2160,8 @@ var (
 		APIKeysTable,
 		AccountsTable,
 		AccountGroupsTable,
+		AdaptiveGroupConfigsTable,
+		AdaptiveGroupMembershipsTable,
 		AnnouncementsTable,
 		AnnouncementReadsTable,
 		AuthIdentitiesTable,
@@ -2141,6 +2216,15 @@ func init() {
 	AccountGroupsTable.ForeignKeys[1].RefTable = GroupsTable
 	AccountGroupsTable.Annotation = &entsql.Annotation{
 		Table: "account_groups",
+	}
+	AdaptiveGroupConfigsTable.ForeignKeys[0].RefTable = GroupsTable
+	AdaptiveGroupConfigsTable.Annotation = &entsql.Annotation{
+		Table: "adaptive_group_configs",
+	}
+	AdaptiveGroupMembershipsTable.ForeignKeys[0].RefTable = AdaptiveGroupConfigsTable
+	AdaptiveGroupMembershipsTable.ForeignKeys[1].RefTable = GroupsTable
+	AdaptiveGroupMembershipsTable.Annotation = &entsql.Annotation{
+		Table: "adaptive_group_memberships",
 	}
 	AnnouncementsTable.Annotation = &entsql.Annotation{
 		Table: "announcements",

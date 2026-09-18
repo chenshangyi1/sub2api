@@ -52,7 +52,7 @@ func TestMigration223TracksConfiguredTimezone(t *testing.T) {
 }
 
 func TestMigration234SkipsWatermarkLockForCurrentDayInserts(t *testing.T) {
-	content, err := FS.ReadFile("234_group_usage_rollup_current_day_fast_path.sql")
+	content, err := FS.ReadFile("245_group_usage_rollup_current_day_fast_path.sql")
 	require.NoError(t, err)
 
 	sql := string(content)

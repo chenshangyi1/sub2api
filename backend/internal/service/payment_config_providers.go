@@ -37,17 +37,19 @@ func (s *PaymentConfigService) ListProviderInstances(ctx context.Context) ([]*db
 
 // ProviderInstanceResponse is the API response for a provider instance.
 type ProviderInstanceResponse struct {
-	ID              int64             `json:"id"`
-	ProviderKey     string            `json:"provider_key"`
-	Name            string            `json:"name"`
-	Config          map[string]string `json:"config"`
-	SupportedTypes  []string          `json:"supported_types"`
-	Limits          string            `json:"limits"`
-	Enabled         bool              `json:"enabled"`
-	RefundEnabled   bool              `json:"refund_enabled"`
-	AllowUserRefund bool              `json:"allow_user_refund"`
-	SortOrder       int               `json:"sort_order"`
-	PaymentMode     string            `json:"payment_mode"`
+	ID                        int64             `json:"id"`
+	ProviderKey               string            `json:"provider_key"`
+	Name                      string            `json:"name"`
+	Config                    map[string]string `json:"config"`
+	SupportedTypes            []string          `json:"supported_types"`
+	Limits                    string            `json:"limits"`
+	Enabled                   bool              `json:"enabled"`
+	RefundEnabled             bool              `json:"refund_enabled"`
+	AllowUserRefund           bool              `json:"allow_user_refund"`
+	SortOrder                 int               `json:"sort_order"`
+	PaymentMode               string            `json:"payment_mode"`
+	RechargeFeeRate           *float64          `json:"recharge_fee_rate"`
+	BalanceRechargeMultiplier *float64          `json:"balance_recharge_multiplier"`
 }
 
 // ListProviderInstancesWithConfig returns provider instances with decrypted config.
@@ -64,6 +66,7 @@ func (s *PaymentConfigService) ListProviderInstancesWithConfig(ctx context.Conte
 			SupportedTypes: splitTypes(inst.SupportedTypes), Limits: inst.Limits,
 			Enabled: inst.Enabled, RefundEnabled: inst.RefundEnabled, AllowUserRefund: inst.AllowUserRefund,
 			SortOrder: inst.SortOrder, PaymentMode: inst.PaymentMode,
+			RechargeFeeRate: inst.RechargeFeeRate, BalanceRechargeMultiplier: inst.BalanceRechargeMultiplier,
 		}
 		resp.Config, err = s.decryptAndMaskConfig(inst.ProviderKey, inst.Config)
 		if err != nil {
@@ -206,13 +209,25 @@ func (s *PaymentConfigService) CreateProviderInstance(ctx context.Context, req C
 	if err != nil {
 		return nil, err
 	}
+	if err := validateOptionalRechargeFeeRate(req.RechargeFeeRate.Value); err != nil {
+		return nil, err
+	}
+	if err := validateOptionalBalanceRechargeMultiplier(req.BalanceRechargeMultiplier.Value); err != nil {
+		return nil, err
+	}
 	allowUserRefund := req.AllowUserRefund && req.RefundEnabled
-	return s.entClient.PaymentProviderInstance.Create().
+	create := s.entClient.PaymentProviderInstance.Create().
 		SetProviderKey(req.ProviderKey).SetName(req.Name).SetConfig(enc).
 		SetSupportedTypes(typesStr).SetEnabled(req.Enabled).SetPaymentMode(req.PaymentMode).
 		SetSortOrder(req.SortOrder).SetLimits(req.Limits).SetRefundEnabled(req.RefundEnabled).
-		SetAllowUserRefund(allowUserRefund).
-		Save(ctx)
+		SetAllowUserRefund(allowUserRefund)
+	if req.RechargeFeeRate.Present {
+		create.SetNillableRechargeFeeRate(req.RechargeFeeRate.Value)
+	}
+	if req.BalanceRechargeMultiplier.Present {
+		create.SetNillableBalanceRechargeMultiplier(req.BalanceRechargeMultiplier.Value)
+	}
+	return create.Save(ctx)
 }
 
 func validateProviderRequest(providerKey, name, supportedTypes string) error {
@@ -227,6 +242,7 @@ func validateProviderRequest(providerKey, name, supportedTypes string) error {
 }
 
 var easyPayCustomMethodCodePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+var easyPayUpstreamMethodCodePattern = regexp.MustCompile(`^[a-z0-9_.-]+$`)
 
 type easyPayCustomMethodConfig struct {
 	Type         string `json:"type"`
@@ -256,8 +272,8 @@ func validateEasyPayCustomMethods(config map[string]string, supportedTypes strin
 		if !easyPayCustomMethodCodePattern.MatchString(method.Type) {
 			return infraerrors.BadRequest("VALIDATION_ERROR", "customMethods type may only contain lowercase letters, digits, underscores, and hyphens")
 		}
-		if !easyPayCustomMethodCodePattern.MatchString(method.UpstreamType) {
-			return infraerrors.BadRequest("VALIDATION_ERROR", "customMethods upstreamType may only contain lowercase letters, digits, underscores, and hyphens")
+		if !easyPayUpstreamMethodCodePattern.MatchString(method.UpstreamType) {
+			return infraerrors.BadRequest("VALIDATION_ERROR", "customMethods upstreamType may only contain lowercase letters, digits, periods, underscores, and hyphens")
 		}
 		if easyPayCustomMethodTypeConflictsWithBuiltin(method.Type) {
 			return infraerrors.BadRequest("VALIDATION_ERROR", "customMethods type cannot start with alipay or wxpay")
@@ -448,6 +464,26 @@ func (s *PaymentConfigService) UpdateProviderInstance(ctx context.Context, id in
 	}
 	if req.PaymentMode != nil {
 		u.SetPaymentMode(*req.PaymentMode)
+	}
+	if req.RechargeFeeRate.Present {
+		if err := validateOptionalRechargeFeeRate(req.RechargeFeeRate.Value); err != nil {
+			return nil, err
+		}
+		if req.RechargeFeeRate.Value == nil {
+			u.ClearRechargeFeeRate()
+		} else {
+			u.SetRechargeFeeRate(*req.RechargeFeeRate.Value)
+		}
+	}
+	if req.BalanceRechargeMultiplier.Present {
+		if err := validateOptionalBalanceRechargeMultiplier(req.BalanceRechargeMultiplier.Value); err != nil {
+			return nil, err
+		}
+		if req.BalanceRechargeMultiplier.Value == nil {
+			u.ClearBalanceRechargeMultiplier()
+		} else {
+			u.SetBalanceRechargeMultiplier(*req.BalanceRechargeMultiplier.Value)
+		}
 	}
 	return u.Save(ctx)
 }

@@ -233,6 +233,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyAllowUngroupedKeyScheduling:          "false",
 		SettingKeyOpenAILowUpstreamRatePriorityEnabled: "false",
 		SettingKeyOpenAIOAuthSchedulingRateMultiplier:  "1",
+		SettingKeyAdaptiveServiceFeePercent:            "15",
 		// The detector is enabled by default for compatibility with the
 		// production rollout; deployment config remains the emergency master
 		// switch. Synthetic business-request injection stays explicitly off.
@@ -909,6 +910,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.PaymentVisibleMethodWxpaySource = NormalizeVisibleMethodSource("wxpay", settings[SettingPaymentVisibleMethodWxpaySource])
 	result.PaymentVisibleMethodAlipayEnabled = settings[SettingPaymentVisibleMethodAlipayEnabled] == "true"
 	result.PaymentVisibleMethodWxpayEnabled = settings[SettingPaymentVisibleMethodWxpayEnabled] == "true"
+	result.AdaptiveServiceFeePercent = parseAdaptiveServiceFeePercent(settings[SettingKeyAdaptiveServiceFeePercent])
 	result.OpenAILowUpstreamRatePriorityEnabled = settings[SettingKeyOpenAILowUpstreamRatePriorityEnabled] == "true"
 	result.OpenAIOAuthSchedulingRateMultiplier = parseOpenAIOAuthSchedulingRateMultiplier(settings[SettingKeyOpenAIOAuthSchedulingRateMultiplier])
 	if value, ok := settings[SettingKeyCodexQuotaOverdraftEnabled]; ok && strings.TrimSpace(value) != "" {
@@ -1008,6 +1010,13 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	})
 
 	return result
+}
+
+func normalizeOpenAITTFTMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), OpenAITTFTModeVisible) {
+		return OpenAITTFTModeVisible
+	}
+	return OpenAITTFTModeSemantic
 }
 
 func clampAffiliateRebateRate(value float64) float64 {
@@ -1135,6 +1144,15 @@ func (s *SettingService) normalizeOpenAIAdvancedSchedulerOverrides(settings *Sys
 		return infraerrors.BadRequest("INVALID_OPENAI_ADVANCED_SCHEDULER_WEIGHT", "openai advanced scheduler weights must have finite non-zero base and total sums")
 	}
 	return nil
+}
+
+func parseAdaptiveServiceFeePercent(raw string) float64 {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	// 0 is a valid explicit fee; only missing/invalid values default to 15.
+	if err != nil || value < 0 || value > 100 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 15
+	}
+	return value
 }
 
 func parseOpenAIOAuthSchedulingRateMultiplier(raw string) float64 {

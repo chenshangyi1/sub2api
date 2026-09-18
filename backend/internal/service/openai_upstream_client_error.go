@@ -27,6 +27,117 @@ func isOpenAIDeterministicClientError(statusCode int) bool {
 	return statusCode == http.StatusBadRequest
 }
 
+func isOpenAIDeterministicClientFailure(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if isOpenAIDeterministicClientError(statusCode) {
+		return true
+	}
+	return isOpenAIDeterministicClientErrorMessage(upstreamMsg, upstreamBody)
+}
+
+func openAIClientErrorClassificationText(upstreamMsg string, upstreamBody []byte) string {
+	parts := make([]string, 0, 6)
+	if msg := strings.TrimSpace(upstreamMsg); msg != "" {
+		parts = append(parts, msg)
+	}
+	if len(upstreamBody) == 0 {
+		return strings.ToLower(strings.Join(parts, " "))
+	}
+	if gjson.ValidBytes(upstreamBody) {
+		for _, path := range []string{
+			"error.message",
+			"response.error.message",
+			"message",
+			"error.code",
+			"response.error.code",
+			"code",
+			"error.type",
+		} {
+			if value := strings.TrimSpace(gjson.GetBytes(upstreamBody, path).String()); value != "" {
+				parts = append(parts, value)
+			}
+		}
+	} else {
+		parts = append(parts, string(upstreamBody))
+	}
+	return strings.ToLower(strings.Join(parts, " "))
+}
+
+func isOpenAIWSPolicyViolationMessage(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "websocket: close 1008") {
+		return true
+	}
+	return strings.Contains(lower, "close 1008") && strings.Contains(lower, "policy violation")
+}
+
+func openAIDeterministicClientHTTPStatus(upstreamMsg string, upstreamBody []byte) int {
+	text := openAIClientErrorClassificationText(upstreamMsg, upstreamBody)
+	if isOpenAIWSPolicyViolationMessage(text) {
+		return http.StatusForbidden
+	}
+	if isOpenAIDeterministicClientErrorMessage(upstreamMsg, upstreamBody) {
+		return http.StatusBadRequest
+	}
+	return 0
+}
+
+func openAIDeterministicClientErrorType(status int) string {
+	if status == http.StatusForbidden {
+		return "permission_error"
+	}
+	return openAIUpstreamClientErrorFallbackType
+}
+
+func isOpenAIDeterministicClientErrorMessage(upstreamMsg string, upstreamBody []byte) bool {
+	text := openAIClientErrorClassificationText(upstreamMsg, upstreamBody)
+	if text == "" {
+		return false
+	}
+	if isOpenAIWSPolicyViolationMessage(text) {
+		return true
+	}
+	if strings.Contains(text, "must contain the word 'json'") ||
+		strings.Contains(text, `must contain the word "json"`) ||
+		strings.Contains(text, "must contain the word json") {
+		return true
+	}
+	if strings.Contains(text, "prompt_cache_breakpoint is not supported") {
+		return true
+	}
+	if strings.Contains(text, "unsupported parameter") {
+		return true
+	}
+	return false
+}
+
+func isOpenAIUpstreamOverloadStatus(statusCode int) bool {
+	return statusCode == http.StatusServiceUnavailable || statusCode == 529
+}
+
+const openAIUpstreamOverloadClientMessage = "Upstream service overloaded, please retry later"
+
+// mapOpenAIUpstreamClientError 把上游 HTTP 错误映射成对客户端可见的状态码/类型/文案。
+// 只放行 overload（503/529）的状态语义；文案一律泛化，不回传上游原文。
+func mapOpenAIUpstreamClientError(statusCode int, _ []byte) (int, string, string) {
+	switch statusCode {
+	case http.StatusUnauthorized:
+		return http.StatusBadGateway, "upstream_error", "Upstream authentication failed, please contact administrator"
+	case http.StatusPaymentRequired:
+		return http.StatusBadGateway, "upstream_error", "Upstream payment required: insufficient balance or billing issue"
+	case http.StatusForbidden:
+		return http.StatusBadGateway, "upstream_error", "Upstream access forbidden, please contact administrator"
+	case http.StatusTooManyRequests:
+		return http.StatusTooManyRequests, "rate_limit_error", "Upstream rate limit exceeded, please retry later"
+	case http.StatusServiceUnavailable, 529:
+		return http.StatusServiceUnavailable, "overloaded_error", openAIUpstreamOverloadClientMessage
+	default:
+		return http.StatusBadGateway, "upstream_error", "Upstream request failed"
+	}
+}
+
 // writeOpenAIUpstreamClientError 以 OpenAI 错误体形状回写确定性客户端错误。
 //
 // 保留上游的 type/code/param：客户端靠 param 定位是哪个字段非法（上游会给出形如
@@ -54,4 +165,10 @@ func writeOpenAIUpstreamClientError(c *gin.Context, statusCode int, body []byte,
 	errorPayload["message"] = message
 
 	c.JSON(statusCode, gin.H{"error": errorPayload})
+}
+
+// WriteOpenAIUpstreamClientError preserves a structured deterministic upstream
+// client error when the handler has exhausted all eligible accounts.
+func WriteOpenAIUpstreamClientError(c *gin.Context, statusCode int, body []byte, upstreamMsg string) {
+	writeOpenAIUpstreamClientError(c, statusCode, body, upstreamMsg)
 }

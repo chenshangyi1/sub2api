@@ -7,11 +7,15 @@
       <div class="min-w-0 flex-1">
         <div class="truncate text-base font-semibold text-gray-900 dark:text-gray-100">{{ groupLabel }}</div>
         <div class="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-          <span class="rounded-md px-1.5 py-0.5 text-[10px] font-medium" :class="providerBadgeClass(row.platform)">{{ providerLabel(row.platform) }}</span>
+          <span v-if="showPlatformBadge" class="rounded-md px-1.5 py-0.5 text-[10px] font-medium" :class="providerBadgeClass(row.platform)">{{ providerLabel(row.platform) }}</span>
           <span class="rounded-md bg-primary-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary-700 dark:bg-dark-700 dark:text-gray-300">{{ t('channelMonitorV3.userRate') }} {{ formattedUserRate }}</span>
         </div>
       </div>
-      <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold" :class="statusClass">{{ statusText }}</span>
+      <span
+            v-if="showInsufficientSample"
+            data-testid="channel-status-sample-badge"
+            class="shrink-0 rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-600 dark:bg-dark-700 dark:text-gray-300"
+          >{{ t('channelMonitorV3.unknown') }}</span>
     </header>
 
     <div class="mt-5 grid grid-cols-3 gap-2">
@@ -41,21 +45,23 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { MonitorStatus } from '@/api/admin/channelMonitor'
 import type { MonitorMatrixRow } from '@/api/channelMonitorV2'
 import { availabilityTextClass, formatMonitorMs, formatMonitorPercent } from '@/features/channel-monitor-v2/monitorFormat'
 import { providerGradient, useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import ProviderIcon from './ProviderIcon.vue'
 import ChannelMonitorV3Timeline from './ChannelMonitorV3Timeline.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   row: MonitorMatrixRow
   countdownSeconds: number
   timelineLength: number
   userRateMultiplier?: number | null
-}>()
+  showPlatformBadge?: boolean
+}>(), {
+  showPlatformBadge: true,
+})
 const { t } = useI18n()
-const { statusLabel, statusBadgeClass, providerLabel, providerBadgeClass } = useChannelMonitorFormat()
+const { providerLabel, providerBadgeClass } = useChannelMonitorFormat()
 
 const groupLabel = computed(() => props.row.group_name || t('channelMonitorV3.unknownGroup'))
 const formattedUserRate = computed(() => {
@@ -74,14 +80,8 @@ const availabilityPercent = computed(() => (1 - latestMetrics.value.error_rate) 
 const successRate = computed(() => formatMonitorPercent(availabilityPercent.value / 100))
 const availabilityClass = computed(() => availabilityTextClass(availabilityPercent.value))
 const ttft = computed(() => formatMonitorMs(latestMetrics.value.ttft.p50_ms))
-const monitorStatus = computed<MonitorStatus | null>(() => {
-  if (latestHealth.value.overall === 'healthy') return 'operational'
-  if (latestHealth.value.overall === 'warning') return 'degraded'
-  if (latestHealth.value.overall === 'critical') return 'failed'
-  return null
+const showInsufficientSample = computed(() => {
+  const overall = latestHealth.value.overall
+  return overall !== 'healthy' && overall !== 'warning' && overall !== 'critical'
 })
-const statusText = computed(() => monitorStatus.value ? statusLabel(monitorStatus.value) : t('channelMonitorV3.unknown'))
-const statusClass = computed(() => monitorStatus.value
-  ? statusBadgeClass(monitorStatus.value)
-  : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300')
 </script>

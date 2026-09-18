@@ -4,7 +4,7 @@ package ent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"sync"
@@ -14,6 +14,8 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
+	"github.com/Wei-Shaw/sub2api/ent/adaptivegroupconfig"
+	"github.com/Wei-Shaw/sub2api/ent/adaptivegroupmembership"
 	"github.com/Wei-Shaw/sub2api/ent/announcement"
 	"github.com/Wei-Shaw/sub2api/ent/announcementread"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
@@ -67,6 +69,8 @@ const (
 	TypeAPIKey                        = "APIKey"
 	TypeAccount                       = "Account"
 	TypeAccountGroup                  = "AccountGroup"
+	TypeAdaptiveGroupConfig           = "AdaptiveGroupConfig"
+	TypeAdaptiveGroupMembership       = "AdaptiveGroupMembership"
 	TypeAnnouncement                  = "Announcement"
 	TypeAnnouncementRead              = "AnnouncementRead"
 	TypeAuthIdentity                  = "AuthIdentity"
@@ -5568,6 +5572,1455 @@ func (m *AccountGroupMutation) ResetEdge(name string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown AccountGroup edge %s", name)
+}
+
+// AdaptiveGroupConfigMutation represents an operation that mutates the AdaptiveGroupConfig nodes in the graph.
+type AdaptiveGroupConfigMutation struct {
+	config
+	op                   Op
+	typ                  string
+	id                   *int64
+	created_at           *time.Time
+	updated_at           *time.Time
+	enabled              *bool
+	config_generation    *int64
+	addconfig_generation *int64
+	clearedFields        map[string]struct{}
+	parent_group         *int64
+	clearedparent_group  bool
+	members              map[int64]struct{}
+	removedmembers       map[int64]struct{}
+	clearedmembers       bool
+	done                 bool
+	oldValue             func(context.Context) (*AdaptiveGroupConfig, error)
+	predicates           []predicate.AdaptiveGroupConfig
+}
+
+var _ ent.Mutation = (*AdaptiveGroupConfigMutation)(nil)
+
+// adaptivegroupconfigOption allows management of the mutation configuration using functional options.
+type adaptivegroupconfigOption func(*AdaptiveGroupConfigMutation)
+
+// newAdaptiveGroupConfigMutation creates new mutation for the AdaptiveGroupConfig entity.
+func newAdaptiveGroupConfigMutation(c config, op Op, opts ...adaptivegroupconfigOption) *AdaptiveGroupConfigMutation {
+	m := &AdaptiveGroupConfigMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeAdaptiveGroupConfig,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withAdaptiveGroupConfigID sets the ID field of the mutation.
+func withAdaptiveGroupConfigID(id int64) adaptivegroupconfigOption {
+	return func(m *AdaptiveGroupConfigMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *AdaptiveGroupConfig
+		)
+		m.oldValue = func(ctx context.Context) (*AdaptiveGroupConfig, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().AdaptiveGroupConfig.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withAdaptiveGroupConfig sets the old AdaptiveGroupConfig of the mutation.
+func withAdaptiveGroupConfig(node *AdaptiveGroupConfig) adaptivegroupconfigOption {
+	return func(m *AdaptiveGroupConfigMutation) {
+		m.oldValue = func(context.Context) (*AdaptiveGroupConfig, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m AdaptiveGroupConfigMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m AdaptiveGroupConfigMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *AdaptiveGroupConfigMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *AdaptiveGroupConfigMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().AdaptiveGroupConfig.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *AdaptiveGroupConfigMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *AdaptiveGroupConfigMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the AdaptiveGroupConfig entity.
+// If the AdaptiveGroupConfig object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AdaptiveGroupConfigMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *AdaptiveGroupConfigMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *AdaptiveGroupConfigMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *AdaptiveGroupConfigMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the AdaptiveGroupConfig entity.
+// If the AdaptiveGroupConfig object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AdaptiveGroupConfigMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *AdaptiveGroupConfigMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// SetParentGroupID sets the "parent_group_id" field.
+func (m *AdaptiveGroupConfigMutation) SetParentGroupID(i int64) {
+	m.parent_group = &i
+}
+
+// ParentGroupID returns the value of the "parent_group_id" field in the mutation.
+func (m *AdaptiveGroupConfigMutation) ParentGroupID() (r int64, exists bool) {
+	v := m.parent_group
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldParentGroupID returns the old "parent_group_id" field's value of the AdaptiveGroupConfig entity.
+// If the AdaptiveGroupConfig object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AdaptiveGroupConfigMutation) OldParentGroupID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldParentGroupID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldParentGroupID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldParentGroupID: %w", err)
+	}
+	return oldValue.ParentGroupID, nil
+}
+
+// ResetParentGroupID resets all changes to the "parent_group_id" field.
+func (m *AdaptiveGroupConfigMutation) ResetParentGroupID() {
+	m.parent_group = nil
+}
+
+// SetEnabled sets the "enabled" field.
+func (m *AdaptiveGroupConfigMutation) SetEnabled(b bool) {
+	m.enabled = &b
+}
+
+// Enabled returns the value of the "enabled" field in the mutation.
+func (m *AdaptiveGroupConfigMutation) Enabled() (r bool, exists bool) {
+	v := m.enabled
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldEnabled returns the old "enabled" field's value of the AdaptiveGroupConfig entity.
+// If the AdaptiveGroupConfig object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AdaptiveGroupConfigMutation) OldEnabled(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldEnabled is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldEnabled requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldEnabled: %w", err)
+	}
+	return oldValue.Enabled, nil
+}
+
+// ResetEnabled resets all changes to the "enabled" field.
+func (m *AdaptiveGroupConfigMutation) ResetEnabled() {
+	m.enabled = nil
+}
+
+// SetConfigGeneration sets the "config_generation" field.
+func (m *AdaptiveGroupConfigMutation) SetConfigGeneration(i int64) {
+	m.config_generation = &i
+	m.addconfig_generation = nil
+}
+
+// ConfigGeneration returns the value of the "config_generation" field in the mutation.
+func (m *AdaptiveGroupConfigMutation) ConfigGeneration() (r int64, exists bool) {
+	v := m.config_generation
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldConfigGeneration returns the old "config_generation" field's value of the AdaptiveGroupConfig entity.
+// If the AdaptiveGroupConfig object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AdaptiveGroupConfigMutation) OldConfigGeneration(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldConfigGeneration is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldConfigGeneration requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldConfigGeneration: %w", err)
+	}
+	return oldValue.ConfigGeneration, nil
+}
+
+// AddConfigGeneration adds i to the "config_generation" field.
+func (m *AdaptiveGroupConfigMutation) AddConfigGeneration(i int64) {
+	if m.addconfig_generation != nil {
+		*m.addconfig_generation += i
+	} else {
+		m.addconfig_generation = &i
+	}
+}
+
+// AddedConfigGeneration returns the value that was added to the "config_generation" field in this mutation.
+func (m *AdaptiveGroupConfigMutation) AddedConfigGeneration() (r int64, exists bool) {
+	v := m.addconfig_generation
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetConfigGeneration resets all changes to the "config_generation" field.
+func (m *AdaptiveGroupConfigMutation) ResetConfigGeneration() {
+	m.config_generation = nil
+	m.addconfig_generation = nil
+}
+
+// ClearParentGroup clears the "parent_group" edge to the Group entity.
+func (m *AdaptiveGroupConfigMutation) ClearParentGroup() {
+	m.clearedparent_group = true
+	m.clearedFields[adaptivegroupconfig.FieldParentGroupID] = struct{}{}
+}
+
+// ParentGroupCleared reports if the "parent_group" edge to the Group entity was cleared.
+func (m *AdaptiveGroupConfigMutation) ParentGroupCleared() bool {
+	return m.clearedparent_group
+}
+
+// ParentGroupIDs returns the "parent_group" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// ParentGroupID instead. It exists only for internal usage by the builders.
+func (m *AdaptiveGroupConfigMutation) ParentGroupIDs() (ids []int64) {
+	if id := m.parent_group; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetParentGroup resets all changes to the "parent_group" edge.
+func (m *AdaptiveGroupConfigMutation) ResetParentGroup() {
+	m.parent_group = nil
+	m.clearedparent_group = false
+}
+
+// AddMemberIDs adds the "members" edge to the AdaptiveGroupMembership entity by ids.
+func (m *AdaptiveGroupConfigMutation) AddMemberIDs(ids ...int64) {
+	if m.members == nil {
+		m.members = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.members[ids[i]] = struct{}{}
+	}
+}
+
+// ClearMembers clears the "members" edge to the AdaptiveGroupMembership entity.
+func (m *AdaptiveGroupConfigMutation) ClearMembers() {
+	m.clearedmembers = true
+}
+
+// MembersCleared reports if the "members" edge to the AdaptiveGroupMembership entity was cleared.
+func (m *AdaptiveGroupConfigMutation) MembersCleared() bool {
+	return m.clearedmembers
+}
+
+// RemoveMemberIDs removes the "members" edge to the AdaptiveGroupMembership entity by IDs.
+func (m *AdaptiveGroupConfigMutation) RemoveMemberIDs(ids ...int64) {
+	if m.removedmembers == nil {
+		m.removedmembers = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.members, ids[i])
+		m.removedmembers[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedMembers returns the removed IDs of the "members" edge to the AdaptiveGroupMembership entity.
+func (m *AdaptiveGroupConfigMutation) RemovedMembersIDs() (ids []int64) {
+	for id := range m.removedmembers {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// MembersIDs returns the "members" edge IDs in the mutation.
+func (m *AdaptiveGroupConfigMutation) MembersIDs() (ids []int64) {
+	for id := range m.members {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetMembers resets all changes to the "members" edge.
+func (m *AdaptiveGroupConfigMutation) ResetMembers() {
+	m.members = nil
+	m.clearedmembers = false
+	m.removedmembers = nil
+}
+
+// Where appends a list predicates to the AdaptiveGroupConfigMutation builder.
+func (m *AdaptiveGroupConfigMutation) Where(ps ...predicate.AdaptiveGroupConfig) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the AdaptiveGroupConfigMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *AdaptiveGroupConfigMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.AdaptiveGroupConfig, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *AdaptiveGroupConfigMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *AdaptiveGroupConfigMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (AdaptiveGroupConfig).
+func (m *AdaptiveGroupConfigMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *AdaptiveGroupConfigMutation) Fields() []string {
+	fields := make([]string, 0, 5)
+	if m.created_at != nil {
+		fields = append(fields, adaptivegroupconfig.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, adaptivegroupconfig.FieldUpdatedAt)
+	}
+	if m.parent_group != nil {
+		fields = append(fields, adaptivegroupconfig.FieldParentGroupID)
+	}
+	if m.enabled != nil {
+		fields = append(fields, adaptivegroupconfig.FieldEnabled)
+	}
+	if m.config_generation != nil {
+		fields = append(fields, adaptivegroupconfig.FieldConfigGeneration)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *AdaptiveGroupConfigMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case adaptivegroupconfig.FieldCreatedAt:
+		return m.CreatedAt()
+	case adaptivegroupconfig.FieldUpdatedAt:
+		return m.UpdatedAt()
+	case adaptivegroupconfig.FieldParentGroupID:
+		return m.ParentGroupID()
+	case adaptivegroupconfig.FieldEnabled:
+		return m.Enabled()
+	case adaptivegroupconfig.FieldConfigGeneration:
+		return m.ConfigGeneration()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *AdaptiveGroupConfigMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case adaptivegroupconfig.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case adaptivegroupconfig.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	case adaptivegroupconfig.FieldParentGroupID:
+		return m.OldParentGroupID(ctx)
+	case adaptivegroupconfig.FieldEnabled:
+		return m.OldEnabled(ctx)
+	case adaptivegroupconfig.FieldConfigGeneration:
+		return m.OldConfigGeneration(ctx)
+	}
+	return nil, fmt.Errorf("unknown AdaptiveGroupConfig field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *AdaptiveGroupConfigMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case adaptivegroupconfig.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case adaptivegroupconfig.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	case adaptivegroupconfig.FieldParentGroupID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetParentGroupID(v)
+		return nil
+	case adaptivegroupconfig.FieldEnabled:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetEnabled(v)
+		return nil
+	case adaptivegroupconfig.FieldConfigGeneration:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetConfigGeneration(v)
+		return nil
+	}
+	return fmt.Errorf("unknown AdaptiveGroupConfig field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *AdaptiveGroupConfigMutation) AddedFields() []string {
+	var fields []string
+	if m.addconfig_generation != nil {
+		fields = append(fields, adaptivegroupconfig.FieldConfigGeneration)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *AdaptiveGroupConfigMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case adaptivegroupconfig.FieldConfigGeneration:
+		return m.AddedConfigGeneration()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *AdaptiveGroupConfigMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case adaptivegroupconfig.FieldConfigGeneration:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddConfigGeneration(v)
+		return nil
+	}
+	return fmt.Errorf("unknown AdaptiveGroupConfig numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *AdaptiveGroupConfigMutation) ClearedFields() []string {
+	return nil
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *AdaptiveGroupConfigMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *AdaptiveGroupConfigMutation) ClearField(name string) error {
+	return fmt.Errorf("unknown AdaptiveGroupConfig nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *AdaptiveGroupConfigMutation) ResetField(name string) error {
+	switch name {
+	case adaptivegroupconfig.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case adaptivegroupconfig.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	case adaptivegroupconfig.FieldParentGroupID:
+		m.ResetParentGroupID()
+		return nil
+	case adaptivegroupconfig.FieldEnabled:
+		m.ResetEnabled()
+		return nil
+	case adaptivegroupconfig.FieldConfigGeneration:
+		m.ResetConfigGeneration()
+		return nil
+	}
+	return fmt.Errorf("unknown AdaptiveGroupConfig field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *AdaptiveGroupConfigMutation) AddedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.parent_group != nil {
+		edges = append(edges, adaptivegroupconfig.EdgeParentGroup)
+	}
+	if m.members != nil {
+		edges = append(edges, adaptivegroupconfig.EdgeMembers)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *AdaptiveGroupConfigMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case adaptivegroupconfig.EdgeParentGroup:
+		if id := m.parent_group; id != nil {
+			return []ent.Value{*id}
+		}
+	case adaptivegroupconfig.EdgeMembers:
+		ids := make([]ent.Value, 0, len(m.members))
+		for id := range m.members {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *AdaptiveGroupConfigMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.removedmembers != nil {
+		edges = append(edges, adaptivegroupconfig.EdgeMembers)
+	}
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *AdaptiveGroupConfigMutation) RemovedIDs(name string) []ent.Value {
+	switch name {
+	case adaptivegroupconfig.EdgeMembers:
+		ids := make([]ent.Value, 0, len(m.removedmembers))
+		for id := range m.removedmembers {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *AdaptiveGroupConfigMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.clearedparent_group {
+		edges = append(edges, adaptivegroupconfig.EdgeParentGroup)
+	}
+	if m.clearedmembers {
+		edges = append(edges, adaptivegroupconfig.EdgeMembers)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *AdaptiveGroupConfigMutation) EdgeCleared(name string) bool {
+	switch name {
+	case adaptivegroupconfig.EdgeParentGroup:
+		return m.clearedparent_group
+	case adaptivegroupconfig.EdgeMembers:
+		return m.clearedmembers
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *AdaptiveGroupConfigMutation) ClearEdge(name string) error {
+	switch name {
+	case adaptivegroupconfig.EdgeParentGroup:
+		m.ClearParentGroup()
+		return nil
+	}
+	return fmt.Errorf("unknown AdaptiveGroupConfig unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *AdaptiveGroupConfigMutation) ResetEdge(name string) error {
+	switch name {
+	case adaptivegroupconfig.EdgeParentGroup:
+		m.ResetParentGroup()
+		return nil
+	case adaptivegroupconfig.EdgeMembers:
+		m.ResetMembers()
+		return nil
+	}
+	return fmt.Errorf("unknown AdaptiveGroupConfig edge %s", name)
+}
+
+// AdaptiveGroupMembershipMutation represents an operation that mutates the AdaptiveGroupMembership nodes in the graph.
+type AdaptiveGroupMembershipMutation struct {
+	config
+	op                Op
+	typ               string
+	id                *int64
+	created_at        *time.Time
+	updated_at        *time.Time
+	enabled           *bool
+	sort_order        *int
+	addsort_order     *int
+	clearedFields     map[string]struct{}
+	_config           *int64
+	cleared_config    bool
+	leaf_group        *int64
+	clearedleaf_group bool
+	done              bool
+	oldValue          func(context.Context) (*AdaptiveGroupMembership, error)
+	predicates        []predicate.AdaptiveGroupMembership
+}
+
+var _ ent.Mutation = (*AdaptiveGroupMembershipMutation)(nil)
+
+// adaptivegroupmembershipOption allows management of the mutation configuration using functional options.
+type adaptivegroupmembershipOption func(*AdaptiveGroupMembershipMutation)
+
+// newAdaptiveGroupMembershipMutation creates new mutation for the AdaptiveGroupMembership entity.
+func newAdaptiveGroupMembershipMutation(c config, op Op, opts ...adaptivegroupmembershipOption) *AdaptiveGroupMembershipMutation {
+	m := &AdaptiveGroupMembershipMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeAdaptiveGroupMembership,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withAdaptiveGroupMembershipID sets the ID field of the mutation.
+func withAdaptiveGroupMembershipID(id int64) adaptivegroupmembershipOption {
+	return func(m *AdaptiveGroupMembershipMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *AdaptiveGroupMembership
+		)
+		m.oldValue = func(ctx context.Context) (*AdaptiveGroupMembership, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().AdaptiveGroupMembership.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withAdaptiveGroupMembership sets the old AdaptiveGroupMembership of the mutation.
+func withAdaptiveGroupMembership(node *AdaptiveGroupMembership) adaptivegroupmembershipOption {
+	return func(m *AdaptiveGroupMembershipMutation) {
+		m.oldValue = func(context.Context) (*AdaptiveGroupMembership, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m AdaptiveGroupMembershipMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m AdaptiveGroupMembershipMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *AdaptiveGroupMembershipMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *AdaptiveGroupMembershipMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().AdaptiveGroupMembership.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *AdaptiveGroupMembershipMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *AdaptiveGroupMembershipMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the AdaptiveGroupMembership entity.
+// If the AdaptiveGroupMembership object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AdaptiveGroupMembershipMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *AdaptiveGroupMembershipMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *AdaptiveGroupMembershipMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *AdaptiveGroupMembershipMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the AdaptiveGroupMembership entity.
+// If the AdaptiveGroupMembership object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AdaptiveGroupMembershipMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *AdaptiveGroupMembershipMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// SetConfigID sets the "config_id" field.
+func (m *AdaptiveGroupMembershipMutation) SetConfigID(i int64) {
+	m._config = &i
+}
+
+// ConfigID returns the value of the "config_id" field in the mutation.
+func (m *AdaptiveGroupMembershipMutation) ConfigID() (r int64, exists bool) {
+	v := m._config
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldConfigID returns the old "config_id" field's value of the AdaptiveGroupMembership entity.
+// If the AdaptiveGroupMembership object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AdaptiveGroupMembershipMutation) OldConfigID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldConfigID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldConfigID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldConfigID: %w", err)
+	}
+	return oldValue.ConfigID, nil
+}
+
+// ResetConfigID resets all changes to the "config_id" field.
+func (m *AdaptiveGroupMembershipMutation) ResetConfigID() {
+	m._config = nil
+}
+
+// SetLeafGroupID sets the "leaf_group_id" field.
+func (m *AdaptiveGroupMembershipMutation) SetLeafGroupID(i int64) {
+	m.leaf_group = &i
+}
+
+// LeafGroupID returns the value of the "leaf_group_id" field in the mutation.
+func (m *AdaptiveGroupMembershipMutation) LeafGroupID() (r int64, exists bool) {
+	v := m.leaf_group
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldLeafGroupID returns the old "leaf_group_id" field's value of the AdaptiveGroupMembership entity.
+// If the AdaptiveGroupMembership object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AdaptiveGroupMembershipMutation) OldLeafGroupID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldLeafGroupID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldLeafGroupID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldLeafGroupID: %w", err)
+	}
+	return oldValue.LeafGroupID, nil
+}
+
+// ResetLeafGroupID resets all changes to the "leaf_group_id" field.
+func (m *AdaptiveGroupMembershipMutation) ResetLeafGroupID() {
+	m.leaf_group = nil
+}
+
+// SetEnabled sets the "enabled" field.
+func (m *AdaptiveGroupMembershipMutation) SetEnabled(b bool) {
+	m.enabled = &b
+}
+
+// Enabled returns the value of the "enabled" field in the mutation.
+func (m *AdaptiveGroupMembershipMutation) Enabled() (r bool, exists bool) {
+	v := m.enabled
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldEnabled returns the old "enabled" field's value of the AdaptiveGroupMembership entity.
+// If the AdaptiveGroupMembership object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AdaptiveGroupMembershipMutation) OldEnabled(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldEnabled is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldEnabled requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldEnabled: %w", err)
+	}
+	return oldValue.Enabled, nil
+}
+
+// ResetEnabled resets all changes to the "enabled" field.
+func (m *AdaptiveGroupMembershipMutation) ResetEnabled() {
+	m.enabled = nil
+}
+
+// SetSortOrder sets the "sort_order" field.
+func (m *AdaptiveGroupMembershipMutation) SetSortOrder(i int) {
+	m.sort_order = &i
+	m.addsort_order = nil
+}
+
+// SortOrder returns the value of the "sort_order" field in the mutation.
+func (m *AdaptiveGroupMembershipMutation) SortOrder() (r int, exists bool) {
+	v := m.sort_order
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSortOrder returns the old "sort_order" field's value of the AdaptiveGroupMembership entity.
+// If the AdaptiveGroupMembership object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AdaptiveGroupMembershipMutation) OldSortOrder(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSortOrder is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSortOrder requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSortOrder: %w", err)
+	}
+	return oldValue.SortOrder, nil
+}
+
+// AddSortOrder adds i to the "sort_order" field.
+func (m *AdaptiveGroupMembershipMutation) AddSortOrder(i int) {
+	if m.addsort_order != nil {
+		*m.addsort_order += i
+	} else {
+		m.addsort_order = &i
+	}
+}
+
+// AddedSortOrder returns the value that was added to the "sort_order" field in this mutation.
+func (m *AdaptiveGroupMembershipMutation) AddedSortOrder() (r int, exists bool) {
+	v := m.addsort_order
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetSortOrder resets all changes to the "sort_order" field.
+func (m *AdaptiveGroupMembershipMutation) ResetSortOrder() {
+	m.sort_order = nil
+	m.addsort_order = nil
+}
+
+// ClearConfig clears the "config" edge to the AdaptiveGroupConfig entity.
+func (m *AdaptiveGroupMembershipMutation) ClearConfig() {
+	m.cleared_config = true
+	m.clearedFields[adaptivegroupmembership.FieldConfigID] = struct{}{}
+}
+
+// ConfigCleared reports if the "config" edge to the AdaptiveGroupConfig entity was cleared.
+func (m *AdaptiveGroupMembershipMutation) ConfigCleared() bool {
+	return m.cleared_config
+}
+
+// ConfigIDs returns the "config" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// ConfigID instead. It exists only for internal usage by the builders.
+func (m *AdaptiveGroupMembershipMutation) ConfigIDs() (ids []int64) {
+	if id := m._config; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetConfig resets all changes to the "config" edge.
+func (m *AdaptiveGroupMembershipMutation) ResetConfig() {
+	m._config = nil
+	m.cleared_config = false
+}
+
+// ClearLeafGroup clears the "leaf_group" edge to the Group entity.
+func (m *AdaptiveGroupMembershipMutation) ClearLeafGroup() {
+	m.clearedleaf_group = true
+	m.clearedFields[adaptivegroupmembership.FieldLeafGroupID] = struct{}{}
+}
+
+// LeafGroupCleared reports if the "leaf_group" edge to the Group entity was cleared.
+func (m *AdaptiveGroupMembershipMutation) LeafGroupCleared() bool {
+	return m.clearedleaf_group
+}
+
+// LeafGroupIDs returns the "leaf_group" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// LeafGroupID instead. It exists only for internal usage by the builders.
+func (m *AdaptiveGroupMembershipMutation) LeafGroupIDs() (ids []int64) {
+	if id := m.leaf_group; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetLeafGroup resets all changes to the "leaf_group" edge.
+func (m *AdaptiveGroupMembershipMutation) ResetLeafGroup() {
+	m.leaf_group = nil
+	m.clearedleaf_group = false
+}
+
+// Where appends a list predicates to the AdaptiveGroupMembershipMutation builder.
+func (m *AdaptiveGroupMembershipMutation) Where(ps ...predicate.AdaptiveGroupMembership) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the AdaptiveGroupMembershipMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *AdaptiveGroupMembershipMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.AdaptiveGroupMembership, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *AdaptiveGroupMembershipMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *AdaptiveGroupMembershipMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (AdaptiveGroupMembership).
+func (m *AdaptiveGroupMembershipMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *AdaptiveGroupMembershipMutation) Fields() []string {
+	fields := make([]string, 0, 6)
+	if m.created_at != nil {
+		fields = append(fields, adaptivegroupmembership.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, adaptivegroupmembership.FieldUpdatedAt)
+	}
+	if m._config != nil {
+		fields = append(fields, adaptivegroupmembership.FieldConfigID)
+	}
+	if m.leaf_group != nil {
+		fields = append(fields, adaptivegroupmembership.FieldLeafGroupID)
+	}
+	if m.enabled != nil {
+		fields = append(fields, adaptivegroupmembership.FieldEnabled)
+	}
+	if m.sort_order != nil {
+		fields = append(fields, adaptivegroupmembership.FieldSortOrder)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *AdaptiveGroupMembershipMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case adaptivegroupmembership.FieldCreatedAt:
+		return m.CreatedAt()
+	case adaptivegroupmembership.FieldUpdatedAt:
+		return m.UpdatedAt()
+	case adaptivegroupmembership.FieldConfigID:
+		return m.ConfigID()
+	case adaptivegroupmembership.FieldLeafGroupID:
+		return m.LeafGroupID()
+	case adaptivegroupmembership.FieldEnabled:
+		return m.Enabled()
+	case adaptivegroupmembership.FieldSortOrder:
+		return m.SortOrder()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *AdaptiveGroupMembershipMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case adaptivegroupmembership.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case adaptivegroupmembership.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	case adaptivegroupmembership.FieldConfigID:
+		return m.OldConfigID(ctx)
+	case adaptivegroupmembership.FieldLeafGroupID:
+		return m.OldLeafGroupID(ctx)
+	case adaptivegroupmembership.FieldEnabled:
+		return m.OldEnabled(ctx)
+	case adaptivegroupmembership.FieldSortOrder:
+		return m.OldSortOrder(ctx)
+	}
+	return nil, fmt.Errorf("unknown AdaptiveGroupMembership field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *AdaptiveGroupMembershipMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case adaptivegroupmembership.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case adaptivegroupmembership.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	case adaptivegroupmembership.FieldConfigID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetConfigID(v)
+		return nil
+	case adaptivegroupmembership.FieldLeafGroupID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetLeafGroupID(v)
+		return nil
+	case adaptivegroupmembership.FieldEnabled:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetEnabled(v)
+		return nil
+	case adaptivegroupmembership.FieldSortOrder:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSortOrder(v)
+		return nil
+	}
+	return fmt.Errorf("unknown AdaptiveGroupMembership field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *AdaptiveGroupMembershipMutation) AddedFields() []string {
+	var fields []string
+	if m.addsort_order != nil {
+		fields = append(fields, adaptivegroupmembership.FieldSortOrder)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *AdaptiveGroupMembershipMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case adaptivegroupmembership.FieldSortOrder:
+		return m.AddedSortOrder()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *AdaptiveGroupMembershipMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case adaptivegroupmembership.FieldSortOrder:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddSortOrder(v)
+		return nil
+	}
+	return fmt.Errorf("unknown AdaptiveGroupMembership numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *AdaptiveGroupMembershipMutation) ClearedFields() []string {
+	return nil
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *AdaptiveGroupMembershipMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *AdaptiveGroupMembershipMutation) ClearField(name string) error {
+	return fmt.Errorf("unknown AdaptiveGroupMembership nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *AdaptiveGroupMembershipMutation) ResetField(name string) error {
+	switch name {
+	case adaptivegroupmembership.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case adaptivegroupmembership.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	case adaptivegroupmembership.FieldConfigID:
+		m.ResetConfigID()
+		return nil
+	case adaptivegroupmembership.FieldLeafGroupID:
+		m.ResetLeafGroupID()
+		return nil
+	case adaptivegroupmembership.FieldEnabled:
+		m.ResetEnabled()
+		return nil
+	case adaptivegroupmembership.FieldSortOrder:
+		m.ResetSortOrder()
+		return nil
+	}
+	return fmt.Errorf("unknown AdaptiveGroupMembership field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *AdaptiveGroupMembershipMutation) AddedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m._config != nil {
+		edges = append(edges, adaptivegroupmembership.EdgeConfig)
+	}
+	if m.leaf_group != nil {
+		edges = append(edges, adaptivegroupmembership.EdgeLeafGroup)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *AdaptiveGroupMembershipMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case adaptivegroupmembership.EdgeConfig:
+		if id := m._config; id != nil {
+			return []ent.Value{*id}
+		}
+	case adaptivegroupmembership.EdgeLeafGroup:
+		if id := m.leaf_group; id != nil {
+			return []ent.Value{*id}
+		}
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *AdaptiveGroupMembershipMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 2)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *AdaptiveGroupMembershipMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *AdaptiveGroupMembershipMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.cleared_config {
+		edges = append(edges, adaptivegroupmembership.EdgeConfig)
+	}
+	if m.clearedleaf_group {
+		edges = append(edges, adaptivegroupmembership.EdgeLeafGroup)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *AdaptiveGroupMembershipMutation) EdgeCleared(name string) bool {
+	switch name {
+	case adaptivegroupmembership.EdgeConfig:
+		return m.cleared_config
+	case adaptivegroupmembership.EdgeLeafGroup:
+		return m.clearedleaf_group
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *AdaptiveGroupMembershipMutation) ClearEdge(name string) error {
+	switch name {
+	case adaptivegroupmembership.EdgeConfig:
+		m.ClearConfig()
+		return nil
+	case adaptivegroupmembership.EdgeLeafGroup:
+		m.ClearLeafGroup()
+		return nil
+	}
+	return fmt.Errorf("unknown AdaptiveGroupMembership unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *AdaptiveGroupMembershipMutation) ResetEdge(name string) error {
+	switch name {
+	case adaptivegroupmembership.EdgeConfig:
+		m.ResetConfig()
+		return nil
+	case adaptivegroupmembership.EdgeLeafGroup:
+		m.ResetLeafGroup()
+		return nil
+	}
+	return fmt.Errorf("unknown AdaptiveGroupMembership edge %s", name)
 }
 
 // AnnouncementMutation represents an operation that mutates the Announcement nodes in the graph.
@@ -22094,6 +23547,7 @@ type GroupMutation struct {
 	peak_rate_multiplier                    *float64
 	addpeak_rate_multiplier                 *float64
 	is_exclusive                            *bool
+	user_visible                            *bool
 	status                                  *string
 	duplicate_operation_id                  *string
 	platform                                *string
@@ -22142,8 +23596,8 @@ type GroupMutation struct {
 	audio_stt_price_per_hour                *float64
 	addaudio_stt_price_per_hour             *float64
 	long_context_pricing_enabled            *bool
-	model_pricing                           *json.RawMessage
-	appendmodel_pricing                     json.RawMessage
+	model_pricing                           *jsontext.Value
+	appendmodel_pricing                     jsontext.Value
 	claude_code_only                        *bool
 	fallback_group_id                       *int64
 	addfallback_group_id                    *int64
@@ -22755,6 +24209,42 @@ func (m *GroupMutation) OldIsExclusive(ctx context.Context) (v bool, err error) 
 // ResetIsExclusive resets all changes to the "is_exclusive" field.
 func (m *GroupMutation) ResetIsExclusive() {
 	m.is_exclusive = nil
+}
+
+// SetUserVisible sets the "user_visible" field.
+func (m *GroupMutation) SetUserVisible(b bool) {
+	m.user_visible = &b
+}
+
+// UserVisible returns the value of the "user_visible" field in the mutation.
+func (m *GroupMutation) UserVisible() (r bool, exists bool) {
+	v := m.user_visible
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUserVisible returns the old "user_visible" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldUserVisible(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUserVisible is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUserVisible requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUserVisible: %w", err)
+	}
+	return oldValue.UserVisible, nil
+}
+
+// ResetUserVisible resets all changes to the "user_visible" field.
+func (m *GroupMutation) ResetUserVisible() {
+	m.user_visible = nil
 }
 
 // SetStatus sets the "status" field.
@@ -24404,13 +25894,13 @@ func (m *GroupMutation) ResetLongContextPricingEnabled() {
 }
 
 // SetModelPricing sets the "model_pricing" field.
-func (m *GroupMutation) SetModelPricing(jm json.RawMessage) {
-	m.model_pricing = &jm
+func (m *GroupMutation) SetModelPricing(j jsontext.Value) {
+	m.model_pricing = &j
 	m.appendmodel_pricing = nil
 }
 
 // ModelPricing returns the value of the "model_pricing" field in the mutation.
-func (m *GroupMutation) ModelPricing() (r json.RawMessage, exists bool) {
+func (m *GroupMutation) ModelPricing() (r jsontext.Value, exists bool) {
 	v := m.model_pricing
 	if v == nil {
 		return
@@ -24421,7 +25911,7 @@ func (m *GroupMutation) ModelPricing() (r json.RawMessage, exists bool) {
 // OldModelPricing returns the old "model_pricing" field's value of the Group entity.
 // If the Group object wasn't provided to the builder, the object is fetched from the database.
 // An error is returned if the mutation operation is not UpdateOne, or the database query fails.
-func (m *GroupMutation) OldModelPricing(ctx context.Context) (v json.RawMessage, err error) {
+func (m *GroupMutation) OldModelPricing(ctx context.Context) (v jsontext.Value, err error) {
 	if !m.op.Is(OpUpdateOne) {
 		return v, errors.New("OldModelPricing is only allowed on UpdateOne operations")
 	}
@@ -24435,13 +25925,13 @@ func (m *GroupMutation) OldModelPricing(ctx context.Context) (v json.RawMessage,
 	return oldValue.ModelPricing, nil
 }
 
-// AppendModelPricing adds jm to the "model_pricing" field.
-func (m *GroupMutation) AppendModelPricing(jm json.RawMessage) {
-	m.appendmodel_pricing = append(m.appendmodel_pricing, jm...)
+// AppendModelPricing adds j to the "model_pricing" field.
+func (m *GroupMutation) AppendModelPricing(j jsontext.Value) {
+	m.appendmodel_pricing = append(m.appendmodel_pricing, j...)
 }
 
 // AppendedModelPricing returns the list of values that were appended to the "model_pricing" field in this mutation.
-func (m *GroupMutation) AppendedModelPricing() (json.RawMessage, bool) {
+func (m *GroupMutation) AppendedModelPricing() (jsontext.Value, bool) {
 	if len(m.appendmodel_pricing) == 0 {
 		return nil, false
 	}
@@ -25773,7 +27263,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 62)
+	fields := make([]string, 0, 63)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -25806,6 +27296,9 @@ func (m *GroupMutation) Fields() []string {
 	}
 	if m.is_exclusive != nil {
 		fields = append(fields, group.FieldIsExclusive)
+	}
+	if m.user_visible != nil {
+		fields = append(fields, group.FieldUserVisible)
 	}
 	if m.status != nil {
 		fields = append(fields, group.FieldStatus)
@@ -25990,6 +27483,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.PeakRateMultiplier()
 	case group.FieldIsExclusive:
 		return m.IsExclusive()
+	case group.FieldUserVisible:
+		return m.UserVisible()
 	case group.FieldStatus:
 		return m.Status()
 	case group.FieldDuplicateOperationID:
@@ -26123,6 +27618,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldPeakRateMultiplier(ctx)
 	case group.FieldIsExclusive:
 		return m.OldIsExclusive(ctx)
+	case group.FieldUserVisible:
+		return m.OldUserVisible(ctx)
 	case group.FieldStatus:
 		return m.OldStatus(ctx)
 	case group.FieldDuplicateOperationID:
@@ -26310,6 +27807,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetIsExclusive(v)
+		return nil
+	case group.FieldUserVisible:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUserVisible(v)
 		return nil
 	case group.FieldStatus:
 		v, ok := value.(string)
@@ -26515,7 +28019,7 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 		m.SetLongContextPricingEnabled(v)
 		return nil
 	case group.FieldModelPricing:
-		v, ok := value.(json.RawMessage)
+		v, ok := value.(jsontext.Value)
 		if !ok {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
@@ -27211,6 +28715,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldIsExclusive:
 		m.ResetIsExclusive()
+		return nil
+	case group.FieldUserVisible:
+		m.ResetUserVisible()
 		return nil
 	case group.FieldStatus:
 		m.ResetStatus()
@@ -32937,26 +34444,30 @@ func (m *PaymentOrderMutation) ResetEdge(name string) error {
 // PaymentProviderInstanceMutation represents an operation that mutates the PaymentProviderInstance nodes in the graph.
 type PaymentProviderInstanceMutation struct {
 	config
-	op                Op
-	typ               string
-	id                *int64
-	provider_key      *string
-	name              *string
-	_config           *string
-	supported_types   *string
-	enabled           *bool
-	payment_mode      *string
-	sort_order        *int
-	addsort_order     *int
-	limits            *string
-	refund_enabled    *bool
-	allow_user_refund *bool
-	created_at        *time.Time
-	updated_at        *time.Time
-	clearedFields     map[string]struct{}
-	done              bool
-	oldValue          func(context.Context) (*PaymentProviderInstance, error)
-	predicates        []predicate.PaymentProviderInstance
+	op                             Op
+	typ                            string
+	id                             *int64
+	provider_key                   *string
+	name                           *string
+	_config                        *string
+	supported_types                *string
+	enabled                        *bool
+	payment_mode                   *string
+	sort_order                     *int
+	addsort_order                  *int
+	limits                         *string
+	refund_enabled                 *bool
+	allow_user_refund              *bool
+	recharge_fee_rate              *float64
+	addrecharge_fee_rate           *float64
+	balance_recharge_multiplier    *float64
+	addbalance_recharge_multiplier *float64
+	created_at                     *time.Time
+	updated_at                     *time.Time
+	clearedFields                  map[string]struct{}
+	done                           bool
+	oldValue                       func(context.Context) (*PaymentProviderInstance, error)
+	predicates                     []predicate.PaymentProviderInstance
 }
 
 var _ ent.Mutation = (*PaymentProviderInstanceMutation)(nil)
@@ -33437,6 +34948,146 @@ func (m *PaymentProviderInstanceMutation) ResetAllowUserRefund() {
 	m.allow_user_refund = nil
 }
 
+// SetRechargeFeeRate sets the "recharge_fee_rate" field.
+func (m *PaymentProviderInstanceMutation) SetRechargeFeeRate(f float64) {
+	m.recharge_fee_rate = &f
+	m.addrecharge_fee_rate = nil
+}
+
+// RechargeFeeRate returns the value of the "recharge_fee_rate" field in the mutation.
+func (m *PaymentProviderInstanceMutation) RechargeFeeRate() (r float64, exists bool) {
+	v := m.recharge_fee_rate
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRechargeFeeRate returns the old "recharge_fee_rate" field's value of the PaymentProviderInstance entity.
+// If the PaymentProviderInstance object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PaymentProviderInstanceMutation) OldRechargeFeeRate(ctx context.Context) (v *float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRechargeFeeRate is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRechargeFeeRate requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRechargeFeeRate: %w", err)
+	}
+	return oldValue.RechargeFeeRate, nil
+}
+
+// AddRechargeFeeRate adds f to the "recharge_fee_rate" field.
+func (m *PaymentProviderInstanceMutation) AddRechargeFeeRate(f float64) {
+	if m.addrecharge_fee_rate != nil {
+		*m.addrecharge_fee_rate += f
+	} else {
+		m.addrecharge_fee_rate = &f
+	}
+}
+
+// AddedRechargeFeeRate returns the value that was added to the "recharge_fee_rate" field in this mutation.
+func (m *PaymentProviderInstanceMutation) AddedRechargeFeeRate() (r float64, exists bool) {
+	v := m.addrecharge_fee_rate
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearRechargeFeeRate clears the value of the "recharge_fee_rate" field.
+func (m *PaymentProviderInstanceMutation) ClearRechargeFeeRate() {
+	m.recharge_fee_rate = nil
+	m.addrecharge_fee_rate = nil
+	m.clearedFields[paymentproviderinstance.FieldRechargeFeeRate] = struct{}{}
+}
+
+// RechargeFeeRateCleared returns if the "recharge_fee_rate" field was cleared in this mutation.
+func (m *PaymentProviderInstanceMutation) RechargeFeeRateCleared() bool {
+	_, ok := m.clearedFields[paymentproviderinstance.FieldRechargeFeeRate]
+	return ok
+}
+
+// ResetRechargeFeeRate resets all changes to the "recharge_fee_rate" field.
+func (m *PaymentProviderInstanceMutation) ResetRechargeFeeRate() {
+	m.recharge_fee_rate = nil
+	m.addrecharge_fee_rate = nil
+	delete(m.clearedFields, paymentproviderinstance.FieldRechargeFeeRate)
+}
+
+// SetBalanceRechargeMultiplier sets the "balance_recharge_multiplier" field.
+func (m *PaymentProviderInstanceMutation) SetBalanceRechargeMultiplier(f float64) {
+	m.balance_recharge_multiplier = &f
+	m.addbalance_recharge_multiplier = nil
+}
+
+// BalanceRechargeMultiplier returns the value of the "balance_recharge_multiplier" field in the mutation.
+func (m *PaymentProviderInstanceMutation) BalanceRechargeMultiplier() (r float64, exists bool) {
+	v := m.balance_recharge_multiplier
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldBalanceRechargeMultiplier returns the old "balance_recharge_multiplier" field's value of the PaymentProviderInstance entity.
+// If the PaymentProviderInstance object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PaymentProviderInstanceMutation) OldBalanceRechargeMultiplier(ctx context.Context) (v *float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldBalanceRechargeMultiplier is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldBalanceRechargeMultiplier requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldBalanceRechargeMultiplier: %w", err)
+	}
+	return oldValue.BalanceRechargeMultiplier, nil
+}
+
+// AddBalanceRechargeMultiplier adds f to the "balance_recharge_multiplier" field.
+func (m *PaymentProviderInstanceMutation) AddBalanceRechargeMultiplier(f float64) {
+	if m.addbalance_recharge_multiplier != nil {
+		*m.addbalance_recharge_multiplier += f
+	} else {
+		m.addbalance_recharge_multiplier = &f
+	}
+}
+
+// AddedBalanceRechargeMultiplier returns the value that was added to the "balance_recharge_multiplier" field in this mutation.
+func (m *PaymentProviderInstanceMutation) AddedBalanceRechargeMultiplier() (r float64, exists bool) {
+	v := m.addbalance_recharge_multiplier
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearBalanceRechargeMultiplier clears the value of the "balance_recharge_multiplier" field.
+func (m *PaymentProviderInstanceMutation) ClearBalanceRechargeMultiplier() {
+	m.balance_recharge_multiplier = nil
+	m.addbalance_recharge_multiplier = nil
+	m.clearedFields[paymentproviderinstance.FieldBalanceRechargeMultiplier] = struct{}{}
+}
+
+// BalanceRechargeMultiplierCleared returns if the "balance_recharge_multiplier" field was cleared in this mutation.
+func (m *PaymentProviderInstanceMutation) BalanceRechargeMultiplierCleared() bool {
+	_, ok := m.clearedFields[paymentproviderinstance.FieldBalanceRechargeMultiplier]
+	return ok
+}
+
+// ResetBalanceRechargeMultiplier resets all changes to the "balance_recharge_multiplier" field.
+func (m *PaymentProviderInstanceMutation) ResetBalanceRechargeMultiplier() {
+	m.balance_recharge_multiplier = nil
+	m.addbalance_recharge_multiplier = nil
+	delete(m.clearedFields, paymentproviderinstance.FieldBalanceRechargeMultiplier)
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (m *PaymentProviderInstanceMutation) SetCreatedAt(t time.Time) {
 	m.created_at = &t
@@ -33543,7 +35194,7 @@ func (m *PaymentProviderInstanceMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *PaymentProviderInstanceMutation) Fields() []string {
-	fields := make([]string, 0, 12)
+	fields := make([]string, 0, 14)
 	if m.provider_key != nil {
 		fields = append(fields, paymentproviderinstance.FieldProviderKey)
 	}
@@ -33573,6 +35224,12 @@ func (m *PaymentProviderInstanceMutation) Fields() []string {
 	}
 	if m.allow_user_refund != nil {
 		fields = append(fields, paymentproviderinstance.FieldAllowUserRefund)
+	}
+	if m.recharge_fee_rate != nil {
+		fields = append(fields, paymentproviderinstance.FieldRechargeFeeRate)
+	}
+	if m.balance_recharge_multiplier != nil {
+		fields = append(fields, paymentproviderinstance.FieldBalanceRechargeMultiplier)
 	}
 	if m.created_at != nil {
 		fields = append(fields, paymentproviderinstance.FieldCreatedAt)
@@ -33608,6 +35265,10 @@ func (m *PaymentProviderInstanceMutation) Field(name string) (ent.Value, bool) {
 		return m.RefundEnabled()
 	case paymentproviderinstance.FieldAllowUserRefund:
 		return m.AllowUserRefund()
+	case paymentproviderinstance.FieldRechargeFeeRate:
+		return m.RechargeFeeRate()
+	case paymentproviderinstance.FieldBalanceRechargeMultiplier:
+		return m.BalanceRechargeMultiplier()
 	case paymentproviderinstance.FieldCreatedAt:
 		return m.CreatedAt()
 	case paymentproviderinstance.FieldUpdatedAt:
@@ -33641,6 +35302,10 @@ func (m *PaymentProviderInstanceMutation) OldField(ctx context.Context, name str
 		return m.OldRefundEnabled(ctx)
 	case paymentproviderinstance.FieldAllowUserRefund:
 		return m.OldAllowUserRefund(ctx)
+	case paymentproviderinstance.FieldRechargeFeeRate:
+		return m.OldRechargeFeeRate(ctx)
+	case paymentproviderinstance.FieldBalanceRechargeMultiplier:
+		return m.OldBalanceRechargeMultiplier(ctx)
 	case paymentproviderinstance.FieldCreatedAt:
 		return m.OldCreatedAt(ctx)
 	case paymentproviderinstance.FieldUpdatedAt:
@@ -33724,6 +35389,20 @@ func (m *PaymentProviderInstanceMutation) SetField(name string, value ent.Value)
 		}
 		m.SetAllowUserRefund(v)
 		return nil
+	case paymentproviderinstance.FieldRechargeFeeRate:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRechargeFeeRate(v)
+		return nil
+	case paymentproviderinstance.FieldBalanceRechargeMultiplier:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetBalanceRechargeMultiplier(v)
+		return nil
 	case paymentproviderinstance.FieldCreatedAt:
 		v, ok := value.(time.Time)
 		if !ok {
@@ -33749,6 +35428,12 @@ func (m *PaymentProviderInstanceMutation) AddedFields() []string {
 	if m.addsort_order != nil {
 		fields = append(fields, paymentproviderinstance.FieldSortOrder)
 	}
+	if m.addrecharge_fee_rate != nil {
+		fields = append(fields, paymentproviderinstance.FieldRechargeFeeRate)
+	}
+	if m.addbalance_recharge_multiplier != nil {
+		fields = append(fields, paymentproviderinstance.FieldBalanceRechargeMultiplier)
+	}
 	return fields
 }
 
@@ -33759,6 +35444,10 @@ func (m *PaymentProviderInstanceMutation) AddedField(name string) (ent.Value, bo
 	switch name {
 	case paymentproviderinstance.FieldSortOrder:
 		return m.AddedSortOrder()
+	case paymentproviderinstance.FieldRechargeFeeRate:
+		return m.AddedRechargeFeeRate()
+	case paymentproviderinstance.FieldBalanceRechargeMultiplier:
+		return m.AddedBalanceRechargeMultiplier()
 	}
 	return nil, false
 }
@@ -33775,6 +35464,20 @@ func (m *PaymentProviderInstanceMutation) AddField(name string, value ent.Value)
 		}
 		m.AddSortOrder(v)
 		return nil
+	case paymentproviderinstance.FieldRechargeFeeRate:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddRechargeFeeRate(v)
+		return nil
+	case paymentproviderinstance.FieldBalanceRechargeMultiplier:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddBalanceRechargeMultiplier(v)
+		return nil
 	}
 	return fmt.Errorf("unknown PaymentProviderInstance numeric field %s", name)
 }
@@ -33782,7 +35485,14 @@ func (m *PaymentProviderInstanceMutation) AddField(name string, value ent.Value)
 // ClearedFields returns all nullable fields that were cleared during this
 // mutation.
 func (m *PaymentProviderInstanceMutation) ClearedFields() []string {
-	return nil
+	var fields []string
+	if m.FieldCleared(paymentproviderinstance.FieldRechargeFeeRate) {
+		fields = append(fields, paymentproviderinstance.FieldRechargeFeeRate)
+	}
+	if m.FieldCleared(paymentproviderinstance.FieldBalanceRechargeMultiplier) {
+		fields = append(fields, paymentproviderinstance.FieldBalanceRechargeMultiplier)
+	}
+	return fields
 }
 
 // FieldCleared returns a boolean indicating if a field with the given name was
@@ -33795,6 +35505,14 @@ func (m *PaymentProviderInstanceMutation) FieldCleared(name string) bool {
 // ClearField clears the value of the field with the given name. It returns an
 // error if the field is not defined in the schema.
 func (m *PaymentProviderInstanceMutation) ClearField(name string) error {
+	switch name {
+	case paymentproviderinstance.FieldRechargeFeeRate:
+		m.ClearRechargeFeeRate()
+		return nil
+	case paymentproviderinstance.FieldBalanceRechargeMultiplier:
+		m.ClearBalanceRechargeMultiplier()
+		return nil
+	}
 	return fmt.Errorf("unknown PaymentProviderInstance nullable field %s", name)
 }
 
@@ -33831,6 +35549,12 @@ func (m *PaymentProviderInstanceMutation) ResetField(name string) error {
 		return nil
 	case paymentproviderinstance.FieldAllowUserRefund:
 		m.ResetAllowUserRefund()
+		return nil
+	case paymentproviderinstance.FieldRechargeFeeRate:
+		m.ResetRechargeFeeRate()
+		return nil
+	case paymentproviderinstance.FieldBalanceRechargeMultiplier:
+		m.ResetBalanceRechargeMultiplier()
 		return nil
 	case paymentproviderinstance.FieldCreatedAt:
 		m.ResetCreatedAt()
@@ -43151,8 +44875,8 @@ type UsageCleanupTaskMutation struct {
 	created_at      *time.Time
 	updated_at      *time.Time
 	status          *string
-	filters         *json.RawMessage
-	appendfilters   json.RawMessage
+	filters         *jsontext.Value
+	appendfilters   jsontext.Value
 	created_by      *int64
 	addcreated_by   *int64
 	deleted_rows    *int64
@@ -43376,13 +45100,13 @@ func (m *UsageCleanupTaskMutation) ResetStatus() {
 }
 
 // SetFilters sets the "filters" field.
-func (m *UsageCleanupTaskMutation) SetFilters(jm json.RawMessage) {
-	m.filters = &jm
+func (m *UsageCleanupTaskMutation) SetFilters(j jsontext.Value) {
+	m.filters = &j
 	m.appendfilters = nil
 }
 
 // Filters returns the value of the "filters" field in the mutation.
-func (m *UsageCleanupTaskMutation) Filters() (r json.RawMessage, exists bool) {
+func (m *UsageCleanupTaskMutation) Filters() (r jsontext.Value, exists bool) {
 	v := m.filters
 	if v == nil {
 		return
@@ -43393,7 +45117,7 @@ func (m *UsageCleanupTaskMutation) Filters() (r json.RawMessage, exists bool) {
 // OldFilters returns the old "filters" field's value of the UsageCleanupTask entity.
 // If the UsageCleanupTask object wasn't provided to the builder, the object is fetched from the database.
 // An error is returned if the mutation operation is not UpdateOne, or the database query fails.
-func (m *UsageCleanupTaskMutation) OldFilters(ctx context.Context) (v json.RawMessage, err error) {
+func (m *UsageCleanupTaskMutation) OldFilters(ctx context.Context) (v jsontext.Value, err error) {
 	if !m.op.Is(OpUpdateOne) {
 		return v, errors.New("OldFilters is only allowed on UpdateOne operations")
 	}
@@ -43407,13 +45131,13 @@ func (m *UsageCleanupTaskMutation) OldFilters(ctx context.Context) (v json.RawMe
 	return oldValue.Filters, nil
 }
 
-// AppendFilters adds jm to the "filters" field.
-func (m *UsageCleanupTaskMutation) AppendFilters(jm json.RawMessage) {
-	m.appendfilters = append(m.appendfilters, jm...)
+// AppendFilters adds j to the "filters" field.
+func (m *UsageCleanupTaskMutation) AppendFilters(j jsontext.Value) {
+	m.appendfilters = append(m.appendfilters, j...)
 }
 
 // AppendedFilters returns the list of values that were appended to the "filters" field in this mutation.
-func (m *UsageCleanupTaskMutation) AppendedFilters() (json.RawMessage, bool) {
+func (m *UsageCleanupTaskMutation) AppendedFilters() (jsontext.Value, bool) {
 	if len(m.appendfilters) == 0 {
 		return nil, false
 	}
@@ -43964,7 +45688,7 @@ func (m *UsageCleanupTaskMutation) SetField(name string, value ent.Value) error 
 		m.SetStatus(v)
 		return nil
 	case usagecleanuptask.FieldFilters:
-		v, ok := value.(json.RawMessage)
+		v, ok := value.(jsontext.Value)
 		if !ok {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}

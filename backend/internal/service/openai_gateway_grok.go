@@ -75,7 +75,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	}
 	// Derive the identity from the request xAI will actually see. This makes
 	// Codex Responses Lite additional_tools part of the stable tool prefix.
-	cacheIdentity := resolveGrokCacheIdentity(c, patchedBody, "", upstreamModel)
+	cacheIdentity := resolveGrokCacheIdentityFromSources(c, body, patchedBody, "", upstreamModel)
 	mixedCacheIntentBody := append([]byte(nil), patchedBody...)
 	patchedBody, err = applyGrokResponsesCacheIdentity(patchedBody, body, cacheIdentity, account.IsGrokOAuth())
 	if err != nil {
@@ -164,6 +164,8 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 			kind = "failover"
 		}
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -609,7 +611,8 @@ func patchGrokResponsesBodyBase(body []byte, upstreamModel string) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	out, err = sanitizeGrokResponsesTopLevelMetadata(out)
+	return out, err
 }
 
 // xAI's Grok 4.20 family and newer models do not support OpenAI's logprobs
@@ -745,6 +748,12 @@ func grokSupportsXHighReasoningEffort(model string) bool {
 	return model == "grok-4.6" || model == "grok-4.6-latest"
 }
 
+// GrokSupportsXHighReasoningEffort reports whether the model advertises and
+// forwards the xhigh reasoning effort (Grok 4.6 and its undated alias).
+func GrokSupportsXHighReasoningEffort(model string) bool {
+	return grokSupportsXHighReasoningEffort(model)
+}
+
 func grokSupportsReasoningEffort(model string) bool {
 	model = strings.ToLower(xai.StripGrokProviderPrefix(strings.TrimSpace(model)))
 	switch model {
@@ -776,6 +785,10 @@ func sanitizeGrokResponsesUnsupportedFields(body []byte) ([]byte, error) {
 	}
 	return marshalOpenAIUpstreamJSON(payload)
 }
+
+// sanitizeGrokUnsupportedFields is the upstream name for the same Grok field stripper,
+// used by both Responses and Chat Completions.
+var sanitizeGrokUnsupportedFields = sanitizeGrokResponsesUnsupportedFields
 
 func deleteJSONFields(value any, fields map[string]struct{}) bool {
 	switch typed := value.(type) {
@@ -1060,7 +1073,11 @@ var grokResponsesSupportedToolTypes = map[string]struct{}{
 func sanitizeGrokResponsesTools(body []byte) ([]byte, error) {
 	tools := gjson.GetBytes(body, "tools")
 	if !tools.Exists() {
-		return deleteGrokOrphanToolControls(body)
+		body, err := deleteGrokOrphanToolControls(body)
+		if err != nil {
+			return nil, err
+		}
+		return sanitizeGrokResponsesToolSchemaUnions(body)
 	}
 	if !tools.IsArray() {
 		// xAI rejects tool_choice when tools is null/object. Drop the malformed
@@ -1070,7 +1087,11 @@ func sanitizeGrokResponsesTools(body []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		return deleteGrokOrphanToolControls(body)
+		body, err = deleteGrokOrphanToolControls(body)
+		if err != nil {
+			return nil, err
+		}
+		return sanitizeGrokResponsesToolSchemaUnions(body)
 	}
 
 	rawTools := tools.Array()
@@ -1127,12 +1148,16 @@ func sanitizeGrokResponsesTools(body []byte) ([]byte, error) {
 		}
 	}
 	if len(filteredTools) == 0 {
-		return deleteGrokOrphanToolControls(body)
+		body, err = deleteGrokOrphanToolControls(body)
+		if err != nil {
+			return nil, err
+		}
+		return sanitizeGrokResponsesToolSchemaUnions(body)
 	}
 
 	toolChoice := gjson.GetBytes(body, "tool_choice")
 	if !toolChoice.Exists() {
-		return body, nil
+		return sanitizeGrokResponsesToolSchemaUnions(body)
 	}
 	if shouldDropGrokToolChoice(toolChoice, filteredTools) {
 		body, err = sjson.DeleteBytes(body, "tool_choice")
@@ -1140,7 +1165,46 @@ func sanitizeGrokResponsesTools(body []byte) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return body, nil
+	return sanitizeGrokResponsesToolSchemaUnions(body)
+}
+
+func sanitizeGrokResponsesToolSchemaUnions(body []byte) ([]byte, error) {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return body, nil
+	}
+	var payload any
+	if err := decodeOpenAIJSONUseNumber(body, &payload); err != nil {
+		return nil, err
+	}
+	root, ok := payload.(map[string]any)
+	if !ok {
+		return body, nil
+	}
+	rawTools, _ := root["tools"].([]any)
+	changed := false
+	for _, rawTool := range rawTools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok || strings.TrimSpace(stringValue(tool["type"])) != "function" {
+			continue
+		}
+		parameters, ok := tool["parameters"].(map[string]any)
+		if ok && simplifyGrokRootObjectUnion(parameters) {
+			tool["strict"] = false
+			changed = true
+		}
+	}
+	if !changed {
+		return body, nil
+	}
+	return marshalOpenAIUpstreamJSON(root)
+}
+
+func sanitizeGrokResponsesTopLevelMetadata(body []byte) ([]byte, error) {
+	if !gjson.GetBytes(body, "metadata").Exists() {
+		return body, nil
+	}
+	return sjson.DeleteBytes(body, "metadata")
 }
 
 func grokRawToolsContainType(tools []json.RawMessage, want string) bool {
@@ -1373,6 +1437,8 @@ func (s *OpenAIGatewayService) describeGrokComposerImage(
 			kind = "failover"
 		}
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,

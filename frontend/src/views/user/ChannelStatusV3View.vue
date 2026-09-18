@@ -28,15 +28,48 @@
         <div v-for="i in 8" :key="i" class="h-72 animate-pulse rounded-[24px] bg-white/60 dark:bg-dark-800" />
       </div>
       <EmptyState v-else-if="rows.length === 0" :title="t('channelMonitorV3.emptyTitle')" :description="t('channelMonitorV3.emptyDescription')" />
-      <div v-else class="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-        <ChannelMonitorV3Card
-          v-for="row in rows"
-          :key="row.group_id ?? `${row.platform}:${row.group_name ?? ''}`"
-          :row="row"
-          :user-rate-multiplier="getUserRateMultiplier(row.group_id)"
-          :countdown-seconds="countdownSeconds"
-          :timeline-length="timelineLength"
-        />
+      <div v-else class="channel-status-board space-y-8" data-testid="channel-status-board">
+        <section
+          v-for="(block, index) in layoutBlocks"
+          :key="channelStatusLayoutBlockKey(block, index)"
+          :data-layout="block.kind"
+          :data-testid="block.kind === 'cluster' ? `channel-status-platform-${block.platform}` : 'channel-status-compact-platforms'"
+        >
+          <template v-if="block.kind === 'cluster'">
+            <h2 class="mb-3 flex items-center gap-2 px-1 text-sm font-semibold text-gray-700 dark:text-gray-200">
+              {{ providerLabel(block.platform) }}
+              <span class="rounded-full bg-gray-100 px-1.5 py-px font-mono text-[10px] font-medium text-gray-500 dark:bg-dark-700 dark:text-gray-400">{{ block.rows.length }}</span>
+            </h2>
+            <div class="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+              <ChannelMonitorV3Card
+                v-for="row in block.rows"
+                :key="row.group_id ?? `${row.platform}:${row.group_name ?? ''}`"
+                :row="row"
+                :user-rate-multiplier="getUserRateMultiplier(row.group_id)"
+                :countdown-seconds="countdownSeconds"
+                :timeline-length="timelineLength"
+              />
+            </div>
+          </template>
+          <div
+            v-else
+            class="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+          >
+            <div
+              v-for="item in block.items"
+              :key="item.row.group_id ?? `${item.platform}:${item.row.group_name ?? ''}`"
+              :data-testid="`channel-status-platform-${item.platform}`"
+            >
+              <h2 class="mb-3 px-1 text-sm font-semibold text-gray-700 dark:text-gray-200">{{ providerLabel(item.platform) }}</h2>
+              <ChannelMonitorV3Card
+                :row="item.row"
+                :user-rate-multiplier="getUserRateMultiplier(item.row.group_id)"
+                :countdown-seconds="countdownSeconds"
+                :timeline-length="timelineLength"
+              />
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   </AppLayout>
@@ -55,10 +88,13 @@ import userGroupsAPI from '@/api/groups'
 import type { MonitorFilter, MonitorMatrixResponse, MonitorRange, MonitorSnapshot } from '@/api/channelMonitorV2'
 import type { Group } from '@/types'
 import ChannelMonitorV3Card from '@/components/user/monitor/ChannelMonitorV3Card.vue'
+import { useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import { formatMonitorPercent } from '@/features/channel-monitor-v2/monitorFormat'
+import { buildChannelStatusLayout, channelStatusLayoutBlockKey } from '@/features/channel-monitor-v2/channelStatusLayout'
 
 const { t, locale } = useI18n()
 const appStore = useAppStore()
+const { providerLabel } = useChannelMonitorFormat()
 const ranges = computed(() => [
   { value: '90m' as MonitorRange, label: t('channelMonitorV3.ranges.90m') },
   { value: '24h' as MonitorRange, label: t('channelMonitorV3.ranges.24h') },
@@ -81,6 +117,20 @@ let countdownTimer: number | null = null
 const rows = computed(() => [...(matrix.value?.items ?? [])]
   .filter(row => row.group_id != null && row.group_id > 0)
   .sort((a, b) => (a.group_id ?? 0) - (b.group_id ?? 0)))
+const platformSections = computed(() => {
+  const grouped = new Map<string, typeof rows.value>()
+  for (const row of rows.value) {
+    const platform = row.platform || 'unknown'
+    const current = grouped.get(platform) ?? []
+    current.push(row)
+    grouped.set(platform, current)
+  }
+  return [...grouped.entries()].map(([platform, sectionRows]) => ({
+    platform,
+    rows: sectionRows.sort((a, b) => (a.group_id ?? 0) - (b.group_id ?? 0)),
+  }))
+})
+const layoutBlocks = computed(() => buildChannelStatusLayout(platformSections.value))
 const timelineLength = computed(() => ({ '90m': 18, '24h': 24, '7d': 14, '30d': 30 })[filter.value.range])
 const latestSnapshotMetrics = computed(() => {
   const trend = [...(snapshot.value?.trend ?? [])]

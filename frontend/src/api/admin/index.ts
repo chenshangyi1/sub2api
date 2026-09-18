@@ -36,6 +36,8 @@ import riskControlAPI from './riskControl'
 import adminComplianceAPI from './compliance'
 import auditAPI from './audit'
 import pluginsAPI from './plugins'
+import groupMonitorAPI from './groupMonitor'
+import adaptiveAPI from './adaptive'
 
 /**
  * Unified admin API object for convenient access
@@ -73,7 +75,9 @@ export const adminAPI = {
   riskControl: riskControlAPI,
   compliance: adminComplianceAPI,
   audit: auditAPI,
-  plugins: pluginsAPI
+  plugins: pluginsAPI,
+  groupMonitor: groupMonitorAPI,
+  adaptive: adaptiveAPI
 }
 
 export {
@@ -109,7 +113,9 @@ export {
   riskControlAPI,
   adminComplianceAPI,
   auditAPI,
-  pluginsAPI
+  pluginsAPI,
+  groupMonitorAPI,
+  adaptiveAPI
 }
 
 export default adminAPI
@@ -127,3 +133,9 @@ export type {
   PluginUISession,
   PluginTestResult
 } from './plugins'
+export type {
+  AdaptivePool,
+  AdaptiveLeafMember,
+  AdaptivePoolListResponse,
+  PutAdaptivePoolRequest
+} from './adaptive'

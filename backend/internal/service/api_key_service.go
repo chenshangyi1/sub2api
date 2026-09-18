@@ -24,14 +24,17 @@ import (
 )
 
 var (
-	ErrAPIKeyNotFound       = infraerrors.NotFound("API_KEY_NOT_FOUND", "api key not found")
-	ErrGroupNotAllowed      = infraerrors.Forbidden("GROUP_NOT_ALLOWED", "user is not allowed to bind this group")
-	ErrAPIKeyExists         = infraerrors.Conflict("API_KEY_EXISTS", "api key already exists")
-	ErrAPIKeyTooShort       = infraerrors.BadRequest("API_KEY_TOO_SHORT", "api key must be at least 16 characters")
-	ErrAPIKeyInvalidChars   = infraerrors.BadRequest("API_KEY_INVALID_CHARS", "api key can only contain letters, numbers, underscores, and hyphens")
-	ErrAPIKeyRateLimited    = infraerrors.TooManyRequests("API_KEY_RATE_LIMITED", "too many failed attempts, please try again later")
-	ErrAPIKeyAuthOverloaded = infraerrors.ServiceUnavailable("API_KEY_AUTH_OVERLOADED", "api key authentication is temporarily overloaded")
-	ErrInvalidIPPattern     = infraerrors.BadRequest("INVALID_IP_PATTERN", "invalid IP or CIDR pattern")
+	ErrAPIKeyNotFound                   = infraerrors.NotFound("API_KEY_NOT_FOUND", "api key not found")
+	ErrGroupNotAllowed                  = infraerrors.Forbidden("GROUP_NOT_ALLOWED", "user is not allowed to bind this group")
+	ErrAPIKeyExists                     = infraerrors.Conflict("API_KEY_EXISTS", "api key already exists")
+	ErrAPIKeyTooShort                   = infraerrors.BadRequest("API_KEY_TOO_SHORT", "api key must be at least 16 characters")
+	ErrAPIKeyInvalidChars               = infraerrors.BadRequest("API_KEY_INVALID_CHARS", "api key can only contain letters, numbers, underscores, and hyphens")
+	ErrAPIKeyRateLimited                = infraerrors.TooManyRequests("API_KEY_RATE_LIMITED", "too many failed attempts, please try again later")
+	ErrAPIKeyAuthOverloaded             = infraerrors.ServiceUnavailable("API_KEY_AUTH_OVERLOADED", "api key authentication is temporarily overloaded")
+	ErrInvalidIPPattern                 = infraerrors.BadRequest("INVALID_IP_PATTERN", "invalid IP or CIDR pattern")
+	ErrInvalidAdaptiveRoutingPreference = infraerrors.BadRequest("INVALID_ADAPTIVE_ROUTING_PREFERENCE", "adaptive_routing_preference must be intelligence or price")
+	ErrAdaptiveLeafNotInPool            = infraerrors.BadRequest("ADAPTIVE_LEAF_NOT_IN_POOL", "selected Adaptive leaf is not in this pool")
+	ErrAdaptiveLeavesNotApplicable      = infraerrors.BadRequest("ADAPTIVE_LEAVES_NOT_APPLICABLE", "selected group is not an Adaptive parent")
 	// ErrAPIKeyExpired        = infraerrors.Forbidden("API_KEY_EXPIRED", "api key has expired")
 	ErrAPIKeyExpired = infraerrors.Forbidden("API_KEY_EXPIRED", "api key 已过期")
 	// ErrAPIKeyQuotaExhausted = infraerrors.TooManyRequests("API_KEY_QUOTA_EXHAUSTED", "api key quota exhausted")
@@ -54,6 +57,8 @@ const (
 	apiKeyLastUsedFailBackoff = 5 * time.Second
 )
 
+const apiKeyAuthSharedLookupTimeout = 5 * time.Second
+
 // APIKeyUpdateFields 声明 APIKeyRepository.Update 允许写回的列。
 //
 // 与 UserUpdateFields 同理：api_keys 的用量列由计费热路径原子递增
@@ -75,6 +80,8 @@ type APIKeyUpdateFields struct {
 	RateLimitUsage bool
 	// IPRules 覆盖 ip_whitelist 与 ip_blacklist。
 	IPRules bool
+	// AdaptiveRouting covers preference, max-rate ceiling, and leaf allowlist.
+	AdaptiveRouting bool
 }
 
 // IsEmpty 报告该次 Update 是否不写任何列。
@@ -123,6 +130,11 @@ type APIKeyRepository interface {
 
 type apiKeyAllByUserIDLister interface {
 	ListAllByUserID(ctx context.Context, userID int64, filters APIKeyListFilters) ([]APIKey, error)
+}
+
+type apiKeyGroupRouteStore interface {
+	ReplaceGroupRoutes(ctx context.Context, apiKeyID int64, groupIDs []int64) error
+	ListGroupRoutes(ctx context.Context, apiKeyIDs []int64) (map[int64][]int64, error)
 }
 
 // APIKeyRateLimitData holds rate limit usage and window state for an API key.
@@ -209,11 +221,15 @@ type APIKeyAuthCacheInvalidator interface {
 
 // CreateAPIKeyRequest 创建API Key请求
 type CreateAPIKeyRequest struct {
-	Name        string   `json:"name"`
-	GroupID     *int64   `json:"group_id"`
-	CustomKey   *string  `json:"custom_key"`   // 可选的自定义key
-	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单
-	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单
+	Name                      string   `json:"name"`
+	GroupID                   *int64   `json:"group_id"`
+	GroupIDs                  []int64  `json:"group_ids"`
+	CustomKey                 *string  `json:"custom_key"`   // 可选的自定义key
+	IPWhitelist               []string `json:"ip_whitelist"` // IP 白名单
+	IPBlacklist               []string `json:"ip_blacklist"` // IP 黑名单
+	AdaptiveRoutingPreference *string  `json:"adaptive_routing_preference"`
+	AdaptiveMaxRateMultiplier *float64 `json:"adaptive_max_rate_multiplier"`
+	AdaptiveLeafGroupIDs      []int64  `json:"adaptive_leaf_group_ids"`
 
 	// Quota fields
 	Quota         float64 `json:"quota"`           // Quota limit in USD (0 = unlimited)
@@ -227,11 +243,15 @@ type CreateAPIKeyRequest struct {
 
 // UpdateAPIKeyRequest 更新API Key请求
 type UpdateAPIKeyRequest struct {
-	Name        *string   `json:"name"`
-	GroupID     *int64    `json:"group_id"`
-	Status      *string   `json:"status"`
-	IPWhitelist *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
-	IPBlacklist *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
+	Name                      *string   `json:"name"`
+	GroupID                   *int64    `json:"group_id"`
+	GroupIDs                  *[]int64  `json:"group_ids"`
+	Status                    *string   `json:"status"`
+	IPWhitelist               *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
+	IPBlacklist               *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
+	AdaptiveRoutingPreference *string   `json:"adaptive_routing_preference"`
+	AdaptiveMaxRateMultiplier *float64  `json:"adaptive_max_rate_multiplier"`
+	AdaptiveLeafGroupIDs      *[]int64  `json:"adaptive_leaf_group_ids"`
 
 	// Quota fields
 	Quota           *float64   `json:"quota"`       // Quota limit in USD (nil = no change, 0 = unlimited)
@@ -309,6 +329,11 @@ type APIKeyService struct {
 	authInvalidationFailures  atomic.Uint64
 	lastUsedTouchL1           sync.Map // keyID -> nextAllowedAt(time.Time)
 	lastUsedTouchSF           singleflight.Group
+	// lastUsedScheduler is installed by the production wiring after the shared
+	// DeferredService is constructed. Keeping it optional preserves the
+	// synchronous behavior of lightweight embedders and unit-test stubs.
+	lastUsedScheduler func(int64)
+	adaptivePool      AdaptivePoolSnapshotRepository
 }
 
 type APIKeyAuthLookupMetrics struct {
@@ -359,6 +384,15 @@ func NewAPIKeyService(
 	return svc
 }
 
+// SetAdaptivePool attaches Adaptive topology so user-facing key pickers can
+// list leaf groups under an Adaptive parent.
+func (s *APIKeyService) SetAdaptivePool(pool AdaptivePoolSnapshotRepository) {
+	if s == nil {
+		return
+	}
+	s.adaptivePool = pool
+}
+
 // SetRateLimitCacheInvalidator sets the optional rate limit cache invalidator.
 // Called after construction (e.g. in wire) to avoid circular dependencies.
 func (s *APIKeyService) SetRateLimitCacheInvalidator(inv RateLimitCacheInvalidator) {
@@ -367,6 +401,15 @@ func (s *APIKeyService) SetRateLimitCacheInvalidator(inv RateLimitCacheInvalidat
 
 func (s *APIKeyService) SetConcurrencyService(concurrencyService *ConcurrencyService) {
 	s.concurrencyService = concurrencyService
+}
+
+// SetLastUsedScheduler routes authentication activity timestamps to the
+// process-wide deferred batcher. It is intentionally a narrow callback so the
+// API-key service does not depend on the DeferredService concrete type.
+func (s *APIKeyService) SetLastUsedScheduler(schedule func(int64)) {
+	if s != nil {
+		s.lastUsedScheduler = schedule
+	}
 }
 
 func (s *APIKeyService) compileAPIKeyIPRules(apiKey *APIKey) {
@@ -378,6 +421,17 @@ func (s *APIKeyService) compileAPIKeyIPRules(apiKey *APIKey) {
 }
 
 // GenerateKey 生成随机API Key
+func (s *APIKeyService) ResolveGroupByID(ctx context.Context, groupID int64) (*Group, error) {
+	if s == nil || s.groupRepo == nil {
+		return nil, fmt.Errorf("group repository is unavailable")
+	}
+	group, err := s.groupRepo.GetByIDLite(ctx, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("get group failed: %w", err)
+	}
+	return group, nil
+}
+
 func (s *APIKeyService) GenerateKey() (string, error) {
 	// 生成32字节随机数据
 	bytes := make([]byte, 32)
@@ -448,6 +502,12 @@ func (s *APIKeyService) incrementAPIKeyErrorCount(ctx context.Context, userID in
 // 对于订阅类型分组：检查用户是否有有效订阅
 // 对于标准类型分组：使用原有的 AllowedGroups 和 IsExclusive 逻辑
 func (s *APIKeyService) canUserBindGroup(ctx context.Context, user *User, group *Group) bool {
+	if group == nil || user == nil {
+		return false
+	}
+	if !group.VisibleToUser(user) {
+		return false
+	}
 	// 订阅类型分组：需要有效订阅
 	if group.IsSubscriptionType() {
 		_, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, user.ID, group.ID)
@@ -482,18 +542,11 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		}
 	}
 
-	// 验证分组权限（如果指定了分组）
-	if req.GroupID != nil {
-		group, err := s.groupRepo.GetByID(ctx, *req.GroupID)
-		if err != nil {
-			return nil, fmt.Errorf("get group: %w", err)
-		}
-
-		// 检查用户是否可以绑定该分组
-		if !s.canUserBindGroup(ctx, user, group) {
-			return nil, ErrGroupNotAllowed
-		}
+	routeIDs, primaryGroupID, err := s.validateAPIKeyGroupRoutes(ctx, user, req.GroupID, req.GroupIDs)
+	if err != nil {
+		return nil, err
 	}
+	req.GroupID = primaryGroupID
 
 	var key string
 
@@ -552,9 +605,20 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		apiKey.ExpiresAt = &expiresAt
 	}
 
+	if err := s.applyAdaptiveKeySelection(ctx, apiKey, req.GroupID, req.AdaptiveRoutingPreference, req.AdaptiveMaxRateMultiplier, req.AdaptiveLeafGroupIDs, true); err != nil {
+		return nil, err
+	}
+
 	if err := s.apiKeyRepo.Create(ctx, apiKey); err != nil {
 		return nil, fmt.Errorf("create api key: %w", err)
 	}
+	if err := s.replaceAPIKeyGroupRoutes(ctx, apiKey.ID, routeIDs); err != nil {
+		if delErr := s.apiKeyRepo.DeleteWithAudit(ctx, apiKey.ID); delErr != nil {
+			return nil, fmt.Errorf("%w (also failed to roll back created api key: %v)", err, delErr)
+		}
+		return nil, err
+	}
+	apiKey.RouteGroupIDs = persistedRouteGroupIDs(routeIDs)
 
 	s.InvalidateAuthCacheByKey(ctx, apiKey.Key)
 	s.compileAPIKeyIPRules(apiKey)
@@ -573,6 +637,8 @@ func (s *APIKeyService) List(ctx context.Context, userID int64, params paginatio
 		return nil, nil, fmt.Errorf("list api keys: %w", err)
 	}
 	s.fillCurrentConcurrency(ctx, keys)
+	_ = s.attachAPIKeyGroupRoutes(ctx, keys)
+	s.stampAdaptiveParentIdentity(ctx, keys)
 	return keys, pagination, nil
 }
 
@@ -587,6 +653,8 @@ func (s *APIKeyService) listByCurrentConcurrency(ctx context.Context, userID int
 		return nil, nil, fmt.Errorf("list api keys: %w", err)
 	}
 	s.fillCurrentConcurrency(ctx, keys)
+	_ = s.attachAPIKeyGroupRoutes(ctx, keys)
+	s.stampAdaptiveParentIdentity(ctx, keys)
 	sortAPIKeysByCurrentConcurrency(keys, params.NormalizedSortOrder(pagination.SortOrderDesc))
 	return paginateAPIKeys(keys, params), apiKeyPaginationResult(int64(len(keys)), params), nil
 }
@@ -696,6 +764,11 @@ func (s *APIKeyService) GetByID(ctx context.Context, id int64) (*APIKey, error) 
 	s.compileAPIKeyIPRules(apiKey)
 	if apiKey != nil {
 		apiKey.CurrentConcurrency = s.currentConcurrencyForAPIKey(ctx, apiKey.ID)
+		stamped := []APIKey{*apiKey}
+		_ = s.attachAPIKeyGroupRoutes(ctx, stamped)
+		s.stampAdaptiveParentIdentity(ctx, stamped)
+		apiKey.Group = stamped[0].Group
+		apiKey.RouteGroupIDs = stamped[0].RouteGroupIDs
 	}
 	return apiKey, nil
 }
@@ -717,13 +790,25 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 	}
 
 	if s.authCfg.singleflight {
-		value, err, _ := s.authGroup.Do(cacheKey, func() (any, error) {
-			return s.loadAuthCacheEntry(ctx, key, cacheKey)
-		})
-		if err != nil {
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		entry, _ := value.(*APIKeyAuthCacheEntry)
+		resultCh := s.authGroup.DoChan(cacheKey, func() (any, error) {
+			// No caller owns the shared lookup; bound its lifetime independently.
+			lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), apiKeyAuthSharedLookupTimeout)
+			defer cancel()
+			return s.loadAuthCacheEntry(lookupCtx, key, cacheKey)
+		})
+		var entry *APIKeyAuthCacheEntry
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case result := <-resultCh:
+			if result.Err != nil {
+				return nil, result.Err
+			}
+			entry, _ = result.Val.(*APIKeyAuthCacheEntry)
+		}
 		if apiKey, used, err := s.applyAuthCacheEntry(key, entry); used {
 			if err != nil {
 				return nil, fmt.Errorf("get api key: %w", err)
@@ -794,24 +879,45 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 		fields.Name = true
 	}
 
-	if req.GroupID != nil {
-		// 验证分组权限
+	if req.GroupID != nil || req.GroupIDs != nil {
 		user, err := s.userRepo.GetByID(ctx, userID)
 		if err != nil {
 			return nil, fmt.Errorf("get user: %w", err)
 		}
-
-		group, err := s.groupRepo.GetByID(ctx, *req.GroupID)
+		if req.GroupIDs == nil && len(apiKey.RouteGroupIDs) > 1 {
+			return nil, infraerrors.BadRequest("API_KEY_SMART_ROUTES_REQUIRE_GROUP_IDS", "smart-routing keys require group_ids to change groups")
+		}
+		incomingIDs := []int64(nil)
+		if req.GroupIDs != nil {
+			incomingIDs = *req.GroupIDs
+		}
+		routeIDs, primaryGroupID, err := s.validateAPIKeyGroupRoutes(ctx, user, req.GroupID, incomingIDs)
 		if err != nil {
-			return nil, fmt.Errorf("get group: %w", err)
+			return nil, err
 		}
-
-		if !s.canUserBindGroup(ctx, user, group) {
-			return nil, ErrGroupNotAllowed
+		if primaryGroupID != nil {
+			apiKey.GroupID = primaryGroupID
+			fields.GroupID = true
 		}
+		if err := s.replaceAPIKeyGroupRoutes(ctx, apiKey.ID, routeIDs); err != nil {
+			return nil, err
+		}
+		apiKey.RouteGroupIDs = persistedRouteGroupIDs(routeIDs)
+	}
 
-		apiKey.GroupID = req.GroupID
-		fields.GroupID = true
+	leafIDsSet := req.AdaptiveLeafGroupIDs != nil
+	var leafIDs []int64
+	if leafIDsSet {
+		leafIDs = *req.AdaptiveLeafGroupIDs
+	}
+	if req.AdaptiveRoutingPreference != nil || req.AdaptiveMaxRateMultiplier != nil || leafIDsSet || fields.GroupID {
+		if fields.GroupID && !leafIDsSet {
+			apiKey.AdaptiveLeafGroupIDs = nil
+		}
+		if err := s.applyAdaptiveKeySelection(ctx, apiKey, apiKey.GroupID, req.AdaptiveRoutingPreference, req.AdaptiveMaxRateMultiplier, leafIDs, leafIDsSet); err != nil {
+			return nil, err
+		}
+		fields.AdaptiveRouting = true
 	}
 
 	if req.Status != nil {
@@ -970,6 +1076,24 @@ func (s *APIKeyService) TouchLastUsed(ctx context.Context, keyID int64) error {
 	if keyID <= 0 {
 		return nil
 	}
+	if s != nil && s.lastUsedScheduler != nil {
+		// last_used_at is metadata only. Keep the existing per-key debounce, but
+		// enqueue the timestamp instead of making a successful authenticated
+		// request wait for PostgreSQL. DeferredService coalesces keys and flushes
+		// them with one bounded batch UPDATE.
+		_, err, _ := s.lastUsedTouchSF.Do(strconv.FormatInt(keyID, 10), func() (any, error) {
+			now := time.Now()
+			if v, ok := s.lastUsedTouchL1.Load(keyID); ok {
+				if nextAllowedAt, ok := v.(time.Time); ok && now.Before(nextAllowedAt) {
+					return nil, nil
+				}
+			}
+			s.lastUsedTouchL1.Store(keyID, now.Add(apiKeyLastUsedMinTouch))
+			s.lastUsedScheduler(keyID)
+			return nil, nil
+		})
+		return err
+	}
 
 	now := time.Now()
 	if v, ok := s.lastUsedTouchL1.Load(keyID); ok {
@@ -1047,11 +1171,203 @@ func (s *APIKeyService) GetAvailableGroups(ctx context.Context, userID int64) ([
 		}
 	}
 
+	s.attachAdaptiveLeaves(ctx, availableGroups)
 	return availableGroups, nil
+}
+
+func (s *APIKeyService) applyAdaptiveKeySelection(ctx context.Context, apiKey *APIKey, groupID *int64, pref *string, maxRate *float64, leafIDs []int64, leafIDsSet bool) error {
+	if apiKey == nil {
+		return nil
+	}
+	if pref != nil {
+		normalized, err := NormalizeAdaptiveRoutingPreference(*pref)
+		if err != nil {
+			return err
+		}
+		apiKey.AdaptiveRoutingPreference = normalized
+	}
+	if maxRate != nil {
+		apiKey.AdaptiveMaxRateMultiplier = NormalizeAdaptiveMaxRateMultiplier(maxRate)
+	}
+	parentID := int64(0)
+	if groupID != nil {
+		parentID = *groupID
+	}
+	if !leafIDsSet {
+		if parentID <= 0 {
+			apiKey.AdaptiveLeafGroupIDs = nil
+		}
+		return nil
+	}
+	normalized, err := s.normalizeAdaptiveLeafSelection(ctx, parentID, leafIDs)
+	if err != nil {
+		return err
+	}
+	apiKey.AdaptiveLeafGroupIDs = normalized
+	return nil
+}
+
+func (s *APIKeyService) normalizeAdaptiveLeafSelection(ctx context.Context, parentGroupID int64, ids []int64) ([]int64, error) {
+	ids = NormalizeAdaptiveLeafGroupIDs(ids)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if parentGroupID <= 0 || s == nil || s.adaptivePool == nil {
+		return nil, ErrAdaptiveLeavesNotApplicable
+	}
+	pool, err := s.adaptivePool.GetAdaptivePoolSnapshot(ctx, parentGroupID)
+	if err != nil || pool == nil || pool.ParentGroupID != parentGroupID || !pool.Enabled {
+		return nil, ErrAdaptiveLeavesNotApplicable
+	}
+	allowed := make(map[int64]struct{}, len(pool.Members))
+	for _, member := range pool.Members {
+		if member.Enabled && member.LeafGroupID > 0 {
+			allowed[member.LeafGroupID] = struct{}{}
+		}
+	}
+	for _, id := range ids {
+		if _, ok := allowed[id]; !ok {
+			return nil, ErrAdaptiveLeafNotInPool
+		}
+	}
+	return ids, nil
+}
+
+type adaptivePoolLister interface {
+	ListAdaptivePoolSnapshots(ctx context.Context) ([]AdaptivePoolSnapshot, error)
+}
+
+func (s *APIKeyService) stampAdaptiveParentOnKey(ctx context.Context, apiKey *APIKey) {
+	if s == nil || apiKey == nil || apiKey.Group == nil || s.adaptivePool == nil {
+		return
+	}
+	if apiKey.Group.Platform == PlatformAdaptive {
+		return
+	}
+	parentID := apiKey.Group.ID
+	if parentID <= 0 && apiKey.GroupID != nil {
+		parentID = *apiKey.GroupID
+	}
+	if parentID <= 0 {
+		return
+	}
+	pool, err := s.adaptivePool.GetAdaptivePoolSnapshot(ctx, parentID)
+	if err != nil || pool == nil || !pool.Enabled || pool.ParentGroupID != parentID {
+		return
+	}
+	for _, member := range pool.Members {
+		if member.Enabled && member.LeafGroupID > 0 {
+			apiKey.Group.Platform = PlatformAdaptive
+			return
+		}
+	}
+}
+
+func (s *APIKeyService) attachAdaptiveLeaves(ctx context.Context, groups []Group) {
+	if s == nil || s.adaptivePool == nil || s.groupRepo == nil || len(groups) == 0 {
+		return
+	}
+	lister, ok := s.adaptivePool.(adaptivePoolLister)
+	if !ok {
+		return
+	}
+	pools, err := lister.ListAdaptivePoolSnapshots(ctx)
+	if err != nil || len(pools) == 0 {
+		return
+	}
+	byParent := make(map[int64]AdaptivePoolSnapshot, len(pools))
+	leafIDs := make([]int64, 0)
+	seenLeaf := make(map[int64]struct{})
+	for _, pool := range pools {
+		if !pool.Enabled || pool.ParentGroupID <= 0 {
+			continue
+		}
+		byParent[pool.ParentGroupID] = pool
+		for _, member := range pool.Members {
+			if !member.Enabled || member.LeafGroupID <= 0 {
+				continue
+			}
+			if _, ok := seenLeaf[member.LeafGroupID]; ok {
+				continue
+			}
+			seenLeaf[member.LeafGroupID] = struct{}{}
+			leafIDs = append(leafIDs, member.LeafGroupID)
+		}
+	}
+	if len(byParent) == 0 {
+		return
+	}
+	leavesByID := make(map[int64]AdaptiveLeafOption, len(leafIDs))
+	for _, id := range leafIDs {
+		group, gerr := s.groupRepo.GetByID(ctx, id)
+		if gerr != nil || group == nil || !group.IsActive() {
+			continue
+		}
+		leavesByID[id] = AdaptiveLeafOption{
+			ID:             group.ID,
+			Name:           group.Name,
+			Platform:       group.Platform,
+			RateMultiplier: group.RateMultiplier,
+		}
+	}
+	for i := range groups {
+		pool, ok := byParent[groups[i].ID]
+		if !ok {
+			continue
+		}
+		options := make([]AdaptiveLeafOption, 0, len(pool.Members))
+		for _, member := range pool.Members {
+			if !member.Enabled {
+				continue
+			}
+			if option, exists := leavesByID[member.LeafGroupID]; exists {
+				options = append(options, option)
+			}
+		}
+		groups[i].AdaptiveLeaves = options
+		// User-facing inbound identity is Adaptive even when the parent row
+		// still stores an older leaf platform (hybrid trigger not yet relaxed).
+		if pool.Enabled && len(options) > 0 {
+			groups[i].Platform = PlatformAdaptive
+		}
+	}
+}
+
+func (s *APIKeyService) stampAdaptiveParentIdentity(ctx context.Context, keys []APIKey) {
+	if s == nil || len(keys) == 0 {
+		return
+	}
+	groups := make([]Group, 0, len(keys))
+	for i := range keys {
+		if keys[i].Group != nil {
+			groups = append(groups, *keys[i].Group)
+		}
+	}
+	if len(groups) == 0 {
+		return
+	}
+	s.attachAdaptiveLeaves(ctx, groups)
+	idx := 0
+	for i := range keys {
+		if keys[i].Group == nil {
+			continue
+		}
+		group := groups[idx]
+		idx++
+		copied := group
+		keys[i].Group = &copied
+	}
 }
 
 // canUserBindGroupInternal 内部方法，检查用户是否可以绑定分组（使用预加载的订阅数据）
 func (s *APIKeyService) canUserBindGroupInternal(user *User, group *Group, subscribedGroupIDs map[int64]bool) bool {
+	if group == nil || user == nil {
+		return false
+	}
+	// Hidden groups are infrastructure-only (e.g. Adaptive leaves).
+	if !group.VisibleToUser(user) {
+		return false
+	}
 	// 订阅类型分组：需要有效订阅
 	if group.IsSubscriptionType() {
 		return subscribedGroupIDs[group.ID]

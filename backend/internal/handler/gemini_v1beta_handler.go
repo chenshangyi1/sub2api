@@ -41,10 +41,11 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 	}
 	// 检查平台：优先使用强制平台（/antigravity 路由），否则要求 gemini 分组
 	forcePlatform, hasForcePlatform := middleware.GetForcePlatformFromContext(c)
-	if !hasForcePlatform && effectiveAPIKeyPlatform(c, apiKey) != service.PlatformGemini {
+	if !hasForcePlatform && !allowGeminiV1BetaForAPIKey(c, apiKey) {
 		googleError(c, http.StatusBadRequest, "API key group platform is not gemini")
 		return
 	}
+	apiKey = h.bindAdaptiveParentToMatchingLeaf(c, apiKey, []string{service.PlatformGemini}, nil)
 
 	// 强制 antigravity 模式：返回 antigravity 支持的模型列表
 	if forcePlatform == service.PlatformAntigravity {
@@ -52,27 +53,31 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 		return
 	}
 
+	writeLocalCatalog := func() {
+		c.JSON(http.StatusOK, gemini.FallbackModelsList())
+	}
+
 	account, err := h.geminiCompatService.SelectAccountForAIStudioEndpoints(c.Request.Context(), apiKey.GroupID)
 	if err != nil {
-		// 没有 gemini 账户，检查是否有 antigravity 账户可用
+		// Official sub2api / Gemini SDK sync GET /v1beta/models before generateContent.
+		// Gemini groups that only have OpenAI-compat or Antigravity accounts must still
+		// return a Google-format catalog instead of 503, or the client shows "sync failed".
 		hasAntigravity, _ := h.geminiCompatService.HasAntigravityAccounts(c.Request.Context(), apiKey.GroupID)
 		if hasAntigravity {
-			// antigravity 账户使用静态模型列表
-			c.JSON(http.StatusOK, gemini.FallbackModelsList())
+			writeLocalCatalog()
 			return
 		}
-		markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
-		googleError(c, http.StatusServiceUnavailable, "No available Gemini accounts: "+err.Error())
+		writeLocalCatalog()
+		return
+	}
+	if account != nil && account.IsGeminiOpenAIProtocol() {
+		writeLocalCatalog()
 		return
 	}
 
 	res, err := h.geminiCompatService.ForwardAIStudioGET(c.Request.Context(), account, "/v1beta/models")
-	if err != nil {
-		googleError(c, http.StatusBadGateway, err.Error())
-		return
-	}
-	if shouldFallbackGeminiModels(res) {
-		c.JSON(http.StatusOK, gemini.FallbackModelsList())
+	if err != nil || shouldFallbackGeminiModels(res) || (res != nil && res.StatusCode >= 400) {
+		writeLocalCatalog()
 		return
 	}
 	writeUpstreamResponse(c, res)
@@ -88,10 +93,11 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 	}
 	// 检查平台：优先使用强制平台（/antigravity 路由），否则要求 gemini 分组
 	forcePlatform, hasForcePlatform := middleware.GetForcePlatformFromContext(c)
-	if !hasForcePlatform && effectiveAPIKeyPlatform(c, apiKey) != service.PlatformGemini {
+	if !hasForcePlatform && !allowGeminiV1BetaForAPIKey(c, apiKey) {
 		googleError(c, http.StatusBadRequest, "API key group platform is not gemini")
 		return
 	}
+	apiKey = h.bindAdaptiveParentToMatchingLeaf(c, apiKey, []string{service.PlatformGemini}, nil)
 
 	modelName := strings.TrimSpace(c.Param("model"))
 	if modelName == "" {
@@ -116,24 +122,16 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 
 	account, err := h.geminiCompatService.SelectAccountForAIStudioEndpoints(c.Request.Context(), apiKey.GroupID)
 	if err != nil {
-		// 没有 gemini 账户，检查是否有 antigravity 账户可用
-		hasAntigravity, _ := h.geminiCompatService.HasAntigravityAccounts(c.Request.Context(), apiKey.GroupID)
-		if hasAntigravity {
-			// antigravity 账户使用静态模型信息
-			c.JSON(http.StatusOK, gemini.FallbackModel(modelName))
-			return
-		}
-		markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
-		googleError(c, http.StatusServiceUnavailable, "No available Gemini accounts: "+err.Error())
+		c.JSON(http.StatusOK, gemini.FallbackModel(modelName))
+		return
+	}
+	if account != nil && account.IsGeminiOpenAIProtocol() {
+		c.JSON(http.StatusOK, gemini.FallbackModel(modelName))
 		return
 	}
 
 	res, err := h.geminiCompatService.ForwardAIStudioGET(c.Request.Context(), account, "/v1beta/models/"+modelName)
-	if err != nil {
-		googleError(c, http.StatusBadGateway, err.Error())
-		return
-	}
-	if shouldFallbackGeminiModel(modelName, res) {
+	if err != nil || shouldFallbackGeminiModel(modelName, res) || (res != nil && res.StatusCode >= 400) {
 		c.JSON(http.StatusOK, gemini.FallbackModel(modelName))
 		return
 	}
@@ -165,7 +163,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 
 	// 检查平台：优先使用强制平台（/antigravity 路由，中间件已设置 request.Context），否则要求 gemini 分组
 	if !middleware.HasForcePlatform(c) {
-		if effectiveAPIKeyPlatform(c, apiKey) != service.PlatformGemini {
+		if !allowGeminiV1BetaForAPIKey(c, apiKey) {
 			googleError(c, http.StatusBadRequest, "API key group platform is not gemini")
 			return
 		}
@@ -254,30 +252,36 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		return
 	}
 
-	// Reserve the user's live balance before selecting an account or forwarding
-	// to Gemini. This native entrypoint shares the same request-local hold guard
-	// as OpenAI/Anthropic compatibility routes; the usage worker later transfers
-	// that guard and finalizes it against provider-reported usage. Keeping the
-	// reservation here (after eligibility and before account selection) closes
-	// the race where concurrent low-balance Gemini requests all pass the legacy
-	// snapshot check and incur upstream cost before asynchronous settlement.
-	balanceGuard, err := preauthorizeTextGatewayRequest(
-		c.Request.Context(), h.balancePreauthorizer, h.gatewayService,
-		apiKey, subscription, body,
-		service.BalancePreauthorizationBillingModel(reqModel, channelMapping),
-		pricingAt, "",
+	rootAPIKey := apiKey
+	apiKey = h.startGatewayAdaptiveIfParent(
+		c.Request.Context(), c, apiKey, modelName,
+		service.AdaptiveRouteProtocolGeminiGenerate,
+		body, reqLog,
 	)
-	if err != nil {
-		status, _, message, retryAfter := billingErrorDetails(err)
-		if retryAfter > 0 {
-			c.Header("Retry-After", strconv.Itoa(retryAfter))
+	installAntiStallForKey(c.Request.Context(), c, h.settingService, rootAPIKey, reqLog, "gemini.anti_stall_pro")
+
+	// Reserve the user's live balance before selecting an account or forwarding
+	// to Gemini. Adaptive HOLD already froze funds for parent-group traffic.
+	var balanceGuard *service.BalancePreauthorizationGuard
+	if !gatewayAdaptiveHoldActive(c) {
+		balanceGuard, err = preauthorizeTextGatewayRequest(
+			c.Request.Context(), h.balancePreauthorizer, h.gatewayService,
+			apiKey, subscription, body,
+			service.BalancePreauthorizationBillingModel(reqModel, channelMapping),
+			pricingAt, "",
+		)
+		if err != nil {
+			status, _, message, retryAfter := billingErrorDetails(err)
+			if retryAfter > 0 {
+				c.Header("Retry-After", strconv.Itoa(retryAfter))
+			}
+			googleError(c, status, message)
+			return
 		}
-		googleError(c, status, message)
-		return
-	}
-	if balanceGuard != nil {
-		defer deferBalancePreauthorizationRefund(reqLog, balanceGuard)
-		c.Request = c.Request.WithContext(service.ContextWithBalancePreauthorizationGuard(c.Request.Context(), balanceGuard))
+		if balanceGuard != nil {
+			defer deferBalancePreauthorizationRefund(reqLog, balanceGuard)
+			c.Request = c.Request.WithContext(service.ContextWithBalancePreauthorizationGuard(c.Request.Context(), balanceGuard))
+		}
 	}
 
 	// 3) select account (sticky session based on request body)
@@ -394,10 +398,28 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	}
 
 	for {
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, modelName, fs.FailedAccountIDs, "", int64(0)) // Gemini 不使用会话限制
+		selection, routedKey, err := h.gatewayService.SelectAccountAlongKeyRoutes(c.Request.Context(), apiKey, sessionKey, reqModel, fs.FailedAccountIDs, "", int64(0), service.PlatformGemini) // Gemini 不使用会话限制
+		if err == nil && routedKey != nil {
+			if bindErr := h.bindSelectedKeyRoute(c, keyRouteBinding{
+				Previous: apiKey, Selected: routedKey, Subscription: &subscription,
+				Mapping: &channelMapping, Guard: &balanceGuard, Body: body, Model: reqModel, PricingAt: pricingAt,
+			}); bindErr != nil {
+				releaseRejectedKeyRouteSelection(selection)
+				status, _, message, _ := billingErrorDetails(bindErr)
+				googleError(c, status, message)
+				return
+			}
+			apiKey = routedKey
+			modelName = openAIChannelForwardModel(channelMapping, reqModel)
+		}
 		if err != nil {
+			if nextKey := h.advanceGatewayAdaptiveLeaf(c.Request.Context(), c, rootAPIKey, reqLog); nextKey != nil {
+				apiKey = nextKey
+				fs = NewFillFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
+				continue
+			}
 			if len(fs.FailedAccountIDs) == 0 {
-				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, modelName, modelName, service.PlatformGemini)
+				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, modelName, modelName, effectiveAPIKeyPlatform(c, apiKey))
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				}
@@ -549,14 +571,65 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
 		}
+		if result != nil {
+			var longContextThreshold int
+			var longContextMultiplier float64
+			if rule := h.gatewayService.LegacyLongContextRule(service.PlatformGemini); rule != nil {
+				longContextThreshold = rule.Threshold
+				longContextMultiplier = rule.Multiplier
+			}
+			usageInput := &service.RecordUsageLongContextInput{
+				Result:                result,
+				QuotaPlatform:         service.QuotaPlatform(c.Request.Context(), apiKey),
+				APIKey:                apiKey,
+				User:                  apiKey.User,
+				Account:               account,
+				Subscription:          subscription,
+				PricingAt:             pricingAt,
+				InboundEndpoint:       GetInboundEndpoint(c),
+				UpstreamEndpoint:      GetUpstreamEndpoint(c, account.Platform),
+				UserAgent:             c.GetHeader("User-Agent"),
+				IPAddress:             ip.GetClientIP(c),
+				RequestPayloadHash:    service.HashUsageRequestPayload(body),
+				LongContextThreshold:  longContextThreshold,
+				LongContextMultiplier: longContextMultiplier,
+				ForceCacheBilling:     fs.ForceCacheBilling,
+				APIKeyService:         h.apiKeyService,
+				SessionID:             service.ExtractClientSessionID(c),
+				ChannelUsageFields:    clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
+				AdaptiveBilling:       gatewayAdaptiveBilling(c),
+			}
+			h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
+				if recordErr := h.gatewayService.RecordUsageWithLongContext(ctx, usageInput); recordErr != nil {
+					logger.L().With(
+						zap.String("component", "handler.gemini_v1beta.models"),
+						zap.Int64("user_id", usageInput.User.ID), zap.Int64("api_key_id", usageInput.APIKey.ID),
+						zap.Any("group_id", usageInput.APIKey.GroupID), zap.String("model", usageInput.Result.Model),
+						zap.Int64("account_id", usageInput.Account.ID),
+					).Error("gemini.record_usage_failed", zap.Error(recordErr))
+				}
+			})
+		}
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
-			if errors.As(err, &failoverErr) {
+			if result == nil && errors.As(err, &failoverErr) {
 				failoverAction := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, account.GetPoolModeRetryCount(), failoverErr)
 				switch failoverAction {
 				case FailoverContinue:
+					if antiStallForceSwitchRecommended(failoverErr) {
+						if nextKey := h.advanceGatewayAdaptiveLeaf(c.Request.Context(), c, rootAPIKey, reqLog); nextKey != nil {
+							apiKey = nextKey
+							fs = NewFillFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
+							continue
+						}
+					}
 					continue
 				case FailoverExhausted:
+					if nextKey := h.advanceGatewayAdaptiveLeaf(c.Request.Context(), c, rootAPIKey, reqLog); nextKey != nil {
+						apiKey = nextKey
+						fs = NewFillFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
+						continue
+					}
 					h.handleGeminiFailoverExhausted(c, fs.LastFailoverErr)
 					return
 				case FailoverCanceled:
@@ -568,10 +641,6 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			logGatewayForwardFailure(reqLog, c, "gemini.forward_failed", err, zap.Int64("account_id", account.ID))
 			return
 		}
-
-		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
-		userAgent := c.GetHeader("User-Agent")
-		clientIP := ip.GetClientIP(c)
 
 		// 保存 Gemini 内容摘要会话（用于 Fallback 匹配）
 		if useDigestFallback && geminiDigestChain != "" && geminiPrefixHash != "" {
@@ -588,52 +657,6 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			}
 		}
 
-		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
-		requestPayloadHash := service.HashUsageRequestPayload(body)
-		inboundEndpoint := GetInboundEndpoint(c)
-		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
-		// ForceCacheBilling 提前拍成标量，避免 worker 闭包保活 failover 状态里的响应体。
-		forceCacheBilling := fs.ForceCacheBilling
-		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
-		sessionID := service.ExtractClientSessionID(c)
-		// 长上下文规则由计费服务统一持有（模型广场展示同源），入口只负责声明自己适用该规则。
-		var longContextThreshold int
-		var longContextMultiplier float64
-		if rule := h.gatewayService.LegacyLongContextRule(service.PlatformGemini); rule != nil {
-			longContextThreshold = rule.Threshold
-			longContextMultiplier = rule.Multiplier
-		}
-		h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
-			if err := h.gatewayService.RecordUsageWithLongContext(ctx, &service.RecordUsageLongContextInput{
-				Result:                result,
-				QuotaPlatform:         quotaPlatform,
-				APIKey:                apiKey,
-				User:                  apiKey.User,
-				Account:               account,
-				Subscription:          subscription,
-				PricingAt:             pricingAt,
-				InboundEndpoint:       inboundEndpoint,
-				UpstreamEndpoint:      upstreamEndpoint,
-				UserAgent:             userAgent,
-				IPAddress:             clientIP,
-				RequestPayloadHash:    requestPayloadHash,
-				LongContextThreshold:  longContextThreshold,
-				LongContextMultiplier: longContextMultiplier,
-				ForceCacheBilling:     forceCacheBilling,
-				APIKeyService:         h.apiKeyService,
-				SessionID:             sessionID,
-				ChannelUsageFields:    clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
-			}); err != nil {
-				logger.L().With(
-					zap.String("component", "handler.gemini_v1beta.models"),
-					zap.Int64("user_id", authSubject.UserID),
-					zap.Int64("api_key_id", apiKey.ID),
-					zap.Any("group_id", apiKey.GroupID),
-					zap.String("model", modelName),
-					zap.Int64("account_id", account.ID),
-				).Error("gemini.record_usage_failed", zap.Error(err))
-			}
-		})
 		reqLog.Debug("gemini.request_completed",
 			zap.Int64("account_id", account.ID),
 			zap.Int("switch_count", fs.SwitchCount),
@@ -670,7 +693,7 @@ func (h *GatewayHandler) handleGeminiFailoverExhausted(c *gin.Context, failoverE
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
 	if service.IsUpstreamCapacityCoolingBody(responseBody) {
-		c.Header("Retry-After", "5")
+		c.Header("Retry-After", "30")
 		googleError(c, http.StatusServiceUnavailable, "Upstream providers are temporarily cooling down; please retry later")
 		return
 	}

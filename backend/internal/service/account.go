@@ -83,6 +83,23 @@ type Account struct {
 	headerOverrideCacheRawSig         uint64
 }
 
+// SchedulingPriority returns the priority used when picking this account
+// inside groupID. Group membership priority is scoped to that group; the
+// account-level Priority is only a fallback for ungrouped pools.
+func (a *Account) SchedulingPriority(groupID *int64) int {
+	if a == nil {
+		return 0
+	}
+	if groupID != nil {
+		for i := range a.AccountGroups {
+			if a.AccountGroups[i].GroupID == *groupID {
+				return a.AccountGroups[i].Priority
+			}
+		}
+	}
+	return a.Priority
+}
+
 // modelMappingMemo 是 model_mapping 热路径缓存的不可变快照。指纹字段用于
 // 检测 Credentials 整体替换（map 指针变化）或 mapping 就地修改（长度/签名
 // 变化），runtimeVersion 用于使运行时默认映射变更立即失效。
@@ -139,6 +156,16 @@ const (
 )
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
+
+const OpenAIStreamOnlyExtraKey = "openai_stream_only"
+
+func (a *Account) RequiresOpenAIStreamOnly() bool {
+	if a == nil || a.Extra == nil {
+		return false
+	}
+	v, ok := a.Extra[OpenAIStreamOnlyExtraKey].(bool)
+	return ok && v
+}
 
 // GrokMediaEligibleExtraKey is an optional per-account override stored in
 // accounts.extra. true forces media routing on, false disables it, and an
@@ -317,17 +344,131 @@ func (a *Account) IsDeepseek() bool {
 	return a.Platform == PlatformDeepseek
 }
 
-// IsCNProvider 报告是否为国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）。
+// IsCNProvider 报告是否为国产 OpenAI 兼容供应商（cn 或历史 kimi/zhipu/deepseek）。
 func (a *Account) IsCNProvider() bool {
 	return a != nil && IsCNProvider(a.Platform)
+}
+
+func (a *Account) IsVideoProvider() bool {
+	return a != nil && IsVideoProvider(a.Platform)
+}
+
+// GetCNVendor 返回国模厂商预设。统一平台读 credentials["cn_vendor"]；
+// 历史三平台用 platform 本身当厂商。
+func (a *Account) GetCNVendor() string {
+	if a == nil || !a.IsCNProvider() {
+		return ""
+	}
+	vendor := strings.ToLower(strings.TrimSpace(a.GetCredential("cn_vendor")))
+	switch vendor {
+	case CNVendorKimi, CNVendorZhipu, CNVendorDeepseek, CNVendorMiniMax, CNVendorCustom:
+		return vendor
+	}
+	switch a.Platform {
+	case PlatformKimi:
+		return CNVendorKimi
+	case PlatformZhipu:
+		return CNVendorZhipu
+	case PlatformDeepseek:
+		return CNVendorDeepseek
+	default:
+		return CNVendorCustom
+	}
+}
+
+// MatchesRequestedPlatform 判断账号能否服务该调度身份。
+// cn 请求收全部国模账号（含历史三平台）；历史 kimi/zhipu/deepseek 请求
+// 只收同名历史账号，以及 cn_vendor 对得上的统一账号。
+func (a *Account) MatchesRequestedPlatform(requested string) bool {
+	if a == nil {
+		return false
+	}
+	if !AccountMatchesPlatform(a.Platform, requested) {
+		return false
+	}
+	if requested == PlatformCN || a.Platform == requested {
+		return true
+	}
+	if a.Platform == PlatformCN && IsCNProvider(requested) {
+		vendor := a.GetCNVendor()
+		return vendor == requested
+	}
+	return true
+}
+
+// GetVideoVendor 返回视频线路预设。
+func (a *Account) GetVideoVendor() string {
+	if a == nil || !a.IsVideoProvider() {
+		return ""
+	}
+	vendor := strings.ToLower(strings.TrimSpace(a.GetCredential("video_vendor")))
+	switch vendor {
+	case VideoVendorSora, VideoVendorKling, VideoVendorJimeng, VideoVendorCustom:
+		return vendor
+	default:
+		return VideoVendorCustom
+	}
 }
 
 // IsOpenAICompatible 报告账号是否走 OpenAI 网关（OpenAI 协议族）。
 // openai/grok 原生走 OpenAI 网关；kimi/zhipu/deepseek 同为 OpenAI Chat Completions
 // 兼容上游，也经 OpenAI 网关转发。
 func (a *Account) IsOpenAICompatible() bool {
-	return a != nil && (a.Platform == PlatformOpenAI || a.Platform == PlatformGrok ||
-		a.Platform == PlatformKimi || a.Platform == PlatformZhipu || a.Platform == PlatformDeepseek)
+	if a == nil {
+		return false
+	}
+	if a.Platform == PlatformOpenAI || a.Platform == PlatformGrok || a.IsCNProvider() || a.IsVideoProvider() {
+		return true
+	}
+	return a.IsGeminiOpenAIProtocol()
+}
+
+// IsGeminiOpenAIProtocol 报告 Gemini API Key 是否明确以 OpenAI 兼容协议接入。
+// 账号平台仍是 gemini。未声明 api_protocol 时默认走原生 /v1beta；自定义中转
+// 若原生路径 404，再由转发层同号回退到 /chat/completions。
+func (a *Account) IsGeminiOpenAIProtocol() bool {
+	if a == nil || !a.IsGemini() || a.Type != AccountTypeAPIKey {
+		return false
+	}
+	switch strings.TrimSpace(a.GetCredential("api_protocol")) {
+	case APIProtocolAdaptive, APIProtocolChatCompletions, APIProtocolAnthropic, APIProtocolResponses:
+		return true
+	default:
+		return false
+	}
+}
+
+// AllowsGeminiNativeToOpenAIFallback 报告未声明协议的自定义 Gemini 中转：
+// 先打原生 /v1beta，路径不存在时允许同号改走 OpenAI 兼容协议。
+func (a *Account) AllowsGeminiNativeToOpenAIFallback() bool {
+	if a == nil || !a.IsGemini() || a.Type != AccountTypeAPIKey {
+		return false
+	}
+	if strings.TrimSpace(a.GetCredential("api_protocol")) != "" {
+		return false
+	}
+	return usesCustomGeminiOpenAICompatibleBaseURL(a.GetCredential("base_url"))
+}
+
+func (a *Account) usesGeminiOpenAICompatibleCredentials() bool {
+	return a.IsGeminiOpenAIProtocol() || a.AllowsGeminiNativeToOpenAIFallback()
+}
+
+func usesCustomGeminiOpenAICompatibleBaseURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if host == "" {
+		return false
+	}
+	return host != "generativelanguage.googleapis.com" &&
+		!strings.HasSuffix(host, ".generativelanguage.googleapis.com")
 }
 
 func (a *Account) GeminiOAuthType() string {
@@ -615,6 +756,13 @@ func stringMappingFromRaw(raw any) map[string]string {
 	}
 }
 
+func (a *Account) ExplicitModelMapping() map[string]string {
+	if a == nil || a.Credentials == nil {
+		return nil
+	}
+	return stringMappingFromRaw(a.Credentials["model_mapping"])
+}
+
 func (a *Account) GetModelMapping() map[string]string {
 	if a == nil {
 		return nil
@@ -690,6 +838,16 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 				"gemini-3.6-flash-low",
 				"gemini-3.6-flash-medium",
 				"gemini-3.6-flash-tiered",
+				"gemini-3.7-flash",
+				"gemini-3.7-flash-high",
+				"gemini-3.7-flash-low",
+				"gemini-3.7-flash-medium",
+				"gemini-3.7-flash-tiered",
+				"gemini-3.8-flash",
+				"gemini-3.8-flash-high",
+				"gemini-3.8-flash-low",
+				"gemini-3.8-flash-medium",
+				"gemini-3.8-flash-tiered",
 			})
 			applyAntigravityGemini31ProAliases(result)
 		}
@@ -873,11 +1031,19 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 // IsModelSupported 检查模型是否在 model_mapping 中（支持通配符）
 // 如果未配置 mapping，返回 true（允许所有模型）。
 //
-// 例外：OpenAI OAuth 账号（Codex 上游）的空映射会排除明确属于其他厂商
-// 家族的模型（deepseek-*/glm-* 等）——转发阶段 normalizeOpenAIModelForUpstream
-// 会把未知模型原样透传，Codex 上游对这类模型必然返回不可重试的 400，导致
-// 请求卡死在该账号上、无法 failover 到真正支持该模型的 API Key 账号（#3662）。
-// 未知/自定义别名仍保持允许（兼容渠道级映射），见 isOpenAIOAuthServableModel。
+// 例外：
+//  1. OpenAI OAuth 账号（Codex 上游）的空映射会排除明确属于其他厂商
+//     家族的模型（deepseek-*/glm-* 等）——转发阶段 normalizeOpenAIModelForUpstream
+//     会把未知模型原样透传，Codex 上游对这类模型必然返回不可重试的 400，导致
+//     请求卡死在该账号上、无法 failover 到真正支持该模型的 API Key 账号（#3662）。
+//  2. 国产供应商（kimi/zhipu/deepseek/minimax，含统一 cn 平台）空映射只认自家家族。
+//     zhipu 空 mapping 不能把 gpt-5.6-* 当成可服务，否则选号会当成容量不足返回 503，
+//     复合组还会先打国模再失败重试，把 GPT 请求拖慢。
+//  3. OpenAI API Key / Gemini / Anthropic / Grok 空映射同样只认自家家族。
+//     否则 Adaptive 混池会把空映射 GPT 叶当成能打 gemini-* / grok-*，选号
+//     在该叶 404 后客户端就看不到后面真正有映射的叶。
+//
+// 未知/自定义别名在 OpenAI OAuth 路径仍保持允许，见 isOpenAIOAuthServableModel。
 func (a *Account) IsModelSupported(requestedModel string) bool {
 	// 透传模式仅替换认证、模型语义完全交由上游决定，因此放行所有模型。
 	// 该短路必须在 model_mapping 判定之前：账号从"白名单模式"切换到透传后，
@@ -891,7 +1057,22 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 		if a.IsOpenAIOAuth() {
 			return isOpenAIOAuthServableModel(requestedModel)
 		}
-		return true // 无映射 = 允许所有
+		if a.IsCNProvider() {
+			return isCNProviderServableModel(a.GetCNVendor(), requestedModel)
+		}
+		if a.IsOpenAIApiKey() {
+			return isOpenAIAPIKeyEmptyMappingServableModel(requestedModel)
+		}
+		if a.IsGemini() {
+			return isGeminiEmptyMappingServableModel(requestedModel)
+		}
+		if a.IsAnthropic() {
+			return isAnthropicEmptyMappingServableModel(requestedModel)
+		}
+		if a.IsGrok() {
+			return isGrokEmptyMappingServableModel(requestedModel)
+		}
+		return true // 无映射 = 允许所有；Grok 空凭据已由 GetModelMapping 填入 DefaultModelMapping
 	}
 	if mappingSupportsRequestedModel(mapping, requestedModel) {
 		return true
@@ -1376,10 +1557,13 @@ func (a *Account) IsOpenAIApiKey() bool {
 // 适用 openai 与国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）；grok 走 GetGrokBaseURL，
 // 此处对 grok 返回 "" 以保持原有行为。
 func (a *Account) GetOpenAIBaseURL() string {
-	if !a.IsOpenAI() && !a.IsCNProvider() {
+	if a == nil {
 		return ""
 	}
-	if a.IsCNProvider() && a.IsAdaptiveAPIProtocol() {
+	if !a.IsOpenAI() && !a.IsCNProvider() && !a.IsVideoProvider() && !a.usesGeminiOpenAICompatibleCredentials() {
+		return ""
+	}
+	if (a.IsCNProvider() || a.IsVideoProvider() || a.IsGeminiOpenAIProtocol()) && a.IsAdaptiveAPIProtocol() {
 		if baseURLs, ok := a.Credentials["api_base_urls"].(map[string]any); ok {
 			if baseURL, ok := baseURLs[APIProtocolChatCompletions].(string); ok && strings.TrimSpace(baseURL) != "" {
 				return strings.TrimSpace(baseURL)
@@ -1391,23 +1575,15 @@ func (a *Account) GetOpenAIBaseURL() string {
 			return baseURL
 		}
 	}
-	// 平台默认 base_url：CN 供应商按 account_mode 选择 payg / coding 默认值。
-	switch a.Platform {
-	case PlatformKimi:
-		if a.GetAccountMode() == AccountModeCoding {
-			return DefaultKimiCodingBaseURL
+	if a.IsCNProvider() {
+		if baseURL := a.defaultCNProtocolBaseURL(APIProtocolChatCompletions); baseURL != "" {
+			return baseURL
 		}
-		return DefaultKimiPayGBaseURL
-	case PlatformZhipu:
-		if a.GetAccountMode() == AccountModeCoding {
-			return DefaultZhipuCodingBaseURL
-		}
-		return DefaultZhipuPayGBaseURL
-	case PlatformDeepseek:
-		return DefaultDeepseekBaseURL
-	default:
-		return "https://api.openai.com"
 	}
+	if a.IsVideoProvider() {
+		return ""
+	}
+	return "https://api.openai.com"
 }
 
 // GetAccountMode 返回国产供应商账号的接入模式（payg / coding）；非国产供应商或未设置时
@@ -1428,27 +1604,77 @@ func (a *Account) IsCodingPlan() bool {
 	return a.GetAccountMode() == AccountModeCoding
 }
 
-// GetAPIProtocol 返回国产供应商账号的上游 API 协议。存储于
-// credentials["api_protocol"]；缺失或与平台不匹配时回退 chat_completions
-// （与既有行为完全一致）。responses 协议仅 deepseek 支持（官方原生 /responses
-// 端点，适配 Codex）；kimi/zhipu 无此端点。
+// GetAPIProtocol 返回账号的上游 API 协议。存储于 credentials["api_protocol"]。
+// 国产供应商与 Gemini OpenAI 兼容 API Key 共用这套协议。国模/视频缺失时回退
+// adaptive；Gemini 或不匹配时回退 chat_completions。responses 协议：deepseek /
+// kimi 官方原生端点，以及 Gemini 自定义上游。
 func (a *Account) GetAPIProtocol() string {
-	if a == nil || !a.IsCNProvider() {
+	if a == nil || (!a.IsCNProvider() && !a.IsVideoProvider() && !a.IsGeminiOpenAIProtocol()) {
 		return APIProtocolChatCompletions
 	}
-	switch strings.TrimSpace(a.GetCredential("api_protocol")) {
+	protocol := strings.TrimSpace(a.GetCredential("api_protocol"))
+	switch protocol {
 	case APIProtocolAdaptive:
 		return APIProtocolAdaptive
 	case APIProtocolAnthropic:
 		return APIProtocolAnthropic
 	case APIProtocolResponses:
-		if a.Platform == PlatformDeepseek {
+		if a.SupportsNativeCNResponses() || a.IsVideoProvider() || a.IsGeminiOpenAIProtocol() {
 			return APIProtocolResponses
 		}
 	case APIProtocolChatCompletions:
 		return APIProtocolChatCompletions
+	case "":
+		if a.IsCNProvider() || a.IsVideoProvider() {
+			return APIProtocolAdaptive
+		}
 	}
 	return APIProtocolChatCompletions
+}
+
+// SupportsNativeCNResponses 报告该国产供应商是否提供原生 Responses 端点。
+// DeepSeek 官方为 /responses（无 /v1）；Kimi 按量付费与 Coding Plan 均为
+// /v1/responses（moonshot.cn / kimi.com/coding）。
+func (a *Account) SupportsNativeCNResponses() bool {
+	if a == nil {
+		return false
+	}
+	switch a.GetCNVendor() {
+	case CNVendorDeepseek, CNVendorKimi, CNVendorMiniMax, CNVendorCustom:
+		return true
+	default:
+		return false
+	}
+}
+
+// UsesNativeCNResponses 报告当前账号是否应按原生 Responses 协议转发
+// （显式 responses，或 adaptive 且平台具备原生端点）。
+func (a *Account) UsesNativeCNResponses() bool {
+	if a == nil || !a.SupportsNativeCNResponses() {
+		return false
+	}
+	switch a.GetAPIProtocol() {
+	case APIProtocolResponses, APIProtocolAdaptive:
+		return true
+	default:
+		return false
+	}
+}
+
+// usesNativeResponsesUpstream 覆盖国产原生 Responses 以及 Gemini 自定义协议。
+func (a *Account) usesNativeResponsesUpstream() bool {
+	if a.UsesNativeCNResponses() {
+		return true
+	}
+	if !a.IsGeminiOpenAIProtocol() {
+		return false
+	}
+	switch a.GetAPIProtocol() {
+	case APIProtocolResponses, APIProtocolAdaptive:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsAdaptiveAPIProtocol 报告账号是否按入站协议动态选择供应商原生端点。
@@ -1457,22 +1683,39 @@ func (a *Account) IsAdaptiveAPIProtocol() bool {
 }
 
 // GetCNProtocolBaseURL 返回国产供应商指定协议的上游 base URL。
-// adaptive 账号优先使用 api_base_urls 中的分协议地址，缺失时按平台和
-// account_mode 使用官方默认端点。base_url 继续作为 Chat Completions 地址兼容旧字段。
+// adaptive 账号优先使用 api_base_urls 中的分协议地址；空槽位在 base_url 是
+// 自定义中继时跟 base_url，官方厂商地址才回落到官方默认。
 func (a *Account) GetCNProtocolBaseURL(protocol string) string {
-	if a == nil || !a.IsCNProvider() {
+	if a == nil || (!a.IsCNProvider() && !a.IsVideoProvider() && !a.usesGeminiOpenAICompatibleCredentials()) {
 		return ""
 	}
 	if a.IsAdaptiveAPIProtocol() {
+		officialChat := a.defaultCNProtocolBaseURL(APIProtocolChatCompletions)
+		official := a.defaultCNProtocolBaseURL(protocol)
+		custom := strings.TrimSpace(a.GetCredential("base_url"))
+		stored := ""
 		if baseURLs, ok := a.Credentials["api_base_urls"].(map[string]any); ok {
-			if baseURL, ok := baseURLs[protocol].(string); ok && strings.TrimSpace(baseURL) != "" {
-				return strings.TrimSpace(baseURL)
+			if baseURL, ok := baseURLs[protocol].(string); ok {
+				stored = strings.TrimSpace(baseURL)
 			}
 		}
 		if protocol == APIProtocolChatCompletions {
-			if baseURL := strings.TrimSpace(a.GetCredential("base_url")); baseURL != "" {
-				return baseURL
+			if stored != "" {
+				return stored
 			}
+			if custom != "" {
+				return custom
+			}
+			return official
+		}
+		if stored != "" && stored != official {
+			return stored
+		}
+		if custom != "" && custom != officialChat {
+			return custom
+		}
+		if stored != "" {
+			return stored
 		}
 	}
 	return a.defaultCNProtocolBaseURL(protocol)
@@ -1481,31 +1724,35 @@ func (a *Account) GetCNProtocolBaseURL(protocol string) string {
 func (a *Account) defaultCNProtocolBaseURL(protocol string) string {
 	switch protocol {
 	case APIProtocolAnthropic:
-		switch a.Platform {
-		case PlatformKimi:
+		switch a.GetCNVendor() {
+		case CNVendorKimi:
 			if a.GetAccountMode() == AccountModeCoding {
 				return DefaultKimiCodingAnthropicBaseURL
 			}
 			return DefaultKimiPayGAnthropicBaseURL
-		case PlatformZhipu:
+		case CNVendorZhipu:
 			return DefaultZhipuAnthropicBaseURL
-		case PlatformDeepseek:
+		case CNVendorDeepseek:
 			return DefaultDeepseekAnthropicBaseURL
+		case CNVendorMiniMax:
+			return DefaultMiniMaxAnthropicBaseURL
 		}
 	case APIProtocolChatCompletions, APIProtocolResponses:
-		switch a.Platform {
-		case PlatformKimi:
+		switch a.GetCNVendor() {
+		case CNVendorKimi:
 			if a.GetAccountMode() == AccountModeCoding {
 				return DefaultKimiCodingBaseURL
 			}
 			return DefaultKimiPayGBaseURL
-		case PlatformZhipu:
+		case CNVendorZhipu:
 			if a.GetAccountMode() == AccountModeCoding {
 				return DefaultZhipuCodingBaseURL
 			}
 			return DefaultZhipuPayGBaseURL
-		case PlatformDeepseek:
+		case CNVendorDeepseek:
 			return DefaultDeepseekBaseURL
+		case CNVendorMiniMax:
+			return DefaultMiniMaxBaseURL
 		}
 	}
 	return ""
@@ -1532,19 +1779,10 @@ func (a *Account) GetAnthropicProtocolBaseURL() string {
 			return baseURL
 		}
 	}
-	switch a.Platform {
-	case PlatformKimi:
-		if a.GetAccountMode() == AccountModeCoding {
-			return DefaultKimiCodingAnthropicBaseURL
-		}
-		return DefaultKimiPayGAnthropicBaseURL
-	case PlatformZhipu:
-		return DefaultZhipuAnthropicBaseURL
-	case PlatformDeepseek:
-		return DefaultDeepseekAnthropicBaseURL
-	default:
-		return ""
+	if baseURL := a.defaultCNProtocolBaseURL(APIProtocolAnthropic); baseURL != "" {
+		return baseURL
 	}
+	return ""
 }
 
 // GetOpenAIFormatBaseURL 返回供 OpenAI 格式端点（/v1/models、/v1/chat/completions
@@ -1556,28 +1794,16 @@ func (a *Account) GetOpenAIFormatBaseURL() string {
 	if a == nil || !a.IsAnthropicProtocol() {
 		return a.GetOpenAIBaseURL()
 	}
-	switch a.Platform {
-	case PlatformKimi:
-		if a.GetAccountMode() == AccountModeCoding {
-			return DefaultKimiCodingBaseURL
-		}
-		return DefaultKimiPayGBaseURL
-	case PlatformZhipu:
-		if a.GetAccountMode() == AccountModeCoding {
-			return DefaultZhipuCodingBaseURL
-		}
-		return DefaultZhipuPayGBaseURL
-	case PlatformDeepseek:
-		return DefaultDeepseekBaseURL
-	default:
-		return a.GetOpenAIBaseURL()
+	if baseURL := a.defaultCNProtocolBaseURL(APIProtocolChatCompletions); baseURL != "" {
+		return baseURL
 	}
+	return a.GetOpenAIBaseURL()
 }
 
 // GetCNAPIKey 返回国产 OpenAI 兼容供应商账号的 api_key 凭据（kimi/zhipu/deepseek）。
 // 与 openai 的 GetOpenAIApiKey 区分：后者仅对 openai 平台返回。
 func (a *Account) GetCNAPIKey() string {
-	if a == nil || !a.IsCNProvider() {
+	if a == nil || (!a.IsCNProvider() && !a.IsVideoProvider()) {
 		return ""
 	}
 	return a.GetCredential("api_key")
@@ -1596,6 +1822,10 @@ func (a *Account) GetCodingPlanProvider() string {
 		return PlatformKimi
 	case strings.Contains(baseURL, "bigmodel.cn"), strings.Contains(baseURL, "api.z.ai"):
 		return PlatformZhipu
+	case strings.Contains(baseURL, "minimax.io"),
+		strings.Contains(baseURL, "minimaxi.com"),
+		strings.Contains(baseURL, "minimax.com"):
+		return CNVendorMiniMax
 	default:
 		return ""
 	}
@@ -1719,7 +1949,7 @@ func (a *Account) GetOpenAIProtocolAPIKey() string {
 	if a == nil {
 		return ""
 	}
-	if a.IsCNProvider() {
+	if a.IsCNProvider() || a.IsVideoProvider() || a.usesGeminiOpenAICompatibleCredentials() {
 		if a.Type != AccountTypeAPIKey {
 			return ""
 		}
@@ -2333,11 +2563,10 @@ func (a *Account) IsAnthropicOAuthOrSetupToken() bool {
 }
 
 // IsTLSFingerprintEnabled 检查是否启用 TLS 指纹伪装
-// 仅适用于 Anthropic OAuth/SetupToken 类型账号
-// 启用后将模拟 Claude Code (Node.js) 客户端的 TLS 握手特征
+// 适用于 Anthropic 与 OpenAI OAuth/SetupToken 类型账号。
 func (a *Account) IsTLSFingerprintEnabled() bool {
-	// 仅支持 Anthropic OAuth/SetupToken 账号
-	if !a.IsAnthropicOAuthOrSetupToken() {
+	if a == nil || (a.Platform != PlatformAnthropic && a.Platform != PlatformOpenAI) ||
+		(a.Type != AccountTypeOAuth && a.Type != AccountTypeSetupToken) {
 		return false
 	}
 	if a.Extra == nil {
@@ -2349,6 +2578,14 @@ func (a *Account) IsTLSFingerprintEnabled() bool {
 		}
 	}
 	return false
+}
+
+func tlsFingerprintBuiltinName(a *Account) string {
+	if a == nil || a.Extra == nil {
+		return ""
+	}
+	raw, _ := a.Extra["tls_fingerprint_builtin"].(string)
+	return raw
 }
 
 // GetTLSFingerprintProfileID 获取账号绑定的 TLS 指纹模板 ID

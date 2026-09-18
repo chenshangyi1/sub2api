@@ -6,11 +6,7 @@
       <!-- 左:站点 logo + 名称 -->
       <div class="flex min-w-0 items-center gap-3">
         <template v-if="settings">
-          <span
-            class="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-white to-gray-50 shadow-sm ring-1 ring-gray-200/80 transition-all duration-200 hover:shadow-md dark:from-dark-800 dark:to-dark-900/80 dark:ring-dark-700/60"
-          >
-            <img :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
-          </span>
+          <BrandLogo :src="siteLogo" :alt="siteName" size="sm" />
           <span class="truncate text-lg font-semibold tracking-tight text-gray-900 dark:text-white">
             {{ siteName }}
           </span>
@@ -46,6 +42,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import BrandLogo from '@/components/common/BrandLogo.vue'
 import { sanitizeUrl } from '@/utils/url'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'

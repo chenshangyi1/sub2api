@@ -109,15 +109,19 @@ func TestIsModelSupported_OpenAIAPIKeyEmptyMappingAllowsAll(t *testing.T) {
 		Type:     AccountTypeAPIKey,
 	}
 
-	// API Key 账号（第三方 OpenAI 兼容上游）可服务任意别名，语义不变。
-	require.True(t, account.IsModelSupported("deepseek-v4"))
+	// 空 mapping 的 OpenAI API Key 只认自家 gpt-/codex- 家族，避免 Adaptive
+	// 把空映射 GPT 叶当成能打 deepseek-/gemini-。
+	require.False(t, account.IsModelSupported("deepseek-v4"))
+	require.False(t, account.IsModelSupported("gemini-3.8-flash"))
 	require.True(t, account.IsModelSupported("gpt-5.4"))
+	require.True(t, account.IsModelSupported("gpt-5.3-codex"))
 }
 
 func TestIsModelSupported_NonOpenAIPlatformsUnchanged(t *testing.T) {
 	anthropic := &Account{ID: 3, Platform: PlatformAnthropic, Type: AccountTypeOAuth}
 	require.True(t, anthropic.IsModelSupported("claude-sonnet-4-6"))
-	require.True(t, anthropic.IsModelSupported("deepseek-v4"))
+	require.False(t, anthropic.IsModelSupported("deepseek-v4"))
+	require.False(t, anthropic.IsModelSupported("gpt-5.4"))
 }
 
 func TestIsOpenAIOAuthServableModel(t *testing.T) {

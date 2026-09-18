@@ -82,6 +82,8 @@ type AccountRepository interface {
 	SetSchedulable(ctx context.Context, id int64, schedulable bool) error
 	AutoPauseExpiredAccounts(ctx context.Context, now time.Time) (int64, error)
 	BindGroups(ctx context.Context, accountID int64, groupIDs []int64) error
+	BindAccountGroups(ctx context.Context, accountID int64, groups []AccountGroup) error
+	UpdateAccountGroupPriorities(ctx context.Context, accountID int64, groups []AccountGroup) error
 
 	ListSchedulable(ctx context.Context) ([]Account, error)
 	ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]Account, error)
@@ -229,13 +231,14 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 		}
 	}
 
+	platform, creds := PrepareAccountPlatformWrite(req.Platform, req.Credentials)
 	// 创建账号
 	account := &Account{
 		Name:        req.Name,
 		Notes:       normalizeAccountNotes(req.Notes),
-		Platform:    req.Platform,
+		Platform:    platform,
 		Type:        req.Type,
-		Credentials: SanitizeStoredCredentials(req.Platform, req.Credentials),
+		Credentials: SanitizeStoredCredentials(platform, creds),
 		Extra:       prepareCodexFingerprintExtraForCreate(req.Platform, req.Type, req.Extra),
 		ProxyID:     req.ProxyID,
 		Concurrency: req.Concurrency,
@@ -339,9 +342,9 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 		delete(extra, OllamaCloudUsageSessionExtraKey)
 		delete(extra, OllamaCloudUsageAutoRefreshExtraKey)
 		delete(extra, OllamaCloudUsageSnapshotExtraKey)
-		account.Extra = prepareCodexFingerprintExtraForUpdate(account, extra)
+		account.Extra = prepareCodexFingerprintExtraForUpdate(account, NormalizeProxyModeExtra(extra))
 	} else {
-		account.Extra = prepareCodexFingerprintExtraForUpdate(account, account.Extra)
+		account.Extra = prepareCodexFingerprintExtraForUpdate(account, NormalizeProxyModeExtra(account.Extra))
 	}
 
 	if req.ProxyID != nil {
@@ -514,8 +517,8 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 	case PlatformGrok:
 		// Grok OAuth credentials are validated via token exchange/refresh and request-path probes.
 		return nil
-	case PlatformKimi, PlatformZhipu, PlatformDeepseek:
-		// 国产 OpenAI 兼容供应商：凭证为 API Key，实际可用性经余额/额度探测与转发路径验证。
+	case PlatformCN, PlatformVideo, PlatformKimi, PlatformZhipu, PlatformDeepseek:
+		// 国产 / 视频 OpenAI 兼容供应商：凭证为 API Key，实际可用性经余额/额度探测与转发路径验证。
 		return nil
 	default:
 		return fmt.Errorf("unsupported platform: %s", account.Platform)

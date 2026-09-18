@@ -471,7 +471,7 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 ) (*AccountSelectionResult, error) {
 	// 分组利润控制：公共入口装门，保证不经 selectAccountWithScheduler
 	// 的调用方也无法绕过利润准入（scheduler 内部路径已在唯一调度入口装门）。
-	ctx = withSchedulerFreshness(ctx, s.accountRepo, s.schedulerSnapshot)
+	ctx = withSchedulerRequestMode(ctx, s.accountRepo, s.schedulerSnapshot)
 	ctx = s.withOpenAIProfitControlGate(ctx, groupID)
 	return s.selectAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, "", requireCompact)
 }
@@ -548,7 +548,7 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	if s == nil {
 		return 0, nil, "", nil
 	}
-	ctx = withSchedulerFreshness(ctx, s.accountRepo, s.schedulerSnapshot)
+	ctx = withSchedulerRequestMode(ctx, s.accountRepo, s.schedulerSnapshot)
 	responseID := strings.TrimSpace(previousResponseID)
 	if responseID == "" {
 		return 0, nil, "", nil
@@ -588,6 +588,9 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return 0, nil, "", nil
 	}
+	if !supportsUpstreamModelForRequest(ctx, account, requestedModel, requireCompact) {
+		return 0, nil, "", nil
+	}
 	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
 		return 0, nil, "", nil
 	}
@@ -609,7 +612,11 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	}
 	if s.schedulerSnapshot != nil && s.accountRepo != nil {
 		latest := account
-		if state := schedulerFreshnessFromContext(ctx); state != nil && state.enabled() {
+		if schedulerSnapshotOnlyFromContext(ctx) {
+			// The account was resolved from the published scheduler snapshot;
+			// avoid a per-turn durable recheck on the long-lived WS path.
+			latest = account
+		} else if state := schedulerFreshnessFromContext(ctx); state != nil && state.enabled() {
 			var ok bool
 			latest, ok = state.apply(ctx, account)
 			if !ok {
@@ -636,6 +643,9 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 		}
 		if !parentHealthyForShadow(latest, s.parentAccountLookup(ctx)) {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+			return 0, nil, "", nil
+		}
+		if !supportsUpstreamModelForRequest(ctx, latest, requestedModel, requireCompact) {
 			return 0, nil, "", nil
 		}
 		if requestedModel != "" && !latest.IsModelSupported(requestedModel) {
@@ -748,6 +758,18 @@ func (s *OpenAIGatewayService) newOpenAIWSRateLimitFailoverError(account *Accoun
 	)
 }
 
+func (s *OpenAIGatewayService) newOpenAIWSCapacityShedFailoverError(account *Account, headers http.Header, responseBody []byte, message string) *UpstreamFailoverError {
+	return s.newOpenAIAccountFailoverError(
+		account,
+		http.StatusServiceUnavailable,
+		headers,
+		responseBody,
+		strings.TrimSpace(message),
+		false,
+		true,
+	)
+}
+
 func classifyOpenAIWSErrorEventFromRaw(codeRaw, errTypeRaw, msgRaw string) (string, bool) {
 	code := strings.ToLower(strings.TrimSpace(codeRaw))
 	errType := strings.ToLower(strings.TrimSpace(errTypeRaw))
@@ -802,6 +824,13 @@ func classifyOpenAIWSErrorEvent(message []byte) (string, bool) {
 }
 
 func openAIWSErrorHTTPStatusFromRaw(codeRaw, errTypeRaw string) int {
+	return openAIWSErrorHTTPStatusFromFields(codeRaw, errTypeRaw, "")
+}
+
+func openAIWSErrorHTTPStatusFromFields(codeRaw, errTypeRaw, msgRaw string) int {
+	if mapped := openAIDeterministicClientHTTPStatus(msgRaw, nil); mapped > 0 {
+		return mapped
+	}
 	code := strings.ToLower(strings.TrimSpace(codeRaw))
 	errType := strings.ToLower(strings.TrimSpace(errTypeRaw))
 	switch {

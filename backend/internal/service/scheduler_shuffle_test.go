@@ -12,15 +12,15 @@ import (
 // ============ shuffleWithinSortGroups 测试 ============
 
 func TestShuffleWithinSortGroups_Empty(t *testing.T) {
-	shuffleWithinSortGroups(nil)
-	shuffleWithinSortGroups([]accountWithLoad{})
+	shuffleWithinSortGroups(nil, nil)
+	shuffleWithinSortGroups([]accountWithLoad{}, nil)
 }
 
 func TestShuffleWithinSortGroups_SingleElement(t *testing.T) {
 	accounts := []accountWithLoad{
 		{account: &Account{ID: 1, Priority: 1}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
 	}
-	shuffleWithinSortGroups(accounts)
+	shuffleWithinSortGroups(accounts, nil)
 	require.Equal(t, int64(1), accounts[0].account.ID)
 }
 
@@ -38,7 +38,7 @@ func TestShuffleWithinSortGroups_DifferentGroups_OrderPreserved(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		cpy := make([]accountWithLoad, len(accounts))
 		copy(cpy, accounts)
-		shuffleWithinSortGroups(cpy)
+		shuffleWithinSortGroups(cpy, nil)
 		require.Equal(t, int64(1), cpy[0].account.ID)
 		require.Equal(t, int64(2), cpy[1].account.ID)
 		require.Equal(t, int64(3), cpy[2].account.ID)
@@ -62,7 +62,7 @@ func TestShuffleWithinSortGroups_SameGroup_Shuffled(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		cpy := make([]accountWithLoad, len(accounts))
 		copy(cpy, accounts)
-		shuffleWithinSortGroups(cpy)
+		shuffleWithinSortGroups(cpy, nil)
 		seen[cpy[0].account.ID] = true
 		// 无论怎么打乱，所有 ID 都应在候选中
 		ids := map[int64]bool{}
@@ -86,7 +86,7 @@ func TestShuffleWithinSortGroups_NilLastUsedAt_SameGroup(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		cpy := make([]accountWithLoad, len(accounts))
 		copy(cpy, accounts)
-		shuffleWithinSortGroups(cpy)
+		shuffleWithinSortGroups(cpy, nil)
 		seen[cpy[0].account.ID] = true
 	}
 	require.GreaterOrEqual(t, len(seen), 2, "nil LastUsedAt accounts should be shuffled")
@@ -110,7 +110,7 @@ func TestShuffleWithinSortGroups_MixedGroups(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		cpy := make([]accountWithLoad, len(accounts))
 		copy(cpy, accounts)
-		shuffleWithinSortGroups(cpy)
+		shuffleWithinSortGroups(cpy, nil)
 
 		// 组间顺序不变
 		require.Equal(t, int64(1), cpy[0].account.ID, "group 1 position fixed")
@@ -125,13 +125,13 @@ func TestShuffleWithinSortGroups_MixedGroups(t *testing.T) {
 // ============ shuffleWithinPriorityAndLastUsed 测试 ============
 
 func TestShuffleWithinPriorityAndLastUsed_Empty(t *testing.T) {
-	shuffleWithinPriorityAndLastUsed(nil, false)
-	shuffleWithinPriorityAndLastUsed([]*Account{}, false)
+	shuffleWithinPriorityAndLastUsed(nil, nil, false)
+	shuffleWithinPriorityAndLastUsed([]*Account{}, nil, false)
 }
 
 func TestShuffleWithinPriorityAndLastUsed_SingleElement(t *testing.T) {
 	accounts := []*Account{{ID: 1, Priority: 1}}
-	shuffleWithinPriorityAndLastUsed(accounts, false)
+	shuffleWithinPriorityAndLastUsed(accounts, nil, false)
 	require.Equal(t, int64(1), accounts[0].ID)
 }
 
@@ -146,7 +146,7 @@ func TestShuffleWithinPriorityAndLastUsed_SameGroup_Shuffled(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		cpy := make([]*Account, len(accounts))
 		copy(cpy, accounts)
-		shuffleWithinPriorityAndLastUsed(cpy, false)
+		shuffleWithinPriorityAndLastUsed(cpy, nil, false)
 		seen[cpy[0].ID] = true
 	}
 	require.GreaterOrEqual(t, len(seen), 2, "same group should be shuffled")
@@ -162,7 +162,7 @@ func TestShuffleWithinPriorityAndLastUsed_DifferentPriority_OrderPreserved(t *te
 	for i := 0; i < 20; i++ {
 		cpy := make([]*Account, len(accounts))
 		copy(cpy, accounts)
-		shuffleWithinPriorityAndLastUsed(cpy, false)
+		shuffleWithinPriorityAndLastUsed(cpy, nil, false)
 		require.Equal(t, int64(1), cpy[0].ID)
 		require.Equal(t, int64(2), cpy[1].ID)
 		require.Equal(t, int64(3), cpy[2].ID)
@@ -182,7 +182,7 @@ func TestShuffleWithinPriorityAndLastUsed_DifferentLastUsedAt_OrderPreserved(t *
 	for i := 0; i < 20; i++ {
 		cpy := make([]*Account, len(accounts))
 		copy(cpy, accounts)
-		shuffleWithinPriorityAndLastUsed(cpy, false)
+		shuffleWithinPriorityAndLastUsed(cpy, nil, false)
 		require.Equal(t, int64(1), cpy[0].ID)
 		require.Equal(t, int64(2), cpy[1].ID)
 		require.Equal(t, int64(3), cpy[2].ID)
@@ -228,32 +228,32 @@ func TestSameAccountWithLoadGroup(t *testing.T) {
 	t.Run("same group", func(t *testing.T) {
 		a := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
 		b := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &sameSecond}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
-		require.True(t, sameAccountWithLoadGroup(a, b))
+		require.True(t, sameAccountWithLoadGroup(a, b, nil))
 	})
 
 	t.Run("different priority", func(t *testing.T) {
 		a := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
 		b := accountWithLoad{account: &Account{Priority: 2, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
-		require.False(t, sameAccountWithLoadGroup(a, b))
+		require.False(t, sameAccountWithLoadGroup(a, b, nil))
 	})
 
 	t.Run("different load rate", func(t *testing.T) {
 		a := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
 		b := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 20}}
-		require.False(t, sameAccountWithLoadGroup(a, b))
+		require.False(t, sameAccountWithLoadGroup(a, b, nil))
 	})
 
 	t.Run("different last used at", func(t *testing.T) {
 		later := now.Add(1 * time.Second)
 		a := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
 		b := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &later}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
-		require.False(t, sameAccountWithLoadGroup(a, b))
+		require.False(t, sameAccountWithLoadGroup(a, b, nil))
 	})
 
 	t.Run("both nil LastUsedAt", func(t *testing.T) {
 		a := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: nil}, loadInfo: &AccountLoadInfo{LoadRate: 0}}
 		b := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: nil}, loadInfo: &AccountLoadInfo{LoadRate: 0}}
-		require.True(t, sameAccountWithLoadGroup(a, b))
+		require.True(t, sameAccountWithLoadGroup(a, b, nil))
 	})
 }
 
@@ -265,20 +265,20 @@ func TestSameAccountGroup(t *testing.T) {
 	t.Run("same group", func(t *testing.T) {
 		a := &Account{Priority: 1, LastUsedAt: nil}
 		b := &Account{Priority: 1, LastUsedAt: nil}
-		require.True(t, sameAccountGroup(a, b))
+		require.True(t, sameAccountGroup(a, b, nil))
 	})
 
 	t.Run("different priority", func(t *testing.T) {
 		a := &Account{Priority: 1, LastUsedAt: nil}
 		b := &Account{Priority: 2, LastUsedAt: nil}
-		require.False(t, sameAccountGroup(a, b))
+		require.False(t, sameAccountGroup(a, b, nil))
 	})
 
 	t.Run("different LastUsedAt", func(t *testing.T) {
 		later := now.Add(1 * time.Second)
 		a := &Account{Priority: 1, LastUsedAt: &now}
 		b := &Account{Priority: 1, LastUsedAt: &later}
-		require.False(t, sameAccountGroup(a, b))
+		require.False(t, sameAccountGroup(a, b, nil))
 	})
 }
 

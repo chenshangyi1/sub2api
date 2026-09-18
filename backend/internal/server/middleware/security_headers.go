@@ -65,6 +65,8 @@ var requiredCSPDirectiveValues = []struct {
 	{"script-src", TencentCaptchaGlobalCDNDomain},
 	{"script-src", TencentCaptchaPrehandleDomain},
 	{"script-src", TencentCaptchaJQueryDomain},
+	{"connect-src", "data:"},
+	{"connect-src", "blob:"},
 	{"connect-src", TencentCaptchaDomain},
 	{"connect-src", TencentCaptchaPrehandleDomain},
 	{"connect-src", TencentCaptchaRceDomain},
@@ -128,7 +130,12 @@ func SecurityHeaders(cfg config.CSPConfig, getFrameSrcOrigins func() []string) g
 		}
 
 		c.Header("X-Content-Type-Options", "nosniff")
-		c.Header("X-Frame-Options", "DENY")
+		frameOptions := "DENY"
+		if isSameOriginEmbedPath(c) {
+			frameOptions = "SAMEORIGIN"
+			finalPolicy = allowSameOriginFrameAncestors(finalPolicy)
+		}
+		c.Header("X-Frame-Options", frameOptions)
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 		if isAPIRoutePath(c) {
 			c.Next()
@@ -149,6 +156,34 @@ func SecurityHeaders(cfg config.CSPConfig, getFrameSrcOrigins func() []string) g
 		}
 		c.Next()
 	}
+}
+
+func isSameOriginEmbedPath(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	path := c.Request.URL.Path
+	return path == "/canvas" || strings.HasPrefix(path, "/canvas/")
+}
+
+func allowSameOriginFrameAncestors(policy string) string {
+	start := 0
+	for start <= len(policy) {
+		end := len(policy)
+		if relativeEnd := strings.IndexByte(policy[start:], ';'); relativeEnd >= 0 {
+			end = start + relativeEnd
+		}
+		fields := strings.Fields(policy[start:end])
+		if len(fields) > 0 && fields[0] == "frame-ancestors" {
+			suffix := policy[end:]
+			return strings.TrimRight(policy[:start], " ") + "frame-ancestors 'self'" + suffix
+		}
+		if end == len(policy) {
+			break
+		}
+		start = end + 1
+	}
+	return addToDirective(policy, "frame-ancestors", "'self'")
 }
 
 func isAPIRoutePath(c *gin.Context) bool {

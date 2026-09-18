@@ -17,6 +17,8 @@ import (
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
+	"github.com/Wei-Shaw/sub2api/ent/adaptivegroupconfig"
+	"github.com/Wei-Shaw/sub2api/ent/adaptivegroupmembership"
 	"github.com/Wei-Shaw/sub2api/ent/announcement"
 	"github.com/Wei-Shaw/sub2api/ent/announcementread"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
@@ -69,6 +71,10 @@ type Client struct {
 	Account *AccountClient
 	// AccountGroup is the client for interacting with the AccountGroup builders.
 	AccountGroup *AccountGroupClient
+	// AdaptiveGroupConfig is the client for interacting with the AdaptiveGroupConfig builders.
+	AdaptiveGroupConfig *AdaptiveGroupConfigClient
+	// AdaptiveGroupMembership is the client for interacting with the AdaptiveGroupMembership builders.
+	AdaptiveGroupMembership *AdaptiveGroupMembershipClient
 	// Announcement is the client for interacting with the Announcement builders.
 	Announcement *AnnouncementClient
 	// AnnouncementRead is the client for interacting with the AnnouncementRead builders.
@@ -155,6 +161,8 @@ func (c *Client) init() {
 	c.APIKey = NewAPIKeyClient(c.config)
 	c.Account = NewAccountClient(c.config)
 	c.AccountGroup = NewAccountGroupClient(c.config)
+	c.AdaptiveGroupConfig = NewAdaptiveGroupConfigClient(c.config)
+	c.AdaptiveGroupMembership = NewAdaptiveGroupMembershipClient(c.config)
 	c.Announcement = NewAnnouncementClient(c.config)
 	c.AnnouncementRead = NewAnnouncementReadClient(c.config)
 	c.AuthIdentity = NewAuthIdentityClient(c.config)
@@ -286,6 +294,8 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		APIKey:                        NewAPIKeyClient(cfg),
 		Account:                       NewAccountClient(cfg),
 		AccountGroup:                  NewAccountGroupClient(cfg),
+		AdaptiveGroupConfig:           NewAdaptiveGroupConfigClient(cfg),
+		AdaptiveGroupMembership:       NewAdaptiveGroupMembershipClient(cfg),
 		Announcement:                  NewAnnouncementClient(cfg),
 		AnnouncementRead:              NewAnnouncementReadClient(cfg),
 		AuthIdentity:                  NewAuthIdentityClient(cfg),
@@ -344,6 +354,8 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		APIKey:                        NewAPIKeyClient(cfg),
 		Account:                       NewAccountClient(cfg),
 		AccountGroup:                  NewAccountGroupClient(cfg),
+		AdaptiveGroupConfig:           NewAdaptiveGroupConfigClient(cfg),
+		AdaptiveGroupMembership:       NewAdaptiveGroupMembershipClient(cfg),
 		Announcement:                  NewAnnouncementClient(cfg),
 		AnnouncementRead:              NewAnnouncementReadClient(cfg),
 		AuthIdentity:                  NewAuthIdentityClient(cfg),
@@ -409,16 +421,16 @@ func (c *Client) Close() error {
 // In order to add hooks to a specific client, call: `client.Node.Use(...)`.
 func (c *Client) Use(hooks ...Hook) {
 	for _, n := range []interface{ Use(...Hook) }{
-		c.APIKey, c.Account, c.AccountGroup, c.Announcement, c.AnnouncementRead,
-		c.AuthIdentity, c.AuthIdentityChannel, c.BatchImageEvent, c.BatchImageItem,
-		c.BatchImageJob, c.ChannelMonitor, c.ChannelMonitorDailyRollup,
-		c.ChannelMonitorHistory, c.ChannelMonitorRequestTemplate,
-		c.CompositeModelRoute, c.ErrorPassthroughRule, c.Group, c.IdempotencyRecord,
-		c.IdentityAdoptionDecision, c.PaymentAuditLog, c.PaymentOrder,
-		c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode, c.PromoCodeUsage,
-		c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting, c.SubscriptionPlan,
-		c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog, c.User,
-		c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
+		c.APIKey, c.Account, c.AccountGroup, c.AdaptiveGroupConfig,
+		c.AdaptiveGroupMembership, c.Announcement, c.AnnouncementRead, c.AuthIdentity,
+		c.AuthIdentityChannel, c.BatchImageEvent, c.BatchImageItem, c.BatchImageJob,
+		c.ChannelMonitor, c.ChannelMonitorDailyRollup, c.ChannelMonitorHistory,
+		c.ChannelMonitorRequestTemplate, c.CompositeModelRoute, c.ErrorPassthroughRule,
+		c.Group, c.IdempotencyRecord, c.IdentityAdoptionDecision, c.PaymentAuditLog,
+		c.PaymentOrder, c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode,
+		c.PromoCodeUsage, c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting,
+		c.SubscriptionPlan, c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog,
+		c.User, c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
 		c.UserPlatformQuota, c.UserSubscription,
 	} {
 		n.Use(hooks...)
@@ -429,16 +441,16 @@ func (c *Client) Use(hooks ...Hook) {
 // In order to add interceptors to a specific client, call: `client.Node.Intercept(...)`.
 func (c *Client) Intercept(interceptors ...Interceptor) {
 	for _, n := range []interface{ Intercept(...Interceptor) }{
-		c.APIKey, c.Account, c.AccountGroup, c.Announcement, c.AnnouncementRead,
-		c.AuthIdentity, c.AuthIdentityChannel, c.BatchImageEvent, c.BatchImageItem,
-		c.BatchImageJob, c.ChannelMonitor, c.ChannelMonitorDailyRollup,
-		c.ChannelMonitorHistory, c.ChannelMonitorRequestTemplate,
-		c.CompositeModelRoute, c.ErrorPassthroughRule, c.Group, c.IdempotencyRecord,
-		c.IdentityAdoptionDecision, c.PaymentAuditLog, c.PaymentOrder,
-		c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode, c.PromoCodeUsage,
-		c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting, c.SubscriptionPlan,
-		c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog, c.User,
-		c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
+		c.APIKey, c.Account, c.AccountGroup, c.AdaptiveGroupConfig,
+		c.AdaptiveGroupMembership, c.Announcement, c.AnnouncementRead, c.AuthIdentity,
+		c.AuthIdentityChannel, c.BatchImageEvent, c.BatchImageItem, c.BatchImageJob,
+		c.ChannelMonitor, c.ChannelMonitorDailyRollup, c.ChannelMonitorHistory,
+		c.ChannelMonitorRequestTemplate, c.CompositeModelRoute, c.ErrorPassthroughRule,
+		c.Group, c.IdempotencyRecord, c.IdentityAdoptionDecision, c.PaymentAuditLog,
+		c.PaymentOrder, c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode,
+		c.PromoCodeUsage, c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting,
+		c.SubscriptionPlan, c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog,
+		c.User, c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
 		c.UserPlatformQuota, c.UserSubscription,
 	} {
 		n.Intercept(interceptors...)
@@ -454,6 +466,10 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.Account.mutate(ctx, m)
 	case *AccountGroupMutation:
 		return c.AccountGroup.mutate(ctx, m)
+	case *AdaptiveGroupConfigMutation:
+		return c.AdaptiveGroupConfig.mutate(ctx, m)
+	case *AdaptiveGroupMembershipMutation:
+		return c.AdaptiveGroupMembership.mutate(ctx, m)
 	case *AnnouncementMutation:
 		return c.Announcement.mutate(ctx, m)
 	case *AnnouncementReadMutation:
@@ -1058,6 +1074,336 @@ func (c *AccountGroupClient) mutate(ctx context.Context, m *AccountGroupMutation
 		return (&AccountGroupDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("ent: unknown AccountGroup mutation op: %q", m.Op())
+	}
+}
+
+// AdaptiveGroupConfigClient is a client for the AdaptiveGroupConfig schema.
+type AdaptiveGroupConfigClient struct {
+	config
+}
+
+// NewAdaptiveGroupConfigClient returns a client for the AdaptiveGroupConfig from the given config.
+func NewAdaptiveGroupConfigClient(c config) *AdaptiveGroupConfigClient {
+	return &AdaptiveGroupConfigClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `adaptivegroupconfig.Hooks(f(g(h())))`.
+func (c *AdaptiveGroupConfigClient) Use(hooks ...Hook) {
+	c.hooks.AdaptiveGroupConfig = append(c.hooks.AdaptiveGroupConfig, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `adaptivegroupconfig.Intercept(f(g(h())))`.
+func (c *AdaptiveGroupConfigClient) Intercept(interceptors ...Interceptor) {
+	c.inters.AdaptiveGroupConfig = append(c.inters.AdaptiveGroupConfig, interceptors...)
+}
+
+// Create returns a builder for creating a AdaptiveGroupConfig entity.
+func (c *AdaptiveGroupConfigClient) Create() *AdaptiveGroupConfigCreate {
+	mutation := newAdaptiveGroupConfigMutation(c.config, OpCreate)
+	return &AdaptiveGroupConfigCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of AdaptiveGroupConfig entities.
+func (c *AdaptiveGroupConfigClient) CreateBulk(builders ...*AdaptiveGroupConfigCreate) *AdaptiveGroupConfigCreateBulk {
+	return &AdaptiveGroupConfigCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *AdaptiveGroupConfigClient) MapCreateBulk(slice any, setFunc func(*AdaptiveGroupConfigCreate, int)) *AdaptiveGroupConfigCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &AdaptiveGroupConfigCreateBulk{err: fmt.Errorf("calling to AdaptiveGroupConfigClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*AdaptiveGroupConfigCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &AdaptiveGroupConfigCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for AdaptiveGroupConfig.
+func (c *AdaptiveGroupConfigClient) Update() *AdaptiveGroupConfigUpdate {
+	mutation := newAdaptiveGroupConfigMutation(c.config, OpUpdate)
+	return &AdaptiveGroupConfigUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *AdaptiveGroupConfigClient) UpdateOne(_m *AdaptiveGroupConfig) *AdaptiveGroupConfigUpdateOne {
+	mutation := newAdaptiveGroupConfigMutation(c.config, OpUpdateOne, withAdaptiveGroupConfig(_m))
+	return &AdaptiveGroupConfigUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *AdaptiveGroupConfigClient) UpdateOneID(id int64) *AdaptiveGroupConfigUpdateOne {
+	mutation := newAdaptiveGroupConfigMutation(c.config, OpUpdateOne, withAdaptiveGroupConfigID(id))
+	return &AdaptiveGroupConfigUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for AdaptiveGroupConfig.
+func (c *AdaptiveGroupConfigClient) Delete() *AdaptiveGroupConfigDelete {
+	mutation := newAdaptiveGroupConfigMutation(c.config, OpDelete)
+	return &AdaptiveGroupConfigDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *AdaptiveGroupConfigClient) DeleteOne(_m *AdaptiveGroupConfig) *AdaptiveGroupConfigDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *AdaptiveGroupConfigClient) DeleteOneID(id int64) *AdaptiveGroupConfigDeleteOne {
+	builder := c.Delete().Where(adaptivegroupconfig.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &AdaptiveGroupConfigDeleteOne{builder}
+}
+
+// Query returns a query builder for AdaptiveGroupConfig.
+func (c *AdaptiveGroupConfigClient) Query() *AdaptiveGroupConfigQuery {
+	return &AdaptiveGroupConfigQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeAdaptiveGroupConfig},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a AdaptiveGroupConfig entity by its id.
+func (c *AdaptiveGroupConfigClient) Get(ctx context.Context, id int64) (*AdaptiveGroupConfig, error) {
+	return c.Query().Where(adaptivegroupconfig.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *AdaptiveGroupConfigClient) GetX(ctx context.Context, id int64) *AdaptiveGroupConfig {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryParentGroup queries the parent_group edge of a AdaptiveGroupConfig.
+func (c *AdaptiveGroupConfigClient) QueryParentGroup(_m *AdaptiveGroupConfig) *GroupQuery {
+	query := (&GroupClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(adaptivegroupconfig.Table, adaptivegroupconfig.FieldID, id),
+			sqlgraph.To(group.Table, group.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, adaptivegroupconfig.ParentGroupTable, adaptivegroupconfig.ParentGroupColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryMembers queries the members edge of a AdaptiveGroupConfig.
+func (c *AdaptiveGroupConfigClient) QueryMembers(_m *AdaptiveGroupConfig) *AdaptiveGroupMembershipQuery {
+	query := (&AdaptiveGroupMembershipClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(adaptivegroupconfig.Table, adaptivegroupconfig.FieldID, id),
+			sqlgraph.To(adaptivegroupmembership.Table, adaptivegroupmembership.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, true, adaptivegroupconfig.MembersTable, adaptivegroupconfig.MembersColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *AdaptiveGroupConfigClient) Hooks() []Hook {
+	return c.hooks.AdaptiveGroupConfig
+}
+
+// Interceptors returns the client interceptors.
+func (c *AdaptiveGroupConfigClient) Interceptors() []Interceptor {
+	return c.inters.AdaptiveGroupConfig
+}
+
+func (c *AdaptiveGroupConfigClient) mutate(ctx context.Context, m *AdaptiveGroupConfigMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&AdaptiveGroupConfigCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&AdaptiveGroupConfigUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&AdaptiveGroupConfigUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&AdaptiveGroupConfigDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown AdaptiveGroupConfig mutation op: %q", m.Op())
+	}
+}
+
+// AdaptiveGroupMembershipClient is a client for the AdaptiveGroupMembership schema.
+type AdaptiveGroupMembershipClient struct {
+	config
+}
+
+// NewAdaptiveGroupMembershipClient returns a client for the AdaptiveGroupMembership from the given config.
+func NewAdaptiveGroupMembershipClient(c config) *AdaptiveGroupMembershipClient {
+	return &AdaptiveGroupMembershipClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `adaptivegroupmembership.Hooks(f(g(h())))`.
+func (c *AdaptiveGroupMembershipClient) Use(hooks ...Hook) {
+	c.hooks.AdaptiveGroupMembership = append(c.hooks.AdaptiveGroupMembership, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `adaptivegroupmembership.Intercept(f(g(h())))`.
+func (c *AdaptiveGroupMembershipClient) Intercept(interceptors ...Interceptor) {
+	c.inters.AdaptiveGroupMembership = append(c.inters.AdaptiveGroupMembership, interceptors...)
+}
+
+// Create returns a builder for creating a AdaptiveGroupMembership entity.
+func (c *AdaptiveGroupMembershipClient) Create() *AdaptiveGroupMembershipCreate {
+	mutation := newAdaptiveGroupMembershipMutation(c.config, OpCreate)
+	return &AdaptiveGroupMembershipCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of AdaptiveGroupMembership entities.
+func (c *AdaptiveGroupMembershipClient) CreateBulk(builders ...*AdaptiveGroupMembershipCreate) *AdaptiveGroupMembershipCreateBulk {
+	return &AdaptiveGroupMembershipCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *AdaptiveGroupMembershipClient) MapCreateBulk(slice any, setFunc func(*AdaptiveGroupMembershipCreate, int)) *AdaptiveGroupMembershipCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &AdaptiveGroupMembershipCreateBulk{err: fmt.Errorf("calling to AdaptiveGroupMembershipClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*AdaptiveGroupMembershipCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &AdaptiveGroupMembershipCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for AdaptiveGroupMembership.
+func (c *AdaptiveGroupMembershipClient) Update() *AdaptiveGroupMembershipUpdate {
+	mutation := newAdaptiveGroupMembershipMutation(c.config, OpUpdate)
+	return &AdaptiveGroupMembershipUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *AdaptiveGroupMembershipClient) UpdateOne(_m *AdaptiveGroupMembership) *AdaptiveGroupMembershipUpdateOne {
+	mutation := newAdaptiveGroupMembershipMutation(c.config, OpUpdateOne, withAdaptiveGroupMembership(_m))
+	return &AdaptiveGroupMembershipUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *AdaptiveGroupMembershipClient) UpdateOneID(id int64) *AdaptiveGroupMembershipUpdateOne {
+	mutation := newAdaptiveGroupMembershipMutation(c.config, OpUpdateOne, withAdaptiveGroupMembershipID(id))
+	return &AdaptiveGroupMembershipUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for AdaptiveGroupMembership.
+func (c *AdaptiveGroupMembershipClient) Delete() *AdaptiveGroupMembershipDelete {
+	mutation := newAdaptiveGroupMembershipMutation(c.config, OpDelete)
+	return &AdaptiveGroupMembershipDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *AdaptiveGroupMembershipClient) DeleteOne(_m *AdaptiveGroupMembership) *AdaptiveGroupMembershipDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *AdaptiveGroupMembershipClient) DeleteOneID(id int64) *AdaptiveGroupMembershipDeleteOne {
+	builder := c.Delete().Where(adaptivegroupmembership.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &AdaptiveGroupMembershipDeleteOne{builder}
+}
+
+// Query returns a query builder for AdaptiveGroupMembership.
+func (c *AdaptiveGroupMembershipClient) Query() *AdaptiveGroupMembershipQuery {
+	return &AdaptiveGroupMembershipQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeAdaptiveGroupMembership},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a AdaptiveGroupMembership entity by its id.
+func (c *AdaptiveGroupMembershipClient) Get(ctx context.Context, id int64) (*AdaptiveGroupMembership, error) {
+	return c.Query().Where(adaptivegroupmembership.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *AdaptiveGroupMembershipClient) GetX(ctx context.Context, id int64) *AdaptiveGroupMembership {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryConfig queries the config edge of a AdaptiveGroupMembership.
+func (c *AdaptiveGroupMembershipClient) QueryConfig(_m *AdaptiveGroupMembership) *AdaptiveGroupConfigQuery {
+	query := (&AdaptiveGroupConfigClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(adaptivegroupmembership.Table, adaptivegroupmembership.FieldID, id),
+			sqlgraph.To(adaptivegroupconfig.Table, adaptivegroupconfig.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, adaptivegroupmembership.ConfigTable, adaptivegroupmembership.ConfigColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryLeafGroup queries the leaf_group edge of a AdaptiveGroupMembership.
+func (c *AdaptiveGroupMembershipClient) QueryLeafGroup(_m *AdaptiveGroupMembership) *GroupQuery {
+	query := (&GroupClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(adaptivegroupmembership.Table, adaptivegroupmembership.FieldID, id),
+			sqlgraph.To(group.Table, group.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, adaptivegroupmembership.LeafGroupTable, adaptivegroupmembership.LeafGroupColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *AdaptiveGroupMembershipClient) Hooks() []Hook {
+	return c.hooks.AdaptiveGroupMembership
+}
+
+// Interceptors returns the client interceptors.
+func (c *AdaptiveGroupMembershipClient) Interceptors() []Interceptor {
+	return c.inters.AdaptiveGroupMembership
+}
+
+func (c *AdaptiveGroupMembershipClient) mutate(ctx context.Context, m *AdaptiveGroupMembershipMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&AdaptiveGroupMembershipCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&AdaptiveGroupMembershipUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&AdaptiveGroupMembershipUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&AdaptiveGroupMembershipDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown AdaptiveGroupMembership mutation op: %q", m.Op())
 	}
 }
 
@@ -6825,9 +7171,10 @@ func (c *UserSubscriptionClient) mutate(ctx context.Context, m *UserSubscription
 // hooks and interceptors per client, for fast access.
 type (
 	hooks struct {
-		APIKey, Account, AccountGroup, Announcement, AnnouncementRead, AuthIdentity,
-		AuthIdentityChannel, BatchImageEvent, BatchImageItem, BatchImageJob,
-		ChannelMonitor, ChannelMonitorDailyRollup, ChannelMonitorHistory,
+		APIKey, Account, AccountGroup, AdaptiveGroupConfig, AdaptiveGroupMembership,
+		Announcement, AnnouncementRead, AuthIdentity, AuthIdentityChannel,
+		BatchImageEvent, BatchImageItem, BatchImageJob, ChannelMonitor,
+		ChannelMonitorDailyRollup, ChannelMonitorHistory,
 		ChannelMonitorRequestTemplate, CompositeModelRoute, ErrorPassthroughRule,
 		Group, IdempotencyRecord, IdentityAdoptionDecision, PaymentAuditLog,
 		PaymentOrder, PaymentProviderInstance, PendingAuthSession, PromoCode,
@@ -6837,9 +7184,10 @@ type (
 		UserSubscription []ent.Hook
 	}
 	inters struct {
-		APIKey, Account, AccountGroup, Announcement, AnnouncementRead, AuthIdentity,
-		AuthIdentityChannel, BatchImageEvent, BatchImageItem, BatchImageJob,
-		ChannelMonitor, ChannelMonitorDailyRollup, ChannelMonitorHistory,
+		APIKey, Account, AccountGroup, AdaptiveGroupConfig, AdaptiveGroupMembership,
+		Announcement, AnnouncementRead, AuthIdentity, AuthIdentityChannel,
+		BatchImageEvent, BatchImageItem, BatchImageJob, ChannelMonitor,
+		ChannelMonitorDailyRollup, ChannelMonitorHistory,
 		ChannelMonitorRequestTemplate, CompositeModelRoute, ErrorPassthroughRule,
 		Group, IdempotencyRecord, IdentityAdoptionDecision, PaymentAuditLog,
 		PaymentOrder, PaymentProviderInstance, PendingAuthSession, PromoCode,

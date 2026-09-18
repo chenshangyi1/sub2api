@@ -66,7 +66,7 @@ func TestEPUSDTCreatePaymentSignsPayloadAndReturnsRedirect(t *testing.T) {
 		require.Equal(t, "order-123", received["order_id"])
 		require.Equal(t, "CNY", received["currency"])
 		require.Equal(t, "USDT", received["token"])
-		require.Equal(t, "bsc", received["network"])
+		require.Equal(t, "binance", received["network"])
 		require.Equal(t, float64(12.34), received["amount"])
 		require.Equal(t, expectedEPUSDTSignature(received, epusdtTestSecret), received["signature"])
 		_, _ = w.Write([]byte(`{"status_code":200,"message":"success","data":{"trade_id":"trade-123","order_id":"order-123","amount":12.34,"payment_url":"/pay/trade-123"}}`))
@@ -88,6 +88,40 @@ func TestEPUSDTCreatePaymentSignsPayloadAndReturnsRedirect(t *testing.T) {
 	require.Equal(t, "https://shop.example.test/payment/result?order_id=123&status=success", received["redirect_url"])
 }
 
+func TestEPUSDTCreatePaymentUsesCheckoutNetworkWhenMultipleConfigured(t *testing.T) {
+	var received map[string]interface{}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(body, &received))
+		_, _ = w.Write([]byte(`{"status_code":200,"message":"success","data":{"trade_id":"trade-trc","order_id":"order-trc","payment_url":"/pay/trade-trc"}}`))
+	}))
+	defer server.Close()
+
+	prov, err := NewEPUSDT("test", map[string]string{
+		"pid":       "1000",
+		"secretKey": epusdtTestSecret,
+		"apiBase":   "https://ep.example.test",
+		"notifyUrl": "https://shop.example.test/api/v1/payments/callback",
+		"returnUrl": "https://shop.example.test",
+		"token":     "USDT",
+		"networks":  "bsc,trc20",
+		"currency":  "CNY",
+	})
+	require.NoError(t, err)
+	prov.config["apiBase"] = server.URL
+	prov.httpClient = server.Client()
+
+	_, err = prov.CreatePayment(context.Background(), payment.CreatePaymentRequest{
+		OrderID:     "order-trc",
+		Amount:      "10.2",
+		PaymentType: "epusdt_trc20",
+		Subject:     "充值",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "tron", received["network"])
+}
+
 func TestEPUSDTCanonicalizesHTTPReturnURL(t *testing.T) {
 	var received map[string]interface{}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -107,8 +141,31 @@ func TestEPUSDTCanonicalizesHTTPReturnURL(t *testing.T) {
 	require.Equal(t, "https://shop.example.test/payment/result", received["redirect_url"])
 }
 
-func TestEPUSDTRejectsUntrustedReturnURL(t *testing.T) {
+func TestEPUSDTCanonicalizesHTTPSAliasReturnURL(t *testing.T) {
+	var received map[string]interface{}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(body, &received))
+		_, _ = w.Write([]byte(`{"status_code":200,"message":"success","data":{"trade_id":"trade-alias","order_id":"order-alias","payment_url":"/pay/trade-alias"}}`))
+	}))
+	defer server.Close()
+	prov := newTestEPUSDT(t, server)
+	_, err := prov.CreatePayment(context.Background(), payment.CreatePaymentRequest{
+		OrderID:   "order-alias",
+		Amount:    "1",
+		ReturnURL: "https://milarain.shop/payment/result?order_id=42&status=success",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "https://shop.example.test/payment/result?order_id=42&status=success", received["redirect_url"])
+}
+
+func TestEPUSDTRewritesUntrustedReturnURLOntoConfiguredHost(t *testing.T) {
+	var received map[string]interface{}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(body, &received))
 		_, _ = w.Write([]byte(`{"status_code":200,"message":"success","data":{"trade_id":"trade-123","order_id":"order-123","payment_url":"/pay/trade-123"}}`))
 	}))
 	defer server.Close()
@@ -118,7 +175,8 @@ func TestEPUSDTRejectsUntrustedReturnURL(t *testing.T) {
 		Amount:    "1",
 		ReturnURL: "https://evil.example.test/payment/result?status=success",
 	})
-	require.ErrorContains(t, err, "host mismatch")
+	require.NoError(t, err)
+	require.Equal(t, "https://shop.example.test/payment/result?status=success", received["redirect_url"])
 }
 
 func TestEPUSDTQueryOrderMapsStatuses(t *testing.T) {

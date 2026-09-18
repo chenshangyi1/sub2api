@@ -31,14 +31,14 @@ import (
 // （GLM effort 归一化、fast policy、Grok 分支、ClientDisconnect 语义等）仍留在
 // 调用方，属于有意保留的行为差异，不在此强行统一。
 
-// newUpstreamSSEScanner 构造读取上游 SSE 流的行扫描器，按配置放大单行上限。
+// newUpstreamSSEScanner bounds line growth while allowing media SSE events.
 func (s *OpenAIGatewayService) newUpstreamSSEScanner(r io.Reader) *bufio.Scanner {
 	scanner := bufio.NewScanner(r)
 	maxLineSize := defaultMaxLineSize
 	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	attachSSEScannerBuffer(scanner, nil, maxLineSize)
 	return scanner
 }
 
@@ -88,7 +88,7 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 	upstreamMsg string,
 	upstreamModel string,
 ) *UpstreamFailoverError {
-	shouldFailover := s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody)
+	shouldFailover := s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody)
 	tempUnscheduled := false
 	if c != nil && account != nil && account.Platform != PlatformGrok && !shouldFailover && !IsResponseCommitted(c) && s.rateLimitService != nil {
 		tempUnscheduled = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, upstreamModel) == ErrorPolicyTempUnscheduled
@@ -217,6 +217,7 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	// 账号级请求头覆写：放在所有内置默认头（含 Grok CLI 身份头）之后应用，
 	// 使配置值获得除共享传输层强制头之外的最高优先级。
 	account.ApplyHeaderOverrides(upstreamReq.Header)
+	applyOpenCodeSessionHeader(c, account, targetURL, upstreamReq.Header)
 
 	proxyURL := ""
 	if account.Proxy != nil {

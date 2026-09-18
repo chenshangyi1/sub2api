@@ -14,6 +14,7 @@ import (
 //
 // 广场路由挂 OptionalJWT 中间件：匿名可访问（除非 require_auth 开启），带 token 则
 // 识别用户。可见性规则（橱窗语义，与「可用渠道」的可绑定语义不同）：
+//   - user_visible=false 的分组一律隐藏（Adaptive 叶子等基础设施）；
 //   - 匿名：仅非专属分组（订阅型照常展示）；
 //   - 登录：非专属分组 + user_allowed_groups 授权的专属分组（不检查订阅有效性）。
 type ModelPlazaHandler struct {
@@ -165,6 +166,9 @@ func filterPlazaVisibleGroups(
 ) []service.PlazaGroup {
 	visible := make([]service.PlazaGroup, 0, len(groups))
 	for _, g := range groups {
+		if g.UserVisibleSet && !g.UserVisible {
+			continue
+		}
 		if g.IsExclusive {
 			if allowedExclusive == nil {
 				continue

@@ -216,6 +216,23 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/image-studio',
+    redirect: '/infinite-canvas'
+  },
+  {
+    path: '/infinite-canvas',
+    name: 'InfiniteCanvas',
+    component: () => import('@/views/user/InfiniteCanvasView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Infinite Canvas',
+      titleKey: 'infiniteCanvas.title',
+      descriptionKey: 'infiniteCanvas.description',
+      flushContent: true
+    }
+  },
+  {
     path: '/batch-image',
     name: 'BatchImageGuide',
     alias: '/docs/batch-image',
@@ -262,6 +279,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Affiliate',
       titleKey: 'affiliate.title',
       descriptionKey: 'affiliate.description'
+    }
+  },
+  {
+    path: '/ip-allowlist',
+    name: 'CFAllowlist',
+    component: () => import('@/views/user/CFAllowlistView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'IP Allowlist',
+      titleKey: 'cfAllowlist.title',
+      descriptionKey: 'cfAllowlist.intro'
     }
   },
   {
@@ -462,6 +491,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/adaptive-groups',
+    name: 'AdminAdaptiveGroups',
+    component: () => import('@/views/admin/AdaptiveGroupsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Adaptive Groups',
+      titleKey: 'admin.adaptiveGroups.title',
+      descriptionKey: 'admin.adaptiveGroups.description'
+    }
+  },
+  {
     path: '/admin/channels',
     redirect: '/admin/channels/pricing'
   },
@@ -487,6 +528,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Channel Monitor',
       titleKey: 'admin.channelMonitor.title',
       descriptionKey: 'admin.channelMonitor.description'
+    }
+  },
+  {
+    path: '/admin/channels/group-monitor',
+    name: 'AdminGroupMonitor',
+    component: () => import('@/views/admin/GroupMonitorView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Group Monitor',
+      titleKey: 'admin.groupMonitor.title',
+      descriptionKey: 'admin.groupMonitor.description'
     }
   },
   {
@@ -523,6 +576,10 @@ const routes: RouteRecordRaw[] = [
       titleKey: 'admin.accounts.title',
       descriptionKey: 'admin.accounts.description'
     }
+  },
+  {
+    path: '/admin/oauth-accounts',
+    redirect: '/admin/accounts'
   },
   {
     path: '/admin/plugins',

@@ -878,7 +878,7 @@ func (s *BillingCacheService) IncrementUserPlatformQuotaUsage(userID int64, plat
 // platform 为请求的目标平台（如 "anthropic"），传空串 "" 时跳过 user × platform quota 检查。
 func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user *User, apiKey *APIKey, group *Group, subscription *UserSubscription, platform string) error {
 	// 简易模式：跳过所有计费检查
-	if s.cfg.RunMode == config.RunModeSimple {
+	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		return nil
 	}
 	if s.circuitBreaker != nil && !s.circuitBreaker.Allow() {
@@ -918,6 +918,43 @@ func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user 
 	}
 
 	return nil
+}
+
+type apiKeyRouteBalanceEligibilityKey struct{}
+
+// CheckAPIKeyRouteEligibility checks a newly selected group after the initial
+// admission check. Call only when the group ID changes; global user RPM was
+// already counted at admission, while the target group's RPM is counted here.
+func (s *BillingCacheService) CheckAPIKeyRouteEligibility(ctx context.Context, user *User, key *APIKey, group *Group, subscription *UserSubscription, platform string) error {
+	if s == nil || user == nil {
+		return ErrBillingServiceUnavailable
+	}
+	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+		return nil
+	}
+	if key == nil || group == nil || key.GroupID == nil || *key.GroupID != group.ID ||
+		key.Group == nil || key.Group.ID != group.ID || balancePreauthorizationAPIKeyUserID(key) != user.ID {
+		return ErrSubscriptionInvalid
+	}
+	if key.IsExpired() {
+		return ErrAPIKeyExpired
+	}
+	if key.IsQuotaExhausted() {
+		return ErrAPIKeyQuotaExhausted
+	}
+	if group.IsSubscriptionType() {
+		if !validAPIKeyRouteSubscription(subscription, user.ID, group.ID) {
+			return ErrSubscriptionInvalid
+		}
+	} else {
+		subscription = nil
+		ctx = context.WithValue(nonNilContext(ctx), apiKeyRouteBalanceEligibilityKey{}, key.ID)
+	}
+	routeUser := *user
+	routeUser.RPMLimit = 0
+	routeUser.UserGroupRPMOverride = nil
+	routeUser.UserGroupRPMOverrideLoaded = false
+	return s.CheckBillingEligibility(ctx, &routeUser, key, group, subscription, platform)
 }
 
 // checkRPM 执行并行 RPM 限流，所有适用的限制同时生效，任一超限即拒绝：
@@ -1021,6 +1058,23 @@ func (s *BillingCacheService) balanceBelowEligibilityThreshold(balance float64) 
 
 // checkBalanceEligibility 检查余额模式资格
 func (s *BillingCacheService) checkBalanceEligibility(ctx context.Context, userID int64) error {
+	var ownHold float64
+	if ctx != nil && (s.cfg == nil || s.cfg.Billing.BalancePreauthorizationEnabled) {
+		if keyID, ok := ctx.Value(apiKeyRouteBalanceEligibilityKey{}).(int64); ok {
+			if guard, exists := BalancePreauthorizationGuardFromContext(ctx); exists && guard.core != nil {
+				guard.core.mu.Lock()
+				if guard.core.apiKeyID == keyID && guard.core.userID == userID &&
+					guard.core.ownerToken == guard.ownerToken && guard.core.terminalState == balancePreauthorizationGuardActive {
+					// Read the wallet and our hold under the same ownership lock so
+					// concurrent top-up/refund cannot count the same money twice.
+					defer guard.core.mu.Unlock()
+					ownHold = guard.core.holdAmount
+				} else {
+					guard.core.mu.Unlock()
+				}
+			}
+		}
+	}
 	balance, err := s.GetUserBalance(ctx, userID)
 	if err != nil {
 		if s.circuitBreaker != nil {
@@ -1033,6 +1087,9 @@ func (s *BillingCacheService) checkBalanceEligibility(ctx context.Context, userI
 		s.circuitBreaker.OnSuccess()
 	}
 
+	if ownHold > 0 {
+		balance = QuantizeUsageBillingAmount(balance + ownHold)
+	}
 	if s.balanceBelowEligibilityThreshold(balance) {
 		return ErrInsufficientBalance
 	}

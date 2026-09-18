@@ -279,7 +279,7 @@ func InboundEndpointMiddleware() gin.HandlerFunc {
 
 // ──────────────────────────────────────────────────────────
 // Context helpers — used by handlers before building
-// RecordUsageInput / RecordUsageLongContextInput.
+// RecordUsageInput.
 // ──────────────────────────────────────────────────────────
 
 // GetInboundEndpoint returns the canonical inbound endpoint stored by
@@ -312,6 +312,14 @@ func GetInboundEndpoint(c *gin.Context) string {
 // and the account platform. Handlers call this after scheduling an
 // account, passing account.Platform.
 func GetUpstreamEndpoint(c *gin.Context, platform string) string {
+	// OpenAI 转发服务维护独立的运行时端点上下文，覆盖普通入站推导。
+	// 这对 force_chat_completions 的错误路径尤为重要：此时可能没有
+	// ForwardResult，不能把入站 /v1/responses 误报成上游端点。
+	if platform == service.PlatformOpenAI || platform == service.PlatformGrok || platform == service.PlatformGemini || service.IsCNProvider(platform) {
+		if endpoint := service.GetActualOpenAIUpstreamEndpoint(c); endpoint != "" {
+			return endpoint
+		}
+	}
 	if c != nil {
 		if value, ok := c.Get(ctxKeyActualUpstreamEndpoint); ok {
 			if endpoint, ok := value.(string); ok && endpoint != "" {
@@ -337,4 +345,44 @@ func shouldUseAntigravityCompat(account *service.Account) bool {
 	return account != nil &&
 		account.Platform == service.PlatformAntigravity &&
 		account.Type == service.AccountTypeOAuth
+}
+
+func openAIForwardResultAsGateway(result *service.OpenAIForwardResult) *service.ForwardResult {
+	if result == nil {
+		return nil
+	}
+	return &service.ForwardResult{
+		RequestID:       result.RequestID,
+		UpstreamHeaders: result.UpstreamHeaders,
+		Usage: service.ClaudeUsage{
+			// OpenAI input includes cache reads/writes; Gateway bills exclusive buckets.
+			InputTokens:              max(result.Usage.InputTokens-result.Usage.CacheReadInputTokens-result.Usage.CacheCreationInputTokens, 0),
+			OutputTokens:             result.Usage.OutputTokens,
+			CacheCreationInputTokens: result.Usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     result.Usage.CacheReadInputTokens,
+			ImageOutputTokens:        result.Usage.ImageOutputTokens,
+		},
+		Model:                         result.Model,
+		UpstreamModel:                 result.UpstreamModel,
+		UpstreamResponseModel:         result.UpstreamResponseModel,
+		UpstreamResponseModelConflict: result.UpstreamResponseModelConflict,
+		UpstreamResponseServiceTier:   result.UpstreamResponseServiceTier,
+		Stream:                        result.Stream,
+		NonBillableUpstreamError:      result.NonBillableUpstreamError,
+		Duration:                      result.Duration,
+		FirstTokenMs:                  result.FirstTokenMs,
+		ClientDisconnect:              result.ClientDisconnect,
+		ReasoningEffort:               result.ReasoningEffort,
+		RequestedReasoningEffort:      result.RequestedReasoningEffort,
+		ServiceTier:                   result.ServiceTier,
+		ImageCount:                    result.ImageCount,
+		ImageSize:                     result.ImageSize,
+		ImageInputSize:                result.ImageInputSize,
+		ImageOutputSize:               result.ImageOutputSize,
+		ImageOutputSizes:              result.ImageOutputSizes,
+		ImageSizeSource:               result.ImageSizeSource,
+		ImageSizeBreakdown:            result.ImageSizeBreakdown,
+		SearchCount:                   result.SearchCount,
+		AudioUsage:                    result.AudioUsage,
+	}
 }

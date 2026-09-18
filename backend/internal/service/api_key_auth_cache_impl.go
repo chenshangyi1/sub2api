@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 21 // v21: distinguish confirmed nil RPM overrides from lookup failures
+const apiKeyAuthSnapshotVersion = 22 // v22: Adaptive leaf allowlist + routing preference on auth snapshot
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -296,7 +296,12 @@ func (s *APIKeyService) lookupAPIKeyForAuth(ctx context.Context, key string) (*A
 		return nil, ErrAPIKeyNotFound
 	}
 	if s.authLookupSlots == nil {
-		return s.apiKeyRepo.GetByKeyForAuth(ctx, key)
+		apiKey, err := s.apiKeyRepo.GetByKeyForAuth(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		s.stampAdaptiveParentOnKey(ctx, apiKey)
+		return apiKey, nil
 	}
 	s.authLookupTotal.Add(1)
 	select {
@@ -312,7 +317,12 @@ func (s *APIKeyService) lookupAPIKeyForAuth(ctx context.Context, key string) (*A
 		s.authLookupRejected.Add(1)
 		return nil, ErrAPIKeyAuthOverloaded
 	}
-	return s.apiKeyRepo.GetByKeyForAuth(ctx, key)
+	apiKey, err := s.apiKeyRepo.GetByKeyForAuth(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	s.stampAdaptiveParentOnKey(ctx, apiKey)
+	return apiKey, nil
 }
 
 func (s *APIKeyService) applyAuthCacheEntry(key string, entry *APIKeyAuthCacheEntry) (*APIKey, bool, error) {
@@ -336,20 +346,23 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 		return nil
 	}
 	snapshot := &APIKeyAuthSnapshot{
-		Version:     apiKeyAuthSnapshotVersion,
-		APIKeyID:    apiKey.ID,
-		UserID:      apiKey.UserID,
-		GroupID:     apiKey.GroupID,
-		Name:        apiKey.Name,
-		Status:      apiKey.Status,
-		IPWhitelist: apiKey.IPWhitelist,
-		IPBlacklist: apiKey.IPBlacklist,
-		Quota:       apiKey.Quota,
-		QuotaUsed:   apiKey.QuotaUsed,
-		ExpiresAt:   apiKey.ExpiresAt,
-		RateLimit5h: apiKey.RateLimit5h,
-		RateLimit1d: apiKey.RateLimit1d,
-		RateLimit7d: apiKey.RateLimit7d,
+		Version:                   apiKeyAuthSnapshotVersion,
+		APIKeyID:                  apiKey.ID,
+		UserID:                    apiKey.UserID,
+		GroupID:                   apiKey.GroupID,
+		Name:                      apiKey.Name,
+		Status:                    apiKey.Status,
+		IPWhitelist:               apiKey.IPWhitelist,
+		IPBlacklist:               apiKey.IPBlacklist,
+		Quota:                     apiKey.Quota,
+		QuotaUsed:                 apiKey.QuotaUsed,
+		ExpiresAt:                 apiKey.ExpiresAt,
+		RateLimit5h:               apiKey.RateLimit5h,
+		RateLimit1d:               apiKey.RateLimit1d,
+		RateLimit7d:               apiKey.RateLimit7d,
+		AdaptiveRoutingPreference: apiKey.AdaptiveRoutingPreference,
+		AdaptiveMaxRateMultiplier: apiKey.AdaptiveMaxRateMultiplier,
+		AdaptiveLeafGroupIDs:      apiKey.AdaptiveLeafGroupIDs,
 		User: APIKeyAuthUserSnapshot{
 			ID:                                apiKey.User.ID,
 			Status:                            apiKey.User.Status,
@@ -375,8 +388,17 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 		if err == nil {
 			snapshot.User.UserGroupRPMOverride = override
 			snapshot.User.UserGroupRPMOverrideLoaded = true
+		} else {
+			// Mark the optional override as resolved even when the control-plane
+			// lookup is temporarily unavailable.  Leaving this bit false causes
+			// every request that hits the auth snapshot to repeat the same
+			// PostgreSQL query in BillingCacheService.checkRPM, turning a transient
+			// database error into a per-request retry storm.  The auth snapshot TTL
+			// and invalidation path provide a bounded retry window; during that
+			// window the existing group/user RPM limits remain enforced (fail-open
+			// only for the missing optional override, matching the old error path).
+			snapshot.User.UserGroupRPMOverrideLoaded = true
 		}
-		// 查询失败时留 false，checkRPM 会回退到 DB 查询。
 	}
 	if apiKey.Group != nil {
 		snapshot.Group = &APIKeyAuthGroupSnapshot{
@@ -442,20 +464,23 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 		return nil
 	}
 	apiKey := &APIKey{
-		ID:          snapshot.APIKeyID,
-		UserID:      snapshot.UserID,
-		GroupID:     snapshot.GroupID,
-		Key:         key,
-		Name:        snapshot.Name,
-		Status:      snapshot.Status,
-		IPWhitelist: snapshot.IPWhitelist,
-		IPBlacklist: snapshot.IPBlacklist,
-		Quota:       snapshot.Quota,
-		QuotaUsed:   snapshot.QuotaUsed,
-		ExpiresAt:   snapshot.ExpiresAt,
-		RateLimit5h: snapshot.RateLimit5h,
-		RateLimit1d: snapshot.RateLimit1d,
-		RateLimit7d: snapshot.RateLimit7d,
+		ID:                        snapshot.APIKeyID,
+		UserID:                    snapshot.UserID,
+		GroupID:                   snapshot.GroupID,
+		Key:                       key,
+		Name:                      snapshot.Name,
+		Status:                    snapshot.Status,
+		IPWhitelist:               snapshot.IPWhitelist,
+		IPBlacklist:               snapshot.IPBlacklist,
+		Quota:                     snapshot.Quota,
+		QuotaUsed:                 snapshot.QuotaUsed,
+		ExpiresAt:                 snapshot.ExpiresAt,
+		RateLimit5h:               snapshot.RateLimit5h,
+		RateLimit1d:               snapshot.RateLimit1d,
+		RateLimit7d:               snapshot.RateLimit7d,
+		AdaptiveRoutingPreference: snapshot.AdaptiveRoutingPreference,
+		AdaptiveMaxRateMultiplier: snapshot.AdaptiveMaxRateMultiplier,
+		AdaptiveLeafGroupIDs:      snapshot.AdaptiveLeafGroupIDs,
 		User: &User{
 			ID:                                snapshot.User.ID,
 			Status:                            snapshot.User.Status,

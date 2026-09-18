@@ -37,7 +37,7 @@ const (
 
 // DefaultCSPPolicy is the default Content-Security-Policy with nonce support
 // __CSP_NONCE__ will be replaced with actual nonce at request time by the SecurityHeaders middleware
-const DefaultCSPPolicy = "default-src 'self'; worker-src 'self' blob:; script-src 'self' __CSP_NONCE__ https://challenges.cloudflare.com https://*.alicdn.com https://static.cloudflareinsights.com https://turing.captcha.qcloud.com https://turing.captcha.gtimg.com https://ca.turing.captcha.qcloud.com https://global.turing.captcha.gtimg.com https://www.tycaptcha.com https://cloudcache.tencentcs.com https://*.stripe.com https://static.airwallex.com https://checkout.airwallex.com https://static-demo.airwallex.com https://checkout-demo.airwallex.com; style-src 'self' 'unsafe-inline' https://*.captcha.gtimg.com https://fonts.googleapis.com https://*.alicdn.com https://static.airwallex.com https://checkout.airwallex.com https://static-demo.airwallex.com https://checkout-demo.airwallex.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://turing.captcha.qcloud.com https://www.tycaptcha.com https://rce.tencentrio.com https:; frame-src 'self' https://challenges.cloudflare.com https://turing.captcha.qcloud.com https://ca.turing.captcha.qcloud.com https://www.tycaptcha.com https://*.stripe.com https://checkout.airwallex.com https://checkout-demo.airwallex.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+const DefaultCSPPolicy = "default-src 'self'; worker-src 'self' blob:; script-src 'self' __CSP_NONCE__ https://challenges.cloudflare.com https://*.alicdn.com https://static.cloudflareinsights.com https://turing.captcha.qcloud.com https://turing.captcha.gtimg.com https://ca.turing.captcha.qcloud.com https://global.turing.captcha.gtimg.com https://www.tycaptcha.com https://cloudcache.tencentcs.com https://*.stripe.com https://static.airwallex.com https://checkout.airwallex.com https://static-demo.airwallex.com https://checkout-demo.airwallex.com; style-src 'self' 'unsafe-inline' https://*.captcha.gtimg.com https://fonts.googleapis.com https://*.alicdn.com https://static.airwallex.com https://checkout.airwallex.com https://static-demo.airwallex.com https://checkout-demo.airwallex.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' data: blob: https://turing.captcha.qcloud.com https://www.tycaptcha.com https://rce.tencentrio.com https:; frame-src 'self' https://challenges.cloudflare.com https://turing.captcha.qcloud.com https://ca.turing.captcha.qcloud.com https://www.tycaptcha.com https://*.stripe.com https://checkout.airwallex.com https://checkout-demo.airwallex.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 
 // UMQ（用户消息队列）模式常量
 const (
@@ -77,6 +77,7 @@ type Config struct {
 	Security                SecurityConfig                `mapstructure:"security"`
 	Billing                 BillingConfig                 `mapstructure:"billing"`
 	Turnstile               TurnstileConfig               `mapstructure:"turnstile"`
+	Cloudflare              CloudflareConfig              `mapstructure:"cloudflare"`
 	Database                DatabaseConfig                `mapstructure:"database"`
 	Redis                   RedisConfig                   `mapstructure:"redis"`
 	Ops                     OpsConfig                     `mapstructure:"ops"`
@@ -958,6 +959,8 @@ type GatewayConfig struct {
 	// OpenAIResponseHeaderTimeout: OpenAI/Codex 上游等待响应头的超时时间（秒），0表示无超时
 	// OpenAI/Codex 请求可能在上游排队较久；默认不使用通用响应头超时截断。
 	OpenAIResponseHeaderTimeout int `mapstructure:"openai_response_header_timeout"`
+	// OpenAIFallbackResponseHeaderTimeout: 备用分组非最后一次尝试等待响应头的超时时间（秒）。
+	OpenAIFallbackResponseHeaderTimeout int `mapstructure:"openai_fallback_response_header_timeout"`
 	// GrokResponseHeaderTimeout bounds the pre-first-byte wait for xAI/Grok.
 	// A zero value uses the provider-safe default instead of the generic gateway timeout.
 	GrokResponseHeaderTimeout int `mapstructure:"grok_response_header_timeout"`
@@ -1106,6 +1109,10 @@ type GatewayConfig struct {
 	UserGroupRateCacheTTLSeconds int `mapstructure:"user_group_rate_cache_ttl_seconds"`
 	// ModelsListCacheTTLSeconds: /v1/models 模型列表短缓存 TTL（秒）
 	ModelsListCacheTTLSeconds int `mapstructure:"models_list_cache_ttl_seconds"`
+
+	// AdaptiveRoutingEnabled turns on Adaptive parent-group leaf planning for
+	// keys whose primary group is an Adaptive pool.
+	AdaptiveRoutingEnabled bool `mapstructure:"adaptive_routing_enabled"`
 
 	// UserMessageQueue: 用户消息串行队列配置
 	// 对 role:"user" 的真实用户消息实施账号级串行化 + RPM 自适应延迟
@@ -1495,6 +1502,12 @@ type GatewaySchedulingConfig struct {
 
 	// 受控回源配置
 	DbFallbackEnabled bool `mapstructure:"db_fallback_enabled"`
+	// RequestFreshnessEnabled enables the legacy per-request PostgreSQL
+	// freshness projection. The normal scheduler path receives durable state
+	// through the outbox-backed snapshot; keeping this disabled makes the
+	// request hot path database-free. Enable only as an emergency compatibility
+	// switch while diagnosing snapshot propagation.
+	RequestFreshnessEnabled bool `mapstructure:"request_freshness_enabled"`
 	// 受控回源超时（秒），0 表示不额外收紧超时
 	DbFallbackTimeoutSeconds int `mapstructure:"db_fallback_timeout_seconds"`
 	// 受控回源限流（实例级 QPS），0 表示不限制
@@ -1676,6 +1689,13 @@ type TotpConfig struct {
 
 type TurnstileConfig struct {
 	Required bool `mapstructure:"required"`
+}
+
+// CloudflareConfig holds credentials for user IP allowlisting via IP Access Rules.
+type CloudflareConfig struct {
+	APIToken  string `mapstructure:"api_token"`
+	ZoneID    string `mapstructure:"zone_id"`
+	AccountID string `mapstructure:"account_id"`
 }
 
 type DefaultConfig struct {
@@ -2112,6 +2132,9 @@ func setDefaults() {
 
 	// Turnstile
 	viper.SetDefault("turnstile.required", false)
+	viper.SetDefault("cloudflare.api_token", "")
+	viper.SetDefault("cloudflare.zone_id", "")
+	viper.SetDefault("cloudflare.account_id", "")
 
 	// LinuxDo Connect OAuth 登录
 	viper.SetDefault("linuxdo_connect.enabled", false)
@@ -2283,7 +2306,7 @@ func setDefaults() {
 	viper.SetDefault("ops.cleanup.enabled", true)
 	viper.SetDefault("ops.cleanup.schedule", "0 2 * * *")
 	// Retention days: vNext defaults to 30 days across ops datasets.
-	viper.SetDefault("ops.cleanup.error_log_retention_days", 30)
+	viper.SetDefault("ops.cleanup.error_log_retention_days", 1)
 	viper.SetDefault("ops.cleanup.minute_metrics_retention_days", 30)
 	viper.SetDefault("ops.cleanup.hourly_metrics_retention_days", 30)
 	viper.SetDefault("ops.aggregation.enabled", true)
@@ -2535,6 +2558,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.snapshot_write_chunk_size", 256)
 	viper.SetDefault("gateway.scheduling.slot_cleanup_interval", 30*time.Second)
 	viper.SetDefault("gateway.scheduling.db_fallback_enabled", true)
+	// Scheduler snapshots are the source of truth on the request hot path.
+	// The old per-request freshness SQL projection is opt-in for emergency
+	// rollback only; default false is required for the 0-DB invariant.
+	viper.SetDefault("gateway.scheduling.request_freshness_enabled", false)
 	viper.SetDefault("gateway.scheduling.db_fallback_timeout_seconds", 0)
 	viper.SetDefault("gateway.scheduling.db_fallback_max_qps", 0)
 	viper.SetDefault("gateway.scheduling.outbox_poll_interval_seconds", 1)

@@ -250,7 +250,7 @@ func TestRefreshIfNeeded_LockHeld(t *testing.T) {
 	require.Equal(t, 0, executor.refreshCalls)
 }
 
-func TestRefreshIfNeeded_LockErrorDegrades(t *testing.T) {
+func TestRefreshIfNeeded_LockErrorFailsClosed(t *testing.T) {
 	account := &Account{ID: 3, Platform: PlatformGemini, Type: AccountTypeOAuth, Status: StatusActive}
 	repo := &refreshAPIAccountRepo{account: account}
 	cache := &refreshAPICacheStub{lockErr: errors.New("redis down")} // lock error
@@ -262,11 +262,11 @@ func TestRefreshIfNeeded_LockErrorDegrades(t *testing.T) {
 	api := NewOAuthRefreshAPI(repo, cache)
 	result, err := api.RefreshIfNeeded(context.Background(), account, executor, 3*time.Minute)
 
-	require.NoError(t, err)
-	require.True(t, result.Refreshed)       // still refreshed (degraded mode)
-	require.Equal(t, 1, repo.updateCalls)   // DB updated
-	require.Equal(t, 0, cache.releaseCalls) // no lock to release
-	require.Equal(t, 1, executor.refreshCalls)
+	require.ErrorIs(t, err, errOAuthRefreshLockUnavailable)
+	require.Nil(t, result)
+	require.Equal(t, 0, repo.updateCalls)
+	require.Equal(t, 0, cache.releaseCalls)
+	require.Equal(t, 0, executor.refreshCalls)
 }
 
 func TestRefreshIfNeeded_NoCacheNoLock(t *testing.T) {

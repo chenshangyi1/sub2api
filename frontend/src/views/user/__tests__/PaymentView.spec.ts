@@ -382,6 +382,222 @@ describe('PaymentView subscription confirmation amounts', () => {
   })
 })
 
+describe('PaymentView native recharge methods', () => {
+  async function mountRecharge(overrides: Partial<CheckoutInfoResponse> = {}) {
+    vi.useRealTimers()
+    routeState.path = '/purchase'
+    routeState.query = {}
+    routerReplace.mockReset().mockResolvedValue(undefined)
+    routerPush.mockReset().mockResolvedValue(undefined)
+    getCheckoutInfo.mockReset().mockResolvedValue(checkoutInfoFixture({
+      methods: {
+        alipay: {
+          daily_limit: 0,
+          daily_used: 0,
+          daily_remaining: 0,
+          single_min: 0,
+          single_max: 0,
+          fee_rate: 0,
+          available: true,
+        },
+        wxpay: {
+          daily_limit: 0,
+          daily_used: 0,
+          daily_remaining: 0,
+          single_min: 0,
+          single_max: 0,
+          fee_rate: 0,
+          available: true,
+        },
+        epusdt: {
+          daily_limit: 0,
+          daily_used: 0,
+          daily_remaining: 0,
+          single_min: 10,
+          single_max: 0,
+          fee_rate: 0,
+          available: true,
+        },
+      },
+      ...overrides,
+    }))
+
+    const wrapper = shallowMount(PaymentView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          AmountInput: { template: '<div data-test="amount-input" />' },
+          PaymentMethodSelector: {
+            props: ['methods', 'selected', 'label'],
+            template: '<div><div data-test="method-label">{{ label || "" }}</div><div data-test="method-selector">{{ methods.map((m) => m.type).join(",") }}</div></div>',
+          },
+          Teleport: true,
+          Transition: false,
+        },
+      },
+    })
+    await flushPromises()
+    await flushPromises()
+    return wrapper
+  }
+
+  it('keeps native Alipay and WeChat together on one recharge-center screen without an iframe', async () => {
+    const wrapper = await mountRecharge()
+
+    expect(wrapper.find('[data-test="method-selector"]').text()).toBe('epusdt')
+    expect(wrapper.text()).toContain('payment.tabRechargeCenter')
+    expect(wrapper.text()).not.toContain('payment.tabAlipayRechargeCenter')
+    expect(wrapper.text()).not.toContain('payment.tabWxpayRechargeCenter')
+    expect(wrapper.find('iframe').exists()).toBe(false)
+
+    const centerTab = wrapper.findAll('button').find(button => button.text() === 'payment.tabRechargeCenter')
+    expect(centerTab).toBeTruthy()
+    await centerTab!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="amount-input"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="method-selector"]').text()).toBe('alipay,wxpay')
+    expect(wrapper.find('iframe').exists()).toBe(false)
+  })
+
+  it('shows native WeChat on the shared recharge-center screen when Alipay is not enabled', async () => {
+    const wrapper = await mountRecharge({
+      methods: {
+        wxpay: {
+          daily_limit: 0,
+          daily_used: 0,
+          daily_remaining: 0,
+          single_min: 0,
+          single_max: 0,
+          fee_rate: 0,
+          available: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('payment.tabRechargeCenter')
+    expect(wrapper.text()).not.toContain('payment.tabAlipayRechargeCenter')
+    expect(wrapper.text()).not.toContain('payment.tabWxpayRechargeCenter')
+    expect(wrapper.find('iframe').exists()).toBe(false)
+
+    const centerTab = wrapper.findAll('button').find(button => button.text() === 'payment.tabRechargeCenter')
+    expect(centerTab).toBeTruthy()
+    await centerTab!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="amount-input"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="method-selector"]').text()).toBe('wxpay')
+  })
+
+  it('shows EPUSDT networks as chain buttons on the native recharge tab', async () => {
+    const wrapper = await mountRecharge({
+      methods: {
+        alipay: {
+          daily_limit: 0,
+          daily_used: 0,
+          daily_remaining: 0,
+          single_min: 0,
+          single_max: 0,
+          fee_rate: 0,
+          available: true,
+        },
+        epusdt_bsc: {
+          daily_limit: 0,
+          daily_used: 0,
+          daily_remaining: 0,
+          single_min: 10,
+          single_max: 0,
+          fee_rate: 0,
+          available: true,
+          display_name: 'BNB Smart Chain / BSC (BEP20)',
+        },
+        epusdt_trc20: {
+          daily_limit: 0,
+          daily_used: 0,
+          daily_remaining: 0,
+          single_min: 10,
+          single_max: 0,
+          fee_rate: 0,
+          available: true,
+          display_name: 'TRON (TRC20)',
+        },
+        epusdt_polygon: {
+          daily_limit: 0,
+          daily_used: 0,
+          daily_remaining: 0,
+          single_min: 10,
+          single_max: 0,
+          fee_rate: 0,
+          available: true,
+          display_name: 'Polygon (PoS)',
+        },
+        epusdt_erc20: {
+          daily_limit: 0,
+          daily_used: 0,
+          daily_remaining: 0,
+          single_min: 10,
+          single_max: 0,
+          fee_rate: 0,
+          available: true,
+          display_name: 'Ethereum (ERC20)',
+        },
+      },
+    })
+
+    expect(wrapper.find('[data-test="method-selector"]').text()).toBe(
+      'epusdt_bsc,epusdt_polygon,epusdt_trc20,epusdt_erc20',
+    )
+    expect(wrapper.find('[data-test="method-label"]').text()).toBe('payment.paymentNetwork')
+    expect(wrapper.text()).toContain('payment.cryptoNetworkWarning')
+    expect(wrapper.text()).toContain('payment.tabRechargeCenter')
+    expect(wrapper.find('iframe').exists()).toBe(false)
+  })
+
+  it('uses the selected method recharge fee instead of the global checkout fee', async () => {
+    const wrapper = await mountRecharge({
+      recharge_fee_rate: 1,
+      methods: {
+        epusdt_bsc: {
+          daily_limit: 0,
+          daily_used: 0,
+          daily_remaining: 0,
+          single_min: 10,
+          single_max: 0,
+          fee_rate: 0,
+          available: true,
+          recharge_fee_rate: 5,
+        },
+        epusdt_trc20: {
+          daily_limit: 0,
+          daily_used: 0,
+          daily_remaining: 0,
+          single_min: 10,
+          single_max: 0,
+          fee_rate: 0,
+          available: true,
+        },
+      },
+    })
+    const vm = wrapper.vm as unknown as {
+      amount: number | null
+      selectedMethod: string
+    }
+    vm.amount = 100
+    vm.selectedMethod = 'epusdt_bsc'
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('(5%)')
+    expect(wrapper.text()).toContain('5.00')
+    expect(wrapper.text()).toContain('105.00')
+
+    vm.selectedMethod = 'epusdt_trc20'
+    await flushPromises()
+    expect(wrapper.text()).toContain('(1%)')
+    expect(wrapper.text()).toContain('1.00')
+    expect(wrapper.text()).toContain('101.00')
+  })
+})
+
 describe('PaymentView payment recovery', () => {
   beforeEach(() => {
     vi.useRealTimers()

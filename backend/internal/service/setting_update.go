@@ -126,6 +126,9 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	if err := s.normalizeOpenAIAdvancedSchedulerOverrides(settings); err != nil {
 		return nil, err
 	}
+	if settings.AdaptiveServiceFeePercent < 0 || settings.AdaptiveServiceFeePercent > 100 || math.IsNaN(settings.AdaptiveServiceFeePercent) || math.IsInf(settings.AdaptiveServiceFeePercent, 0) {
+		return nil, infraerrors.BadRequest("INVALID_ADAPTIVE_SERVICE_FEE_PERCENT", "adaptive service fee percent must be between 0 and 100")
+	}
 	settings.PaymentVisibleMethodAlipaySource = alipaySource
 	settings.PaymentVisibleMethodWxpaySource = wxpaySource
 	settings.WeChatConnectAppID = strings.TrimSpace(settings.WeChatConnectAppID)
@@ -491,6 +494,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingPaymentVisibleMethodWxpayEnabled] = strconv.FormatBool(settings.PaymentVisibleMethodWxpayEnabled)
 	updates[SettingKeyOpenAILowUpstreamRatePriorityEnabled] = strconv.FormatBool(settings.OpenAILowUpstreamRatePriorityEnabled)
 	updates[SettingKeyOpenAIOAuthSchedulingRateMultiplier] = strconv.FormatFloat(settings.OpenAIOAuthSchedulingRateMultiplier, 'f', -1, 64)
+	updates[SettingKeyAdaptiveServiceFeePercent] = strconv.FormatFloat(settings.AdaptiveServiceFeePercent, 'f', 8, 64)
 	updates[SettingKeyCodexQuotaOverdraftEnabled] = strconv.FormatBool(settings.CodexQuotaOverdraftEnabled)
 	updates[SettingKeyCodexQuotaOverdraftBusinessInjectionEnabled] = strconv.FormatBool(settings.CodexQuotaOverdraftBusinessInjectionEnabled)
 	updates[openAIAdvancedSchedulerSettingKey] = strconv.FormatBool(settings.OpenAIAdvancedSchedulerEnabled)
@@ -702,6 +706,12 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		value:     settings.BackendModeEnabled,
 		expiresAt: time.Now().Add(backendModeCacheTTL).UnixNano(),
 	})
+	s.ungroupedKeySchedulingSF.Forget(SettingKeyAllowUngroupedKeyScheduling)
+	s.ungroupedKeySchedulingCache.Store(&cachedUngroupedKeyScheduling{
+		allowed:   settings.AllowUngroupedKeyScheduling,
+		expiresAt: time.Now().Add(hotSettingCacheTTL).UnixNano(),
+	})
+	s.publishGrokDefaultBaseURLMode(settings.GrokDefaultBaseURLMode)
 	gatewayForwardingSF.Forget("gateway_forwarding")
 	gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
 		fingerprintUnification:           settings.EnableFingerprintUnification,

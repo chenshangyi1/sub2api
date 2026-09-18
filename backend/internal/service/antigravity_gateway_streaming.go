@@ -141,7 +141,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 		maxLineSize = s.settingService.cfg.Gateway.MaxLineSize
 	}
 	scanBuf := getSSEScannerBuf64K()
-	scanner.Buffer(scanBuf[:0], maxLineSize)
+	attachSSEScannerBuffer(scanner, scanBuf[:], maxLineSize)
 	usage := &ClaudeUsage{}
 	var firstTokenMs *int
 
@@ -331,7 +331,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 		maxLineSize = s.settingService.cfg.Gateway.MaxLineSize
 	}
 	scanBuf := getSSEScannerBuf64K()
-	scanner.Buffer(scanBuf[:0], maxLineSize)
+	attachSSEScannerBuffer(scanner, scanBuf[:], maxLineSize)
 
 	usage := &ClaudeUsage{}
 	var firstTokenMs *int
@@ -486,11 +486,11 @@ returnResponse:
 	// 处理空响应情况 — 触发同账号重试 + failover 切换账号
 	if last == nil && lastWithParts == nil {
 		logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Forward] warning: empty stream response (gemini non-stream), triggering failover")
-		return nil, &UpstreamFailoverError{
-			StatusCode:             http.StatusBadGateway,
-			ResponseBody:           []byte(`{"error":"empty stream response from upstream"}`),
-			RetryableOnSameAccount: true,
-		}
+		return nil, geminiEmptyResponseFailoverError(false, nil)
+	}
+	if encoded, err := json.Marshal(finalResponse); err == nil && isGeminiEmptyResponseBody(encoded) {
+		logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Forward] warning: empty gemini candidates (non-stream), triggering failover")
+		return nil, geminiEmptyResponseFailoverError(false, encoded)
 	}
 
 	// 如果收集到了图片 parts，需要合并到最终响应中
@@ -803,7 +803,7 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 		maxLineSize = s.settingService.cfg.Gateway.MaxLineSize
 	}
 	scanBuf := getSSEScannerBuf64K()
-	scanner.Buffer(scanBuf[:0], maxLineSize)
+	attachSSEScannerBuffer(scanner, scanBuf[:], maxLineSize)
 
 	var firstTokenMs *int
 	var last map[string]any
@@ -1022,7 +1022,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 		maxLineSize = s.settingService.cfg.Gateway.MaxLineSize
 	}
 	scanBuf := getSSEScannerBuf64K()
-	scanner.Buffer(scanBuf[:0], maxLineSize)
+	attachSSEScannerBuffer(scanner, scanBuf[:], maxLineSize)
 
 	// 辅助函数：转换 antigravity.ClaudeUsage 到 service.ClaudeUsage
 	convertUsage := func(agUsage *antigravity.ClaudeUsage) *ClaudeUsage {

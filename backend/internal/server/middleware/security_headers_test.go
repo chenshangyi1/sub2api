@@ -151,6 +151,43 @@ func TestSecurityHeaders(t *testing.T) {
 		assert.Equal(t, "DENY", w.Header().Get("X-Frame-Options"))
 	})
 
+	t.Run("infinite_canvas_app_allows_same_origin_iframe", func(t *testing.T) {
+		cfg := config.CSPConfig{
+			Enabled: true,
+			Policy:  config.DefaultCSPPolicy,
+		}
+		middleware := SecurityHeaders(cfg, nil)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/canvas/", nil)
+
+		middleware(c)
+
+		assert.Equal(t, "SAMEORIGIN", w.Header().Get("X-Frame-Options"))
+		csp := w.Header().Get("Content-Security-Policy")
+		assert.Equal(t, 1, countDirectiveValue(csp, "frame-ancestors", "'self'"))
+		assert.Equal(t, 0, countDirectiveValue(csp, "frame-ancestors", "'none'"))
+	})
+
+	t.Run("home_still_denies_framing", func(t *testing.T) {
+		cfg := config.CSPConfig{
+			Enabled: true,
+			Policy:  config.DefaultCSPPolicy,
+		}
+		middleware := SecurityHeaders(cfg, nil)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+		middleware(c)
+
+		assert.Equal(t, "DENY", w.Header().Get("X-Frame-Options"))
+		csp := w.Header().Get("Content-Security-Policy")
+		assert.Equal(t, 1, countDirectiveValue(csp, "frame-ancestors", "'none'"))
+	})
+
 	t.Run("api_route_skips_csp_nonce_generation", func(t *testing.T) {
 		cfg := config.CSPConfig{
 			Enabled: true,

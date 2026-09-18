@@ -1077,6 +1077,31 @@ func TestOpenAISelectAccountForModelWithExclusions_NoModelSupport(t *testing.T) 
 	}
 }
 
+func TestOpenAISelectAccountForModelWithExclusions_PrefersMappedAccount(t *testing.T) {
+	repo := stubOpenAIAccountRepo{accounts: []Account{
+		{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 0},
+		{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 100,
+			Credentials: map[string]any{"model_mapping": map[string]any{"gemini-3.8-flash": "gemini-3.8-flash"}}},
+	}}
+
+	svc := &OpenAIGatewayService{accountRepo: repo, cache: &stubGatewayCache{}}
+	account, err := svc.SelectAccountForModelWithExclusions(context.Background(), nil, "", "gemini-3.8-flash", nil)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), account.ID)
+}
+
+func TestOpenAISelectAccountForModelWithExclusions_UsesEmptyMappingAsFallback(t *testing.T) {
+	repo := stubOpenAIAccountRepo{accounts: []Account{{
+		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true,
+		Credentials: map[string]any{},
+	}}}
+
+	svc := &OpenAIGatewayService{accountRepo: repo, cache: &stubGatewayCache{}}
+	account, err := svc.SelectAccountForModelWithExclusions(context.Background(), nil, "", "gemini-3.8-flash", nil)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), account.ID)
+}
+
 func TestOpenAISelectAccountWithLoadAwareness_LoadBatchErrorFallback(t *testing.T) {
 	groupID := int64(1)
 	repo := stubOpenAIAccountRepo{
@@ -1766,9 +1791,10 @@ func TestOpenAIStreamingResponseFailedBeforeOutputReturnsFailover(t *testing.T) 
 	require.ErrorAs(t, err, &failoverErr)
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 	require.False(t, failoverErr.RetryableOnSameAccount)
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
 	require.Contains(t, string(failoverErr.ResponseBody), "An error occurred while processing your request")
-	require.False(t, c.Writer.Written())
-	require.Empty(t, rec.Body.String())
+	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
+	require.NotContains(t, rec.Body.String(), "response.failed")
 }
 
 func TestOpenAIStreamingResponseFailedBeforeOutputCapacityErrorReturnsFailover(t *testing.T) {
@@ -1817,9 +1843,10 @@ func TestOpenAIStreamingResponseFailedBeforeOutputCapacityErrorReturnsFailover(t
 	require.ErrorAs(t, err, &failoverErr)
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 	require.True(t, failoverErr.RetryableOnSameAccount)
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
 	require.Contains(t, string(failoverErr.ResponseBody), "Selected model is at capacity")
-	require.False(t, c.Writer.Written())
-	require.Empty(t, rec.Body.String())
+	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
+	require.NotContains(t, rec.Body.String(), "response.failed")
 }
 
 func TestOpenAIStreamingResponseFailedBeforeOutputServerOverloadedCodeReturnsFailover(t *testing.T) {
@@ -1860,8 +1887,9 @@ func TestOpenAIStreamingResponseFailedBeforeOutputServerOverloadedCodeReturnsFai
 	// 否则单个被降载的请求会把整池账号逐个消耗掉，而降载因素在每个账号上都相同。
 	require.True(t, failoverErr.RetryableOnSameAccount)
 	require.True(t, failoverErr.RequestScopedTransient)
-	require.False(t, c.Writer.Written())
-	require.Empty(t, rec.Body.String())
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
+	require.NotContains(t, rec.Body.String(), "response.failed")
 }
 
 func TestOpenAIStreamingResponseFailedBeforeOutputRateLimitUsesPoolRetryPolicy(t *testing.T) {
@@ -1915,8 +1943,9 @@ func TestOpenAIStreamingResponseFailedBeforeOutputRateLimitUsesPoolRetryPolicy(t
 	require.Equal(t, "1", failoverErr.ResponseHeaders.Get("Retry-After"))
 	require.Equal(t, "rate_limit_error", gjson.GetBytes(failoverErr.ResponseBody, "error.type").String())
 	require.Contains(t, string(failoverErr.ResponseBody), "Concurrency limit exceeded")
-	require.False(t, c.Writer.Written())
-	require.Empty(t, rec.Body.String())
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
+	require.NotContains(t, rec.Body.String(), "response.failed")
 
 	opsVal, ok := c.Get(OpsUpstreamErrorsKey)
 	require.True(t, ok)
@@ -2105,11 +2134,13 @@ func TestOpenAIStreamingContextWindowResponseFailedBeforeOutputAppliesPassthroug
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr))
 	require.True(t, IsResponseCommitted(c))
-	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, http.StatusOK, rec.Code)
 	body := rec.Body.String()
-	require.Equal(t, "upstream_error", gjson.Get(body, "error.type").String())
-	require.Equal(t, upstreamMessage, gjson.Get(body, "error.message").String())
-	require.NotContains(t, body, "response.failed")
+	require.Contains(t, body, `"type":"response.created"`)
+	require.Contains(t, body, "response.failed")
+	require.Contains(t, body, "context_length_exceeded")
+	require.Contains(t, body, upstreamMessage)
+	require.NotContains(t, body, "You are GPT-5.1 running in the Codex CLI")
 	require.NotContains(t, body, "Upstream request failed")
 	// 命中透传规则也应记录 ops 上游错误事件（对齐 CC/Messages 与 antigravity 先例）。
 	opsVal, opsRecorded := c.Get(OpsUpstreamErrorsKey)
@@ -2150,8 +2181,10 @@ func TestOpenAIStreamingPreambleOnlyMissingTerminalReturnsFailover(t *testing.T)
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
-	require.False(t, c.Writer.Written())
-	require.Empty(t, rec.Body.String())
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
+	require.Contains(t, rec.Body.String(), `"type":"response.in_progress"`)
+	require.NotContains(t, rec.Body.String(), `"type":"response.completed"`)
 }
 
 func TestOpenAIStreamingPreambleKeepaliveUsesDownstreamIdle(t *testing.T) {
@@ -2187,7 +2220,9 @@ func TestOpenAIStreamingPreambleKeepaliveUsesDownstreamIdle(t *testing.T) {
 		_, _ = pw.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"))
 		time.Sleep(50 * time.Millisecond)
 		_, _ = pw.Write([]byte("data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_1\"}}\n\n"))
-		time.Sleep(1300 * time.Millisecond)
+		// Preamble now flushes immediately, which resets downstream idle.
+		// Wait past two keepalive ticks so ":\n\n" is still observable.
+		time.Sleep(2200 * time.Millisecond)
 		_, _ = pw.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n"))
 	}()
 
@@ -2494,9 +2529,10 @@ func TestOpenAIStreamingPassthroughResponseFailedBeforeOutputReturnsFailover(t *
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
 	require.Contains(t, string(failoverErr.ResponseBody), "upstream processing failed")
-	require.False(t, c.Writer.Written())
-	require.Empty(t, rec.Body.String())
+	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
+	require.NotContains(t, rec.Body.String(), "response.failed")
 }
 
 func TestOpenAIStreamingPassthroughContextWindowResponseFailedBeforeOutputAppliesPassthroughRule(t *testing.T) {
@@ -2538,11 +2574,13 @@ func TestOpenAIStreamingPassthroughContextWindowResponseFailedBeforeOutputApplie
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr))
 	require.True(t, IsResponseCommitted(c))
-	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, http.StatusOK, rec.Code)
 	body := rec.Body.String()
-	require.Equal(t, "upstream_error", gjson.Get(body, "error.type").String())
-	require.Equal(t, upstreamMessage, gjson.Get(body, "error.message").String())
-	require.NotContains(t, body, "response.failed")
+	require.Contains(t, body, `"type":"response.created"`)
+	require.Contains(t, body, "response.failed")
+	require.Contains(t, body, "context_length_exceeded")
+	require.Contains(t, body, upstreamMessage)
+	require.NotContains(t, body, "You are GPT-5.1 running in the Codex CLI")
 	require.NotContains(t, body, "Upstream request failed")
 	// 命中透传规则也应记录 ops 上游错误事件（对齐 CC/Messages 与 antigravity 先例）。
 	opsVal, opsRecorded := c.Get(OpsUpstreamErrorsKey)
@@ -3691,6 +3729,225 @@ func TestHandleNonStreamingResponse_APIKeyFallsBackToSSEBodyWhenContentTypeIsWro
 	require.NotContains(t, rec.Body.String(), "data:")
 	require.Equal(t, "resp_api_key_sse", gjson.Get(rec.Body.String(), "id").String())
 	require.Equal(t, "hello", gjson.Get(rec.Body.String(), "output.0.content.0.text").String())
+}
+
+type nonStreamingOpenAIAccountStateRepo struct {
+	openAIAuthPolicyAccountRepo
+	rateLimitCalls, modelRateLimitCalls, overloadCalls int
+}
+
+func (r *nonStreamingOpenAIAccountStateRepo) SetRateLimited(context.Context, int64, time.Time) error {
+	r.rateLimitCalls++
+	return nil
+}
+
+func (r *nonStreamingOpenAIAccountStateRepo) SetModelRateLimit(context.Context, int64, string, time.Time, ...string) error {
+	r.modelRateLimitCalls++
+	return nil
+}
+
+func (r *nonStreamingOpenAIAccountStateRepo) SetOverloaded(context.Context, int64, time.Time) error {
+	r.overloadCalls++
+	return nil
+}
+
+func TestHandleNonStreamingResponse_InvalidJSONFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name, contentType, body string
+		poolMode                bool
+	}{
+		{"plain_text", "text/plain; charset=utf-8", "Hi! What can I help you with?\n", false},
+		{"plain_text_pool", "text/plain; charset=utf-8", "Hi! What can I help you with?\n", true},
+		{"wrong_json_header", "application/json", "Hi! What can I help you with?\n", false},
+		{"html", "text/html", "<html>upstream unavailable</html>", false},
+		{"truncated_json", "application/json", `{"usage":{"input_tokens":7`, false},
+		{"empty", "application/json", "", false},
+		{"untrusted_auth_text", "text/plain", "invalid_api_key account_deactivated quota_exceeded", false},
+		{"truncated_auth_error", "application/json", `{"error":{"type":"authentication_error","code":"invalid_api_key"}} trailing`, false},
+		{"truncated_rate_limit", "application/json", `{"error":{"type":"rate_limit_error","status_code":429}} trailing`, false},
+		{"valid_json_missing_usage", "application/json", `{"id":"resp_no_usage","output":[]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.Header().Set("X-Request-Id", "invalid-json-request")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer upstream.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream.URL+"/v1/responses", strings.NewReader(`{"model":"gpt-5.6-sol","stream":false,"input":"Reply with exactly OK."}`))
+			require.NoError(t, err)
+			resp, err := upstream.Client().Do(req)
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+			repo := &nonStreamingOpenAIAccountStateRepo{}
+			rateLimit := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, rateLimitService: rateLimit}
+			account := &Account{ID: 29157, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"pool_mode": tc.poolMode}}
+
+			result, err := svc.handleNonStreamingResponse(ctx, resp, c, account, "gpt-5.6-sol", "gpt-5.6-sol")
+			require.Nil(t, result, "invalid responses must not create successful usage")
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+			require.True(t, failoverErr.ShouldRetryNextAccount())
+			require.True(t, failoverErr.RequestScopedTransient)
+			require.Equal(t, GatewayFailureScopeRequest, failoverErr.Scope)
+			require.Equal(t, account.IsPoolMode() && account.IsPoolModeRetryableStatus(http.StatusBadGateway), failoverErr.RetryableOnSameAccount)
+			require.False(t, failoverErr.IsCredentialFailure())
+			require.False(t, failoverErr.SafeToFailoverAfterWrite)
+			require.Equal(t, "invalid-json-request", failoverErr.ResponseHeaders.Get("X-Request-Id"))
+			require.Equal(t, tc.contentType, failoverErr.ResponseHeaders.Get("Content-Type"))
+			require.Equal(t, "parse response: invalid json response", gjson.GetBytes(failoverErr.ResponseBody, "error.message").String())
+			require.False(t, IsResponseCommitted(c))
+			require.False(t, c.Writer.Written())
+			require.Empty(t, rec.Body.String())
+			_, _, accountHealthFailure := classifyOpenAIAPIKeyHealthFailure(failoverErr)
+			require.False(t, accountHealthFailure)
+			(&GatewayService{accountRepo: repo, rateLimitService: rateLimit}).TempUnscheduleRetryableError(ctx, account.ID, failoverErr)
+			require.Zero(t, repo.setErrorCalls)
+			require.Zero(t, repo.tempCalls)
+			require.Zero(t, repo.rateLimitCalls)
+			require.Zero(t, repo.modelRateLimitCalls)
+			require.Zero(t, repo.overloadCalls)
+
+			// Reuse the untouched client writer for a different account's response.
+			next := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+				Body: io.NopCloser(strings.NewReader(`{"id":"resp_recovered","status":"completed","output":[],"usage":{"input_tokens":7,"output_tokens":3}}`))}
+			result, err = svc.handleNonStreamingResponse(ctx, next, c, &Account{ID: 29158, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, "gpt-5.6-sol", "gpt-5.6-sol")
+			require.NoError(t, err)
+			require.Equal(t, 7, result.InputTokens)
+			require.Equal(t, 3, result.OutputTokens)
+			require.Equal(t, "resp_recovered", gjson.Get(rec.Body.String(), "id").String())
+		})
+	}
+}
+
+func TestHandleNonStreamingResponse_InvalidJSONFailoverBoundaries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name, body          string
+		status              int
+		committed, canceled bool
+	}{
+		{name: "already_committed", body: "plain text", status: http.StatusOK, committed: true},
+		{name: "canceled_after_read", body: "plain text", status: http.StatusOK, canceled: true},
+		{name: "non_2xx", body: "plain text", status: http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.canceled {
+				cancel()
+			}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+			if tc.committed {
+				MarkResponseCommitted(c)
+				c.Data(http.StatusBadGateway, "application/json", []byte(`{"error":"already sent"}`))
+			}
+			before := rec.Body.String()
+			resp := &http.Response{StatusCode: tc.status, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(tc.body))}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}}
+			result, err := svc.handleNonStreamingResponse(ctx, resp, c, &Account{ID: 29157, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, "gpt-5.6-sol", "gpt-5.6-sol")
+			require.Nil(t, result)
+			require.Error(t, err)
+			var failoverErr *UpstreamFailoverError
+			require.False(t, errors.As(err, &failoverErr))
+			if tc.canceled {
+				require.ErrorIs(t, err, context.Canceled)
+			}
+			require.Equal(t, before, rec.Body.String())
+		})
+	}
+}
+
+func TestHandleNonStreamingResponse_JSONBodyWithSSEContentTypeKeepsUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream; charset=utf-8"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_json_wrong_sse","object":"response","status":"completed","output":[],"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}`)),
+	}
+
+	result, err := svc.handleNonStreamingResponse(context.Background(), resp, c, &Account{ID: 1, Type: AccountTypeAPIKey}, "gpt-5.6-sol", "gpt-5.6-sol")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 7, result.InputTokens)
+	require.Equal(t, 3, result.OutputTokens)
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	require.Equal(t, "resp_json_wrong_sse", gjson.Get(rec.Body.String(), "id").String())
+}
+
+func TestHandleNonStreamingResponse_SSEConversionWritesJSONContentType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_sse_json\",\"object\":\"response\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"total_tokens\":10}}}\n\ndata: [DONE]\n\n")),
+	}
+	result, err := svc.handleNonStreamingResponse(context.Background(), resp, c, &Account{ID: 1, Type: AccountTypeAPIKey}, "gpt-5.6-sol", "gpt-5.6-sol")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 7, result.InputTokens)
+	require.Equal(t, 3, result.OutputTokens)
+	require.Equal(t, "application/json; charset=utf-8", rec.Header().Get("Content-Type"))
+	require.Equal(t, "resp_sse_json", gjson.Get(rec.Body.String(), "id").String())
+}
+
+type contextBoundResponseBody struct {
+	ctx context.Context
+}
+
+func (b contextBoundResponseBody) Read([]byte) (int, error) {
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+func (contextBoundResponseBody) Close() error { return nil }
+
+func TestHandleNonStreamingResponse_CanceledBodyReadReturnsPromptly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	ctx, cancel := context.WithCancel(context.Background())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       contextBoundResponseBody{ctx: ctx},
+	}
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := svc.handleNonStreamingResponse(ctx, resp, c, &Account{ID: 1, Type: AccountTypeAPIKey}, "gpt-5.6-sol", "gpt-5.6-sol")
+		resultCh <- err
+	}()
+	cancel()
+
+	select {
+	case err := <-resultCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("canceled non-streaming body read did not return")
+	}
 }
 
 func TestHandleNonStreamingResponse_OAuthJSONBodyWithDataEventTextKeepsJSONUsage(t *testing.T) {

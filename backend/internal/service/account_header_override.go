@@ -77,8 +77,11 @@ func (a *Account) IsHeaderOverrideEligible() bool {
 	if a == nil {
 		return false
 	}
+	if a.IsCNProvider() || a.IsVideoProvider() {
+		return a.Type == AccountTypeAPIKey
+	}
 	switch a.Platform {
-	case PlatformAnthropic, PlatformOpenAI, PlatformKimi, PlatformZhipu, PlatformDeepseek:
+	case PlatformAnthropic, PlatformOpenAI:
 		return a.Type == AccountTypeAPIKey
 	case PlatformGrok:
 		return a.Type == AccountTypeAPIKey || a.Type == AccountTypeOAuth

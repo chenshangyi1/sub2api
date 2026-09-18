@@ -87,7 +87,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		h.chatCompletionsErrorResponse(c, http.StatusBadRequest, "invalid_request_error", invalidStreamFieldTypeMessage)
 		return
 	}
-	if service.IsGPTImageGenerationModel(reqModel) {
+	if service.IsChatUnsupportedMediaModel(reqModel) {
 		h.chatCompletionsErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "This model is not supported on the Chat Completions endpoint")
 		return
 	}
@@ -147,23 +147,32 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 	if channelMapping.Mapped {
 		preauthorizationBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 	}
-	balanceGuard, err := preauthorizeTextGatewayRequest(
-		c.Request.Context(), h.balancePreauthorizer, h.gatewayService,
-		apiKey, subscription, preauthorizationBody,
-		service.BalancePreauthorizationBillingModel(reqModel, channelMapping),
-		pricingAt, gjson.GetBytes(preauthorizationBody, "service_tier").String(),
+	rootAPIKey := apiKey
+	apiKey = h.startGatewayAdaptiveIfParent(
+		c.Request.Context(), c, apiKey, reqModel,
+		service.AdaptiveRouteProtocolOpenAIChat, preauthorizationBody, reqLog,
 	)
-	if err != nil {
-		status, code, message, retryAfter := billingErrorDetails(err)
-		if retryAfter > 0 {
-			c.Header("Retry-After", strconv.Itoa(retryAfter))
+	installAntiStallForKey(c.Request.Context(), c, h.settingService, rootAPIKey, reqLog, "anthropic.cc.anti_stall_pro")
+	var balanceGuard *service.BalancePreauthorizationGuard
+	if !gatewayAdaptiveHoldActive(c) {
+		balanceGuard, err = preauthorizeTextGatewayRequest(
+			c.Request.Context(), h.balancePreauthorizer, h.gatewayService,
+			apiKey, subscription, preauthorizationBody,
+			service.BalancePreauthorizationBillingModel(reqModel, channelMapping),
+			pricingAt, gjson.GetBytes(preauthorizationBody, "service_tier").String(),
+		)
+		if err != nil {
+			status, code, message, retryAfter := billingErrorDetails(err)
+			if retryAfter > 0 {
+				c.Header("Retry-After", strconv.Itoa(retryAfter))
+			}
+			h.chatCompletionsErrorResponse(c, status, code, message)
+			return
 		}
-		h.chatCompletionsErrorResponse(c, status, code, message)
-		return
-	}
-	if balanceGuard != nil {
-		defer deferBalancePreauthorizationRefund(reqLog, balanceGuard)
-		c.Request = c.Request.WithContext(service.ContextWithBalancePreauthorizationGuard(c.Request.Context(), balanceGuard))
+		if balanceGuard != nil {
+			defer deferBalancePreauthorizationRefund(reqLog, balanceGuard)
+			c.Request = c.Request.WithContext(service.ContextWithBalancePreauthorizationGuard(c.Request.Context(), balanceGuard))
+		}
 	}
 
 	// Keep proxied streaming connections alive while the compatibility layer
@@ -202,8 +211,30 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		if c.Request.Context().Err() != nil {
 			return
 		}
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, selectionSessionHash, reqModel, fs.FailedAccountIDs, "", int64(0))
+		selection, routedKey, err := h.gatewayService.SelectAccountAlongKeyRoutes(c.Request.Context(), apiKey, selectionSessionHash, reqModel, fs.FailedAccountIDs, "", int64(0), groupPlatform)
+		if err == nil && routedKey != nil {
+			changed := keyRouteGroupChanged(apiKey, routedKey)
+			if bindErr := h.bindSelectedKeyRoute(c, keyRouteBinding{
+				Previous: apiKey, Selected: routedKey, Subscription: &subscription,
+				Mapping: &channelMapping, Guard: &balanceGuard, Body: body, Model: reqModel, PricingAt: pricingAt,
+			}); bindErr != nil {
+				releaseRejectedKeyRouteSelection(selection)
+				status, code, message, _ := billingErrorDetails(bindErr)
+				h.chatCompletionsErrorResponse(c, status, code, message)
+				return
+			}
+			apiKey = routedKey
+			if changed {
+				preauthorizationBody = openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
+			}
+		}
 		if err != nil {
+			if nextKey := h.advanceGatewayAdaptiveLeaf(c.Request.Context(), c, rootAPIKey, reqLog); nextKey != nil {
+				apiKey = nextKey
+				groupPlatform = effectiveAPIKeyPlatform(c, apiKey)
+				fs = NewFillFailoverState(h.maxAccountSwitches, false)
+				continue
+			}
 			if len(fs.FailedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, groupPlatform)
 				cls = classifySelectionFailureErrorFromGin(c, err, cls)
@@ -314,6 +345,51 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 			}
 			setActualUpstreamEndpoint(c, EndpointAntigravityGenerateContent)
 			result, err = h.antigravityGatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody, parsedReq)
+		} else if h.openAIGatewayService != nil && service.IsOpenAICompatibleLeafPlatform(account.Platform) {
+			oaResult, oaErr := h.openAIGatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody, "", "")
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+				accountReleaseFunc = nil
+			}
+			if oaErr != nil {
+				err = oaErr
+				result = nil
+			} else {
+				if oaResult != nil {
+					h.openAIGatewayService.ReportOpenAIAccountScheduleResult(account, reqModel, true, oaResult.FirstTokenMs)
+					userAgent := c.GetHeader("User-Agent")
+					clientIP := ip.GetClientIP(c)
+					inboundEndpoint := GetInboundEndpoint(c)
+					upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, oaResult)
+					quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+					sessionID := service.ExtractClientSessionID(c)
+					h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
+						if recErr := h.openAIGatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+							Result:             oaResult,
+							APIKey:             apiKey,
+							User:               apiKey.User,
+							Account:            account,
+							Subscription:       subscription,
+							InboundEndpoint:    inboundEndpoint,
+							UpstreamEndpoint:   upstreamEndpoint,
+							UserAgent:          userAgent,
+							IPAddress:          clientIP,
+							APIKeyService:      h.apiKeyService,
+							QuotaPlatform:      quotaPlatform,
+							SessionID:          sessionID,
+							ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, oaResult.UpstreamModel),
+							PricingAt:          pricingAt,
+							AdaptiveBilling:    gatewayAdaptiveBilling(c),
+						}); recErr != nil {
+							reqLog.Error("gateway.cc.openai_leaf_record_usage_failed",
+								zap.Int64("account_id", account.ID),
+								zap.Error(recErr),
+							)
+						}
+					})
+				}
+				return
+			}
 		} else {
 			result, err = h.gatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody, parsedReq)
 		}
@@ -350,6 +426,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 					APIKeyService:      h.apiKeyService,
 					SessionID:          sessionID,
 					ChannelUsageFields: channelUsageFields,
+					AdaptiveBilling:    gatewayAdaptiveBilling(c),
 				}); err != nil {
 					reqLog.Error("gateway.cc.record_usage_failed",
 						zap.Int64("account_id", account.ID),
@@ -370,8 +447,22 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, account.GetPoolModeRetryCount(), failoverErr)
 				switch action {
 				case FailoverContinue:
+					if antiStallForceSwitchRecommended(failoverErr) {
+						if nextKey := h.advanceGatewayAdaptiveLeaf(c.Request.Context(), c, rootAPIKey, reqLog); nextKey != nil {
+							apiKey = nextKey
+							groupPlatform = effectiveAPIKeyPlatform(c, apiKey)
+							fs = NewFillFailoverState(h.maxAccountSwitches, false)
+							continue
+						}
+					}
 					continue
 				case FailoverExhausted:
+					if nextKey := h.advanceGatewayAdaptiveLeaf(c.Request.Context(), c, rootAPIKey, reqLog); nextKey != nil {
+						apiKey = nextKey
+						groupPlatform = effectiveAPIKeyPlatform(c, apiKey)
+						fs = NewFillFailoverState(h.maxAccountSwitches, false)
+						continue
+					}
 					h.handleCCFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
 					return
 				case FailoverCanceled:
@@ -433,8 +524,13 @@ func (h *GatewayHandler) handleCCFailoverExhausted(c *gin.Context, lastErr *serv
 		copyFailoverRetryAfter(c, lastErr.ResponseHeaders)
 	}
 	if lastErr != nil && service.IsUpstreamCapacityCoolingBody(lastErr.ResponseBody) {
-		c.Header("Retry-After", "5")
-		h.chatCompletionsErrorResponse(c, http.StatusServiceUnavailable, "server_error", "Upstream providers are temporarily cooling down; please retry later")
+		c.Header("Retry-After", "30")
+		status, errType, message := wrapUpstreamClientError(lastErr.StatusCode, lastErr.ResponseBody)
+		if lastErr.StatusCode == http.StatusUnauthorized || lastErr.StatusCode == http.StatusForbidden {
+			status = http.StatusServiceUnavailable
+			errType = "server_error"
+		}
+		h.chatCompletionsErrorResponse(c, status, errType, message)
 		return
 	}
 	if lastErr != nil && lastErr.IsCredentialFailure() {

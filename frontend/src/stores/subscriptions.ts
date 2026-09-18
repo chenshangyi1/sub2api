@@ -89,6 +89,9 @@ export const useSubscriptionStore = defineStore('subscriptions', () => {
     if (pollerInterval) return
 
     pollerInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) {
+        return
+      }
       fetchActiveSubscriptions(true).catch((error) => {
         console.error('Subscription polling failed:', error)
       })

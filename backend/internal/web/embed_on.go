@@ -117,24 +117,35 @@ func (s *FrontendServer) Middleware() gin.HandlerFunc {
 		}
 
 		cleanPath := strings.TrimPrefix(path, "/")
-		if cleanPath == "" {
-			cleanPath = "index.html"
+		servePath := resolveEmbeddedServePath(cleanPath)
+
+		if isEmbeddedAppPath(cleanPath) {
+			if s.tryServeOverride(c, servePath) {
+				return
+			}
+			serveResolvedEmbeddedPath(c.Writer, c.Request, s.distFS, cleanPath, nil)
+			c.Abort()
+			return
 		}
 
-		// For index.html or SPA routes, serve with injected settings
-		if cleanPath == "index.html" || !s.fileExists(cleanPath) {
+		if servePath == "index.html" || !s.fileExists(servePath) {
+			if isEmbeddedStaticAssetPath(servePath) {
+				c.Status(http.StatusNotFound)
+				c.Abort()
+				return
+			}
 			s.serveIndexHTML(c)
 			return
 		}
 
-		// Try local override first
-		if s.tryServeOverride(c, cleanPath) {
+		if s.tryServeOverride(c, servePath) {
 			return
 		}
 
-		// Serve static files normally (hashed assets get long-lived cache headers)
-		applyStaticAssetCacheHeaders(c.Writer.Header(), cleanPath)
-		s.fileServer.ServeHTTP(c.Writer, c.Request)
+		applyStaticAssetCacheHeaders(c.Writer.Header(), servePath)
+		serveResolvedEmbeddedPath(c.Writer, c.Request, s.distFS, servePath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			s.serveIndexHTML(c)
+		}))
 		c.Abort()
 	}
 }
@@ -183,8 +194,7 @@ func (s *FrontendServer) serveIndexHTML(c *gin.Context) {
 
 		c.Header("ETag", cached.ETag)
 		c.Header("Cache-Control", "no-cache") // Must revalidate
-		c.Data(http.StatusOK, "text/html; charset=utf-8", content)
-		c.Abort()
+		writeHTMLBytes(c, content)
 		return
 	}
 
@@ -194,17 +204,13 @@ func (s *FrontendServer) serveIndexHTML(c *gin.Context) {
 
 	settings, err := s.settings.GetPublicSettingsForInjection(ctx)
 	if err != nil {
-		// Fallback: serve without injection
-		c.Data(http.StatusOK, "text/html; charset=utf-8", s.baseHTML)
-		c.Abort()
+		writeHTMLBytes(c, s.baseHTML)
 		return
 	}
 
 	settingsJSON, err := json.Marshal(settings)
 	if err != nil {
-		// Fallback: serve without injection
-		c.Data(http.StatusOK, "text/html; charset=utf-8", s.baseHTML)
-		c.Abort()
+		writeHTMLBytes(c, s.baseHTML)
 		return
 	}
 
@@ -219,7 +225,17 @@ func (s *FrontendServer) serveIndexHTML(c *gin.Context) {
 		c.Header("ETag", cached.ETag)
 	}
 	c.Header("Cache-Control", "no-cache")
-	c.Data(http.StatusOK, "text/html; charset=utf-8", content)
+	writeHTMLBytes(c, content)
+}
+
+func writeHTMLBytes(c *gin.Context, content []byte) {
+	if c == nil {
+		return
+	}
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	if !writeMaybeCompressed(c.Writer, c.Request, "index.html", content) {
+		c.Data(http.StatusOK, "text/html; charset=utf-8", content)
+	}
 	c.Abort()
 }
 
@@ -430,7 +446,6 @@ func ServeEmbeddedFrontend() gin.HandlerFunc {
 	if err != nil {
 		panic("failed to get dist subdirectory: " + err.Error())
 	}
-	fileServer := http.FileServer(http.FS(distFS))
 	overrideDir := filepath.Join("data", "public")
 
 	return func(c *gin.Context) {
@@ -442,18 +457,31 @@ func ServeEmbeddedFrontend() gin.HandlerFunc {
 		}
 
 		cleanPath := strings.TrimPrefix(path, "/")
-		if cleanPath == "" {
-			cleanPath = "index.html"
-		}
+		servePath := resolveEmbeddedServePath(cleanPath)
 
-		if file, err := distFS.Open(cleanPath); err == nil {
-			_ = file.Close()
-			// Try local override first
-			if tryServeOverrideFile(c, overrideDir, cleanPath) {
+		if isEmbeddedAppPath(cleanPath) {
+			if tryServeOverrideFile(c, overrideDir, servePath) {
 				return
 			}
-			applyStaticAssetCacheHeaders(c.Writer.Header(), cleanPath)
-			fileServer.ServeHTTP(c.Writer, c.Request)
+			serveResolvedEmbeddedPath(c.Writer, c.Request, distFS, cleanPath, nil)
+			c.Abort()
+			return
+		}
+
+		if fileExistsInFS(distFS, servePath) {
+			if tryServeOverrideFile(c, overrideDir, servePath) {
+				return
+			}
+			applyStaticAssetCacheHeaders(c.Writer.Header(), servePath)
+			serveResolvedEmbeddedPath(c.Writer, c.Request, distFS, servePath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				serveIndexHTML(c, distFS)
+			}))
+			c.Abort()
+			return
+		}
+
+		if isEmbeddedStaticAssetPath(servePath) {
+			c.Status(http.StatusNotFound)
 			c.Abort()
 			return
 		}
@@ -491,6 +519,9 @@ func shouldBypassEmbeddedFrontend(path string) bool {
 		trimmed == "/responses" ||
 		strings.HasPrefix(trimmed, "/responses/") ||
 		trimmed == "/alpha/search" ||
+		strings.HasPrefix(trimmed, "/chat/completions") ||
+		strings.HasPrefix(trimmed, "/messages") ||
+		strings.HasPrefix(trimmed, "/embeddings") ||
 		strings.HasPrefix(trimmed, "/images/") ||
 		strings.HasPrefix(trimmed, "/videos/")
 }
@@ -511,8 +542,7 @@ func serveIndexHTML(c *gin.Context, fsys fs.FS) {
 		return
 	}
 
-	c.Data(http.StatusOK, "text/html; charset=utf-8", content)
-	c.Abort()
+	writeHTMLBytes(c, content)
 }
 
 func HasEmbeddedFrontend() bool {

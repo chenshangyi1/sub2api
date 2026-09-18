@@ -605,8 +605,13 @@ type AudioUsage struct {
 
 type ForwardResult struct {
 	RequestID string
-	Usage     ClaudeUsage
-	Model     string
+	// UpstreamHeaders 是直接上游的响应头，用于按账户配置解析上游请求标识。
+	UpstreamHeaders http.Header
+	Usage           ClaudeUsage
+	Model           string
+	// Keep usage from deterministic pre-output request failures, but do not bill it.
+	NonBillableUpstreamError bool
+
 	// UpstreamModel is the actual upstream model after mapping.
 	// Prefer empty when it is identical to Model; persistence normalizes equal values away as no-op mappings.
 	UpstreamModel string
@@ -622,6 +627,8 @@ type ForwardResult struct {
 	FirstTokenMs                *int // 首字时间（流式请求）
 	ClientDisconnect            bool // 客户端是否在流式传输过程中断开
 	ReasoningEffort             *string
+	// RequestedReasoningEffort is the client-requested effort before mapping.
+	RequestedReasoningEffort *string
 	// ServiceTier records the tier requested by the client. OpenAI uses
 	// service_tier; Anthropic speed=fast is normalized to "fast". Usage recording
 	// lowers it to UpstreamResponseServiceTier when the upstream reports a
@@ -691,6 +698,7 @@ type UpstreamFailoverError struct {
 	NextAccountAction        NextAccountAction
 	ClientStatusCode         int
 	ClientMessage            string
+	FirstTokenMs             int // elapsed wait before failover; feeds scheduler TTFT on failed attempts
 }
 
 func (e *UpstreamFailoverError) Error() string {
@@ -712,7 +720,7 @@ func (e *UpstreamFailoverError) IsCredentialFailure() bool {
 // credential failures from being misattributed to the selected account. Legacy
 // and inference failures retain their existing scheduler-health behavior.
 func (e *UpstreamFailoverError) ShouldReportAccountScheduleFailure() bool {
-	if e == nil {
+	if e == nil || e.Reason == "account_traffic_limit" {
 		return false
 	}
 	return !e.IsCredentialFailure() || e.Scope == GatewayFailureScopeAccount
@@ -732,7 +740,7 @@ func (e *sseStreamErrorEventError) Error() string { return "have error in stream
 // TempUnscheduleRetryableError 对 RetryableOnSameAccount 类型的 failover 错误触发临时封禁。
 // 由 handler 层在同账号重试全部用尽、切换账号时调用。
 func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) {
-	if failoverErr == nil || !failoverErr.RetryableOnSameAccount {
+	if failoverErr == nil {
 		return
 	}
 	// 请求级瞬时故障与账号健康无关：封禁只会把与故障无关的账号一并摘掉，
@@ -740,13 +748,15 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
 	if failoverErr.RequestScopedTransient {
 		return
 	}
-	// 根据状态码选择封禁策略
-	switch failoverErr.StatusCode {
-	case http.StatusBadRequest:
-		tempUnscheduleGoogleConfigError(ctx, s.accountRepo, accountID, "[handler]")
-	case http.StatusBadGateway:
-		tempUnscheduleEmptyResponse(ctx, s.accountRepo, accountID, "[handler]")
+	if failoverErr.RetryableOnSameAccount {
+		switch failoverErr.StatusCode {
+		case http.StatusBadRequest:
+			tempUnscheduleGoogleConfigError(ctx, s.accountRepo, accountID, "[handler]")
+		case http.StatusBadGateway:
+			tempUnscheduleEmptyResponse(ctx, s.accountRepo, accountID, "[handler]")
+		}
 	}
+	noteConsecutiveUnusableFailure(ctx, s.accountRepo, accountID, failoverErr.StatusCode, "[handler]")
 }
 
 // GatewayService handles API gateway operations
@@ -777,6 +787,14 @@ type GatewayService struct {
 	userGroupRateSF       singleflight.Group
 	modelsListCache       *gocache.Cache
 	modelsListCacheTTL    time.Duration
+	modelsListSF          singleflight.Group
+	platformsListCache    *gocache.Cache
+	platformsListCacheTTL time.Duration
+	platformsListSF       singleflight.Group
+	// usageQuotaFlushSF coalesces best-effort platform-quota persistence. Redis
+	// remains the request-time source; the durable write is intentionally bounded
+	// and cannot create one goroutine/transaction per completed request.
+	usageQuotaFlushSF     singleflight.Group
 	settingService        *SettingService
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
 	debugModelRouting     atomic.Bool
@@ -788,6 +806,7 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	adaptiveBilling       *AdaptiveBillingCoordinator
 
 	// windowCostPrefetchSF coalesces identical usage-log window lookups across
 	// concurrent gateway requests. windowCostQuerySlots adds a process-wide
@@ -856,6 +875,8 @@ func NewGatewayService(
 		settingService:        settingService,
 		modelsListCache:       gocache.New(modelsListTTL, time.Minute),
 		modelsListCacheTTL:    modelsListTTL,
+		platformsListCache:    gocache.New(modelsListTTL, time.Minute),
+		platformsListCacheTTL: modelsListTTL,
 		responseHeaderFilter:  compileResponseHeaderFilter(cfg),
 		tlsFPProfileService:   tlsFPProfileService,
 		channelService:        channelService,
@@ -877,6 +898,14 @@ func NewGatewayService(
 		svc.initDebugGatewayBodyFile(path)
 	}
 	return svc
+}
+
+// SetAdaptiveBillingCoordinator wires Adaptive authorize/capture settlement for
+// RecordUsage when AdaptiveBillingContext is present.
+func (s *GatewayService) SetAdaptiveBillingCoordinator(coordinator *AdaptiveBillingCoordinator) {
+	if s != nil {
+		s.adaptiveBilling = coordinator
+	}
 }
 
 // GenerateSessionHash 从预解析请求计算粘性会话 hash
@@ -1344,7 +1373,7 @@ func (s *GatewayService) DoGrokNativeResponsesJSON(ctx context.Context, account 
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	resp, err := s.httpUpstream.Do(WithAccountTrafficRequest(upstreamReq, account), proxyURL, account.ID, account.Concurrency)
 	if err != nil {
 		return nil, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, Reason: GatewayFailureReason("grok_search_transport")}
 	}
@@ -1370,6 +1399,9 @@ func (s *GatewayService) DoGrokNativeResponsesJSON(ctx context.Context, account 
 }
 
 func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64, platform string) []string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	cacheKey := modelsListCacheKey(groupID, platform)
 	if s.modelsListCache != nil {
 		if cached, found := s.modelsListCache.Get(cacheKey); found {
@@ -1380,105 +1412,236 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		}
 	}
 	modelsListCacheMissTotal.Add(1)
+	resultCh := s.modelsListSF.DoChan(cacheKey, func() (any, error) {
+		// DoChan executes the shared function in its own goroutine.  Create the
+		// detached timeout inside that function so a canceled waiter cannot
+		// cancel the leader's refresh before it publishes the cache entry.
+		leaderCtx := context.Background()
+		if ctx != nil {
+			leaderCtx = context.WithoutCancel(ctx)
+		}
+		leaderCtx, leaderCancel := context.WithTimeout(leaderCtx, 5*time.Second)
+		defer leaderCancel()
+		// Recheck after joining the flight; a concurrent leader may have filled
+		// the short cache between the caller's initial read and this function.
+		if s.modelsListCache != nil {
+			if cached, found := s.modelsListCache.Get(cacheKey); found {
+				if models, ok := cached.([]string); ok {
+					return cloneStringSlice(models), nil
+				}
+			}
+		}
+		models := s.loadAvailableModels(leaderCtx, groupID, platform)
+		if s.modelsListCache != nil {
+			s.modelsListCache.Set(cacheKey, cloneStringSlice(models), s.modelsListCacheTTL)
+			modelsListCacheStoreTotal.Add(1)
+		}
+		return models, nil
+	})
+	var result singleflight.Result
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		return nil
+	}
+	if result.Err != nil {
+		return nil
+	}
+	models, _ := result.Val.([]string)
+	return cloneStringSlice(models)
+}
 
-	var accounts []Account
-	var err error
-
+// loadAvailableModels computes a model whitelist from the scheduler snapshot
+// when one is configured. Snapshot-only callers receive nil on a cold bucket;
+// the handler then serves its static provider defaults. The repository path is
+// retained only for legacy services without a scheduler snapshot or for an
+// explicit freshness/recovery context.
+func listSchedulableAccountsFromRepo(ctx context.Context, repo AccountRepository, groupID *int64) ([]Account, error) {
+	if repo == nil {
+		return nil, nil
+	}
 	if groupID != nil {
+		return repo.ListSchedulableByGroupID(ctx, *groupID)
+	}
+	return repo.ListSchedulable(ctx)
+}
+
+func loadAvailableModelsFromStore(ctx context.Context, repo AccountRepository, snapshot *SchedulerSnapshotService, groupID *int64, platform string) []string {
+	if repo == nil && snapshot == nil {
+		return nil
+	}
+	var (
+		accounts []Account
+		err      error
+	)
+	if snapshot != nil {
+		requestCtx := withSchedulerRequestMode(ctx, repo, snapshot)
+		accounts, _, err = snapshot.listSchedulableAccountsForRequest(requestCtx, groupID, platform, false)
+		if err != nil {
+			// The snapshot service owns explicit freshness/recovery fallback.
+			// Never turn a snapshot-only cache miss into a repository scan here.
+			return nil
+		}
+	} else {
+		accounts, err = listSchedulableAccountsFromRepo(ctx, repo, groupID)
+	}
+	if err != nil || len(accounts) == 0 {
+		return nil
+	}
+	return modelsFromSchedulableAccounts(accounts, platform)
+}
+
+func (s *GatewayService) loadAvailableModels(ctx context.Context, groupID *int64, platform string) []string {
+	if s == nil || s.accountRepo == nil {
+		return nil
+	}
+	var (
+		accounts []Account
+		err      error
+	)
+	if s.schedulerSnapshot != nil {
+		requestCtx := withSchedulerRequestMode(ctx, s.accountRepo, s.schedulerSnapshot)
+		accounts, _, err = s.schedulerSnapshot.listSchedulableAccountsForRequest(requestCtx, groupID, platform, false)
+		if err != nil {
+			return nil
+		}
+	} else if groupID != nil {
 		accounts, err = s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
 	} else {
 		accounts, err = s.accountRepo.ListSchedulable(ctx)
 	}
-
 	if err != nil || len(accounts) == 0 {
 		return nil
 	}
 
-	// Filter by platform if specified
 	if platform != "" {
-		filtered := make([]Account, 0)
+		filtered := make([]Account, 0, len(accounts))
 		for _, acc := range accounts {
-			if acc.Platform == platform {
+			if acc.MatchesRequestedPlatform(platform) {
 				filtered = append(filtered, acc)
 			}
 		}
 		accounts = filtered
 	}
-
-	// Collect unique models from all accounts
-	modelSet := make(map[string]struct{})
-	hasAnyMapping := false
-
+	modelSet := make(map[string]string)
 	for _, acc := range accounts {
-		// Passthrough routing accepts models independently of model_mapping. A stale
-		// mapping on any eligible passthrough account therefore cannot define the
-		// public whitelist; return nil so the handler uses its default model set.
+		// Passthrough routing accepts models independently of model_mapping.
 		if platform == PlatformOpenAI && acc.IsOpenAIPassthroughEnabled() {
-			if s.modelsListCache != nil {
-				s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
-				modelsListCacheStoreTotal.Add(1)
-			}
 			return nil
 		}
-
-		mapping := acc.GetModelMapping()
-		if len(mapping) > 0 {
-			hasAnyMapping = true
-			for model := range mapping {
-				modelSet[model] = struct{}{}
+		for model := range acc.ExplicitModelMapping() {
+			model = strings.TrimSpace(model)
+			if model == "" {
+				continue
 			}
+			key := strings.ToLower(model)
+			if _, ok := modelSet[key]; ok {
+				continue
+			}
+			modelSet[key] = key
 		}
 	}
-
-	// If no account has model_mapping, return nil (use default)
-	if !hasAnyMapping {
-		if s.modelsListCache != nil {
-			s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
-			modelsListCacheStoreTotal.Add(1)
-		}
+	if len(modelSet) == 0 {
 		return nil
 	}
-
-	// Convert to slice
 	models := make([]string, 0, len(modelSet))
-	for model := range modelSet {
+	for _, model := range modelSet {
 		models = append(models, model)
 	}
 	sort.Strings(models)
-
-	if s.modelsListCache != nil {
-		s.modelsListCache.Set(cacheKey, cloneStringSlice(models), s.modelsListCacheTTL)
-		modelsListCacheStoreTotal.Add(1)
-	}
-	return cloneStringSlice(models)
+	return models
 }
 
 // GetSchedulablePlatforms returns the concrete platforms that currently have
 // schedulable accounts in the target group.
 func (s *GatewayService) GetSchedulablePlatforms(ctx context.Context, groupID *int64) map[string]struct{} {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	platforms := make(map[string]struct{})
 	if s == nil || s.accountRepo == nil {
 		return platforms
 	}
-
-	var accounts []Account
-	var err error
-	if groupID != nil {
-		accounts, err = s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
-	} else {
-		accounts, err = s.accountRepo.ListSchedulable(ctx)
-	}
-	if err != nil {
-		return platforms
-	}
-
-	for _, acc := range accounts {
-		platform := strings.TrimSpace(acc.Platform)
-		if platform != "" {
-			platforms[platform] = struct{}{}
+	cacheKey := fmt.Sprintf("%d", derefGroupID(groupID))
+	if s.platformsListCache != nil {
+		if cached, found := s.platformsListCache.Get(cacheKey); found {
+			if values, ok := cached.(map[string]struct{}); ok {
+				return clonePlatformSet(values)
+			}
 		}
 	}
+	resultCh := s.platformsListSF.DoChan(cacheKey, func() (any, error) {
+		// Keep the shared refresh independent from the first caller's deadline;
+		// the context must live for the whole DoChan function, not the waiter.
+		leaderCtx := context.Background()
+		if ctx != nil {
+			leaderCtx = context.WithoutCancel(ctx)
+		}
+		leaderCtx, leaderCancel := context.WithTimeout(leaderCtx, 5*time.Second)
+		defer leaderCancel()
+		if s.platformsListCache != nil {
+			if cached, found := s.platformsListCache.Get(cacheKey); found {
+				if values, ok := cached.(map[string]struct{}); ok {
+					return values, nil
+				}
+			}
+		}
+		if s.schedulerSnapshot != nil {
+			requestCtx := withSchedulerRequestMode(leaderCtx, s.accountRepo, s.schedulerSnapshot)
+			for _, candidatePlatform := range schedulerSnapshotPlatforms() {
+				accounts, _, err := s.schedulerSnapshot.listSchedulableAccountsForRequest(requestCtx, groupID, candidatePlatform, false)
+				if err != nil {
+					continue
+				}
+				for _, account := range accounts {
+					if platform := strings.TrimSpace(CanonicalAccountPlatform(account.Platform)); platform != "" {
+						platforms[platform] = struct{}{}
+					}
+				}
+			}
+		} else {
+			var accounts []Account
+			var err error
+			if groupID != nil {
+				accounts, err = s.accountRepo.ListSchedulableByGroupID(leaderCtx, *groupID)
+			} else {
+				accounts, err = s.accountRepo.ListSchedulable(leaderCtx)
+			}
+			if err != nil {
+				return platforms, nil
+			}
+			for _, account := range accounts {
+				if platform := strings.TrimSpace(CanonicalAccountPlatform(account.Platform)); platform != "" {
+					platforms[platform] = struct{}{}
+				}
+			}
+		}
+		if s.platformsListCache != nil {
+			s.platformsListCache.Set(cacheKey, clonePlatformSet(platforms), s.platformsListCacheTTL)
+		}
+		return platforms, nil
+	})
+	var result singleflight.Result
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		return platforms
+	}
+	if cached, ok := result.Val.(map[string]struct{}); ok {
+		return clonePlatformSet(cached)
+	}
 	return platforms
+}
+
+func clonePlatformSet(values map[string]struct{}) map[string]struct{} {
+	if len(values) == 0 {
+		return map[string]struct{}{}
+	}
+	cloned := make(map[string]struct{}, len(values))
+	for key := range values {
+		cloned[key] = struct{}{}
+	}
+	return cloned
 }
 
 func (s *GatewayService) InvalidateAvailableModelsCache(groupID *int64, platform string) {
@@ -1490,6 +1653,9 @@ func (s *GatewayService) InvalidateAvailableModelsCache(groupID *int64, platform
 	// 完整匹配时精准失效；否则按维度批量失效。
 	if groupID != nil && normalizedPlatform != "" {
 		s.modelsListCache.Delete(modelsListCacheKey(groupID, normalizedPlatform))
+		if s.platformsListCache != nil {
+			s.platformsListCache.Delete(fmt.Sprintf("%d", derefGroupID(groupID)))
+		}
 		return
 	}
 
@@ -1510,6 +1676,13 @@ func (s *GatewayService) InvalidateAvailableModelsCache(groupID *int64, platform
 			continue
 		}
 		s.modelsListCache.Delete(key)
+	}
+	if s.platformsListCache != nil {
+		if groupID == nil {
+			s.platformsListCache.Flush()
+		} else {
+			s.platformsListCache.Delete(fmt.Sprintf("%d", targetGroup))
+		}
 	}
 }
 

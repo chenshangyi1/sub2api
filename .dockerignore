@@ -64,6 +64,7 @@ logs/
 tmp/
 temp/
 *.tmp
+work/
 
 # Deploy files (not needed in image)
 deploy/install.sh

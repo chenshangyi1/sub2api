@@ -34,6 +34,7 @@ func NewAPIKeyHandler(apiKeyService *service.APIKeyService) *APIKeyHandler {
 type CreateAPIKeyRequest struct {
 	Name          string   `json:"name" binding:"required"`
 	GroupID       *int64   `json:"group_id"`        // nullable
+	GroupIDs      []int64  `json:"group_ids"`
 	CustomKey     *string  `json:"custom_key"`      // 可选的自定义key
 	IPWhitelist   []string `json:"ip_whitelist"`    // IP 白名单
 	IPBlacklist   []string `json:"ip_blacklist"`    // IP 黑名单
@@ -44,12 +45,17 @@ type CreateAPIKeyRequest struct {
 	RateLimit5h *float64 `json:"rate_limit_5h"`
 	RateLimit1d *float64 `json:"rate_limit_1d"`
 	RateLimit7d *float64 `json:"rate_limit_7d"`
+
+	AdaptiveRoutingPreference *string  `json:"adaptive_routing_preference"`
+	AdaptiveMaxRateMultiplier *float64 `json:"adaptive_max_rate_multiplier"`
+	AdaptiveLeafGroupIDs      []int64  `json:"adaptive_leaf_group_ids"`
 }
 
 // UpdateAPIKeyRequest represents the update API key request payload
 type UpdateAPIKeyRequest struct {
 	Name        string    `json:"name"`
 	GroupID     *int64    `json:"group_id"`
+	GroupIDs    *[]int64  `json:"group_ids"`
 	Status      string    `json:"status" binding:"omitempty,oneof=active inactive"`
 	IPWhitelist *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
 	IPBlacklist *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
@@ -62,6 +68,10 @@ type UpdateAPIKeyRequest struct {
 	RateLimit1d         *float64 `json:"rate_limit_1d"`
 	RateLimit7d         *float64 `json:"rate_limit_7d"`
 	ResetRateLimitUsage *bool    `json:"reset_rate_limit_usage"` // 重置限速用量
+
+	AdaptiveRoutingPreference *string  `json:"adaptive_routing_preference"`
+	AdaptiveMaxRateMultiplier *float64 `json:"adaptive_max_rate_multiplier"`
+	AdaptiveLeafGroupIDs      *[]int64 `json:"adaptive_leaf_group_ids"`
 }
 
 func validAPIKeyLimit(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 }
@@ -197,12 +207,16 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 	}
 
 	svcReq := service.CreateAPIKeyRequest{
-		Name:          req.Name,
-		GroupID:       req.GroupID,
-		CustomKey:     req.CustomKey,
-		IPWhitelist:   req.IPWhitelist,
-		IPBlacklist:   req.IPBlacklist,
-		ExpiresInDays: req.ExpiresInDays,
+		Name:                      req.Name,
+		GroupID:                   req.GroupID,
+		GroupIDs:                  req.GroupIDs,
+		CustomKey:                 req.CustomKey,
+		IPWhitelist:               req.IPWhitelist,
+		IPBlacklist:               req.IPBlacklist,
+		ExpiresInDays:             req.ExpiresInDays,
+		AdaptiveRoutingPreference: req.AdaptiveRoutingPreference,
+		AdaptiveMaxRateMultiplier: req.AdaptiveMaxRateMultiplier,
+		AdaptiveLeafGroupIDs:      req.AdaptiveLeafGroupIDs,
 	}
 	if req.Quota != nil {
 		svcReq.Quota = *req.Quota
@@ -252,19 +266,23 @@ func (h *APIKeyHandler) Update(c *gin.Context) {
 	}
 
 	svcReq := service.UpdateAPIKeyRequest{
-		IPWhitelist:         req.IPWhitelist,
-		IPBlacklist:         req.IPBlacklist,
-		Quota:               req.Quota,
-		ResetQuota:          req.ResetQuota,
-		RateLimit5h:         req.RateLimit5h,
-		RateLimit1d:         req.RateLimit1d,
-		RateLimit7d:         req.RateLimit7d,
-		ResetRateLimitUsage: req.ResetRateLimitUsage,
+		IPWhitelist:               req.IPWhitelist,
+		IPBlacklist:               req.IPBlacklist,
+		Quota:                     req.Quota,
+		ResetQuota:                req.ResetQuota,
+		RateLimit5h:               req.RateLimit5h,
+		RateLimit1d:               req.RateLimit1d,
+		RateLimit7d:               req.RateLimit7d,
+		ResetRateLimitUsage:       req.ResetRateLimitUsage,
+		AdaptiveRoutingPreference: req.AdaptiveRoutingPreference,
+		AdaptiveMaxRateMultiplier: req.AdaptiveMaxRateMultiplier,
+		AdaptiveLeafGroupIDs:      req.AdaptiveLeafGroupIDs,
 	}
 	if req.Name != "" {
 		svcReq.Name = &req.Name
 	}
 	svcReq.GroupID = req.GroupID
+	svcReq.GroupIDs = req.GroupIDs
 	if req.Status != "" {
 		svcReq.Status = &req.Status
 	}

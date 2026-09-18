@@ -430,7 +430,7 @@
     </template>
 
     <!-- CN providers (Kimi / Zhipu / DeepSeek): coding-plan quota or payg balance -->
-    <template v-else-if="account.platform === 'kimi' || account.platform === 'zhipu' || account.platform === 'deepseek'">
+    <template v-else-if="isCNUsageAccount">
       <div class="space-y-1">
         <!-- 子单元格各自按 模式×平台 判定可见；两者都不可见时（智谱 payg 无公开
              余额端点、coding 探测也不适用）才回落到占位符。 -->
@@ -651,7 +651,7 @@ import GrokQuotaProbeCell from './GrokQuotaProbeCell.vue'
 import CNProviderQuotaCell from './CNProviderQuotaCell.vue'
 import CNProviderBalanceCell from './CNProviderBalanceCell.vue'
 import OllamaCloudUsageCell from './OllamaCloudUsageCell.vue'
-import { cnQuotaCellVisible as cnQuotaCellVisibleFn, cnBalanceCellVisible as cnBalanceCellVisibleFn } from './credentialsBuilder'
+import { cnQuotaCellVisible as cnQuotaCellVisibleFn, cnBalanceCellVisible as cnBalanceCellVisibleFn, cnVendorFromAccount, isCNPlatform, isGeminiOpenAIProtocolAccount } from './credentialsBuilder'
 
 // Module-level cache shared across all AccountUsageCell instances
 const _usageCache = new Map<number, { data: AccountUsageInfo; ts: number }>()
@@ -718,11 +718,7 @@ const showUsageWindows = computed(() => {
   if (props.account.platform === 'gemini') return true
   // CN providers: apikey 账号也有滚动用量窗口（coding plan）或余额（payg），
   // 由 CNProviderQuotaCell / CNProviderBalanceCell 自行探测与展示。
-  if (
-    props.account.platform === 'kimi' ||
-    props.account.platform === 'zhipu' ||
-    props.account.platform === 'deepseek'
-  ) {
+  if (isCNPlatform(props.account.platform)) {
     return true
   }
   return props.account.type === 'oauth' || props.account.type === 'setup-token'
@@ -749,12 +745,14 @@ const shouldFetchUsage = computed(() => {
 
 // CN 供应商子单元格可见性（与 CNProviderQuotaCell / CNProviderBalanceCell 共用
 // credentialsBuilder 的单一实现）：都不可见时显示 `-` 占位符。
+const isCNUsageAccount = computed(() => isCNPlatform(props.account.platform))
 const cnAccountMode = computed(() => {
   const mode = props.account.credentials?.account_mode
   return typeof mode === 'string' ? mode : ''
 })
-const cnQuotaCellVisible = computed(() => cnQuotaCellVisibleFn(props.account.platform, cnAccountMode.value))
-const cnBalanceCellVisible = computed(() => cnBalanceCellVisibleFn(props.account.platform, cnAccountMode.value))
+const cnVendor = computed(() => cnVendorFromAccount(props.account.platform, props.account.credentials as Record<string, unknown> | undefined))
+const cnQuotaCellVisible = computed(() => cnQuotaCellVisibleFn(props.account.platform, cnAccountMode.value, cnVendor.value))
+const cnBalanceCellVisible = computed(() => cnBalanceCellVisibleFn(props.account.platform, cnAccountMode.value, cnVendor.value))
 
 const isBatchManaged = computed(() => typeof props.requestBatchedUsage === 'function')
 
@@ -912,6 +910,7 @@ const isGeminiCodeAssist = computed(() => {
 
 const geminiChannelShort = computed((): 'ai studio' | 'gcp' | 'google one' | 'client' | null => {
   if (props.account.platform !== 'gemini') return null
+  if (isGeminiOpenAIProtocolAccount(props.account)) return null
 
   // API Key accounts are AI Studio.
   if (props.account.type === 'apikey') return 'ai studio'
@@ -926,6 +925,7 @@ const geminiChannelShort = computed((): 'ai studio' | 'gcp' | 'google one' | 'cl
 
 const geminiUserLevel = computed((): string | null => {
   if (props.account.platform !== 'gemini') return null
+  if (isGeminiOpenAIProtocolAccount(props.account)) return null
 
   const tier = (geminiTier.value || '').toString().trim()
   const tierLower = tier.toLowerCase()

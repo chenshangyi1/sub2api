@@ -45,7 +45,9 @@ func TestOpenAIResponsesEmptyCompletedFailsOver(t *testing.T) {
 	var failoverErr *UpstreamFailoverError
 	require.True(t, errors.As(err, &failoverErr), "empty completed must produce UpstreamFailoverError, got: %v", err)
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
-	require.Empty(t, recorder.Body.String(), "no empty success stream may reach the client")
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.Contains(t, recorder.Body.String(), `"type":"response.created"`)
+	require.NotContains(t, recorder.Body.String(), `"type":"response.completed"`)
 }
 
 // TestOpenAIResponsesEmptyCompletedWithOutputSucceeds ensures streams with real

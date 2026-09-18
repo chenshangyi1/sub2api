@@ -110,6 +110,14 @@ func (m *mockAccountRepoForGemini) SetSchedulable(ctx context.Context, id int64,
 func (m *mockAccountRepoForGemini) AutoPauseExpiredAccounts(ctx context.Context, now time.Time) (int64, error) {
 	return 0, nil
 }
+func (m *mockAccountRepoForGemini) BindAccountGroups(ctx context.Context, accountID int64, groups []AccountGroup) error {
+	return nil
+}
+
+func (m *mockAccountRepoForGemini) UpdateAccountGroupPriorities(ctx context.Context, accountID int64, groups []AccountGroup) error {
+	return nil
+}
+
 func (m *mockAccountRepoForGemini) BindGroups(ctx context.Context, accountID int64, groupIDs []int64) error {
 	return nil
 }

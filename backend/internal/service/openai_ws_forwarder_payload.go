@@ -347,7 +347,11 @@ func (s *OpenAIGatewayService) prepareOpenAIWSForwardPayload(
 	if len(bytes.TrimSpace(rawBody)) > 0 {
 		payload, rawErr := s.buildOpenAIWSCreatePayloadRaw(rawBody, account)
 		if rawErr == nil {
-			payload, strategy, removedKeys, retryErr := applyOpenAIWSRetryPayloadStrategyRaw(payload, attempt)
+			strategy, removedKeys := "mode1_preserve", []string(nil)
+			var retryErr error
+			if !isMode1ProtectionEnabled(account) {
+				payload, strategy, removedKeys, retryErr = applyOpenAIWSRetryPayloadStrategyRaw(payload, attempt)
+			}
 			if retryErr == nil {
 				if updated, changed, metadataErr := setOpenAIWSTurnMetadataRaw(payload, turnMetadata); metadataErr == nil {
 					if changed {
@@ -370,7 +374,10 @@ func (s *OpenAIGatewayService) prepareOpenAIWSForwardPayload(
 	}
 
 	payload := s.buildOpenAIWSCreatePayload(reqBody, account)
-	strategy, removedKeys := applyOpenAIWSRetryPayloadStrategy(payload, attempt)
+	strategy, removedKeys := "mode1_preserve", []string(nil)
+	if !isMode1ProtectionEnabled(account) {
+		strategy, removedKeys = applyOpenAIWSRetryPayloadStrategy(payload, attempt)
+	}
 	setOpenAIWSTurnMetadata(payload, turnMetadata)
 	applyStagedCodexFingerprintClientMetadata(c, account, payload)
 	payloadBytes, err := json.Marshal(payload)
@@ -590,6 +597,16 @@ func cloneOpenAIWSRawMessages(items []json.RawMessage) []json.RawMessage {
 	return cloned
 }
 
+// combineOpenAIWSReplayItems 合并历史与增量为新头数组，正文共享不复制。
+func combineOpenAIWSReplayItems(history, delta []json.RawMessage) []json.RawMessage {
+	if len(delta) == 0 {
+		return history
+	}
+	combined := make([]json.RawMessage, 0, len(history)+len(delta))
+	combined = append(combined, history...)
+	return append(combined, delta...)
+}
+
 func normalizeOpenAIWSJSONForCompare(raw []byte) ([]byte, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
@@ -806,6 +823,29 @@ func openAIWSRawPayloadHasToolCallOutput(payload []byte) bool {
 	return false
 }
 
+func buildOpenAIWSReplayInputSequenceFromItems(
+	previousFullInput []json.RawMessage,
+	previousFullInputExists bool,
+	currentItems []json.RawMessage,
+	currentExists bool,
+	hasPreviousResponseID bool,
+) ([]json.RawMessage, bool) {
+	if !hasPreviousResponseID || !previousFullInputExists {
+		return currentItems, currentExists
+	}
+	previousFullInput = sanitizeOpenAIWSHistoricalReplayToolCalls(previousFullInput, currentItems)
+	if !currentExists || len(currentItems) == 0 {
+		return previousFullInput, true
+	}
+	if openAIWSRawItemsHasPrefix(currentItems, previousFullInput) {
+		return currentItems, true
+	}
+	merged := make([]json.RawMessage, 0, len(previousFullInput)+len(currentItems))
+	merged = append(merged, previousFullInput...)
+	merged = append(merged, currentItems...)
+	return merged, true
+}
+
 func buildOpenAIWSReplayInputSequence(
 	previousFullInput []json.RawMessage,
 	previousFullInputExists bool,
@@ -816,23 +856,17 @@ func buildOpenAIWSReplayInputSequence(
 	if currentErr != nil {
 		return nil, false, currentErr
 	}
-	if !hasPreviousResponseID {
-		return cloneOpenAIWSRawMessages(currentItems), currentExists, nil
+	items, exists := buildOpenAIWSReplayInputSequenceFromItems(
+		previousFullInput,
+		previousFullInputExists,
+		currentItems,
+		currentExists,
+		hasPreviousResponseID,
+	)
+	if !exists {
+		return items, exists, nil
 	}
-	if !previousFullInputExists {
-		return cloneOpenAIWSRawMessages(currentItems), currentExists, nil
-	}
-	previousFullInput = sanitizeOpenAIWSHistoricalReplayToolCalls(previousFullInput, currentItems)
-	if !currentExists || len(currentItems) == 0 {
-		return cloneOpenAIWSRawMessages(previousFullInput), true, nil
-	}
-	if openAIWSRawItemsHasPrefix(currentItems, previousFullInput) {
-		return cloneOpenAIWSRawMessages(currentItems), true, nil
-	}
-	merged := make([]json.RawMessage, 0, len(previousFullInput)+len(currentItems))
-	merged = append(merged, cloneOpenAIWSRawMessages(previousFullInput)...)
-	merged = append(merged, cloneOpenAIWSRawMessages(currentItems)...)
-	return merged, true, nil
+	return cloneOpenAIWSRawMessages(items), exists, nil
 }
 
 func setOpenAIWSPayloadInputSequence(

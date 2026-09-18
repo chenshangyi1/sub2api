@@ -24,12 +24,13 @@ const (
 	openAIFirstOutputStageMaxBytes           = 8 * 1024 * 1024
 	openAIFirstOutputScannerFramingAllowance = 64
 	openAIFirstOutputGuardQueueSize          = 1
-	openAIDefaultStreamQueueSize             = 16
+	openAIDefaultStreamQueueSize             = 1
 )
 
 var (
 	errOpenAIFirstOutputStageLimit   = errors.New("openai first-output staging limit exceeded")
 	errOpenAIFirstOutputScannerLimit = errors.New("openai pre-output scanner token limit exceeded")
+	errOpenAIFirstOutputClientWrite  = errors.New("openai first-output client write failed")
 )
 
 type openAIFirstOutputStage struct {
@@ -50,8 +51,14 @@ func newOpenAIFirstOutputStage(limit int64) *openAIFirstOutputStage {
 		limit = 1
 	}
 	return &openAIFirstOutputStage{
-		limit:      limit,
-		createTemp: func() (*os.File, error) { return os.CreateTemp("", "sub2api-openai-first-output-*") },
+		limit: limit,
+		createTemp: func() (*os.File, error) {
+			const dir = "/var/tmp/sub2api"
+			if err := os.MkdirAll(dir, 0o1777); err != nil {
+				return nil, err
+			}
+			return os.CreateTemp(dir, "sub2api-openai-first-output-*")
+		},
 		removeFile: os.Remove,
 		memoryOnly: runtime.GOOS == "windows",
 	}
@@ -178,14 +185,34 @@ func (s *openAIFirstOutputStage) prepareWrite(incoming int) error {
 	return nil
 }
 
-func (s *openAIFirstOutputStage) CommitTo(dst io.Writer) error {
+// Preserve the source of copy failures: spool reads can fail over, but a failed
+// downstream write must drain the existing attempt for usage.
+type openAIFirstOutputClientWriter struct{ io.Writer }
+
+func (w openAIFirstOutputClientWriter) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	if err == nil && n < len(p) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		err = fmt.Errorf("%w: %w", errOpenAIFirstOutputClientWrite, err)
+	}
+	return n, err
+}
+
+func (s *openAIFirstOutputStage) EmitTo(dst io.Writer) error {
 	if s == nil || s.closed {
 		return os.ErrClosed
 	}
+	if s.size == 0 {
+		return nil
+	}
+	dst = openAIFirstOutputClientWriter{Writer: dst}
 	if s.tempFile == nil {
 		if _, err := io.Copy(dst, bytes.NewReader(s.memory.Bytes())); err != nil {
 			return err
 		}
+		s.memory.Reset()
 	} else {
 		if _, err := s.tempFile.Seek(0, io.SeekStart); err != nil {
 			return fmt.Errorf("seek first-output spool: %w", err)
@@ -193,6 +220,20 @@ func (s *openAIFirstOutputStage) CommitTo(dst io.Writer) error {
 		if _, err := io.CopyN(dst, s.tempFile, s.size); err != nil {
 			return err
 		}
+		if _, err := s.tempFile.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("rewind first-output spool: %w", err)
+		}
+		if err := s.tempFile.Truncate(0); err != nil {
+			return fmt.Errorf("truncate first-output spool: %w", err)
+		}
+	}
+	s.size = 0
+	return nil
+}
+
+func (s *openAIFirstOutputStage) CommitTo(dst io.Writer) error {
+	if err := s.EmitTo(dst); err != nil {
+		return err
 	}
 	if err := s.Close(); err != nil {
 		// Delivery succeeded. Preserve cleanup failures for the handler's deferred
@@ -270,10 +311,15 @@ func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(
 	if s.rateLimitService != nil {
 		s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 	}
+	elapsedMs := int(elapsed.Milliseconds())
+	if elapsedMs < 1 {
+		elapsedMs = 1
+	}
 	return &UpstreamFailoverError{
 		StatusCode:      http.StatusGatewayTimeout,
 		ResponseBody:    []byte(`{"error":{"type":"first_output_timeout","message":"Upstream produced no output before the deadline"}}`),
 		ResponseHeaders: responseHeaders.Clone(), SafeToFailoverAfterWrite: true,
+		FirstTokenMs: elapsedMs,
 	}
 }
 

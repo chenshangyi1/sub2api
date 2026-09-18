@@ -33,6 +33,9 @@ func (s *OpenAIGatewayService) DiagnoseModelAvailabilityForPlatform(
 	if s.accountRepo == nil {
 		return ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true}
 	}
+	if schedulerSnapshotOnlyFromContext(ctx) {
+		return diagnoseModelAvailabilityFromSchedulerSnapshot(s.schedulerSnapshot, ctx, groupID, requestedModel, platform)
+	}
 
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	queryGroupID := groupID
@@ -60,7 +63,7 @@ func (s *OpenAIGatewayService) DiagnoseModelAvailabilityForPlatform(
 		// (openai_account_scheduler.isAccountRequestCompatible): empty
 		// model_mapping accepts everything; otherwise the explicit / wildcard
 		// mapping must match.
-		if accounts[i].IsModelSupported(requestedModel) {
+		if accounts[i].IsModelSupported(requestedModel) && supportsUpstreamModelForRequest(ctx, &accounts[i], requestedModel, false) {
 			diag.HasModelSupport = true
 			return diag
 		}

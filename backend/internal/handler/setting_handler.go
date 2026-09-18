@@ -130,29 +130,14 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 	})
 }
 
-// GetCustomEndpoints returns admin-configured extra API endpoints only to users
-// whose cumulative successful recharge has reached the configured threshold.
-// GET /api/v1/user/custom-endpoints
+// GetCustomEndpoints returns admin-configured extra API endpoints to any
+// authenticated user. GET /api/v1/user/custom-endpoints
 func (h *SettingHandler) GetCustomEndpoints(c *gin.Context) {
 	c.Header("Cache-Control", "private, no-store")
 
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok || subject.UserID <= 0 {
 		response.Unauthorized(c, "User not authenticated")
-		return
-	}
-	if h.userService == nil {
-		response.Error(c, http.StatusInternalServerError, "User service unavailable")
-		return
-	}
-
-	user, err := h.userService.GetByID(c.Request.Context(), subject.UserID)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	if user.TotalRecharged < service.CustomEndpointRechargeThreshold {
-		response.Success(c, []dto.CustomEndpoint{})
 		return
 	}
 

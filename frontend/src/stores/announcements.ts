@@ -117,6 +117,10 @@ export const useAnnouncementStore = defineStore('announcements', () => {
     }
   }
 
+  function hidePopupForNavigation() {
+    currentPopup.value = null
+  }
+
   function reset() {
     announcements.value = []
     lastFetchTime.value = 0
@@ -138,6 +142,7 @@ export const useAnnouncementStore = defineStore('announcements', () => {
     dismissPopup,
     markAsRead,
     markAllAsRead,
+    hidePopupForNavigation,
     reset,
   }
 })

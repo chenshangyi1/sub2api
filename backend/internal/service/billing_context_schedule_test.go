@@ -193,7 +193,7 @@ func scheduleScenarios() []scheduleScenario {
 			},
 		},
 		{
-			name: "分组 token 价卡整张替换渠道定价并剥区间", model: "claude-sonnet-4", platform: PlatformAnthropic, groupPlatform: PlatformAnthropic,
+			name: "渠道定价覆盖分组 token 价卡并保留渠道区间", model: "claude-sonnet-4", platform: PlatformAnthropic, groupPlatform: PlatformAnthropic,
 			group: &Group{ID: 100, Platform: PlatformAnthropic, LongContextPricingEnabled: true, ModelPricing: []ChannelModelPricing{{
 				Models: []string{"claude-sonnet-*"}, BillingMode: BillingModeToken, InputPrice: p(1e-6),
 				Intervals: []PricingInterval{{MinTokens: 200000, InputMultiplier: p(5)}},
@@ -201,8 +201,9 @@ func scheduleScenarios() []scheduleScenario {
 			channel:   sonnetChannel(PricingInterval{MinTokens: 200000, InputMultiplier: p(3)}),
 			wantBasis: ContextPricingBasisWholeRequest,
 			check: func(t *testing.T, s *ContextPricingSchedule) {
-				require.Len(t, s.Tiers, 1)
-				requireTier(t, s.Tiers[0], 0, nil, "", p(1e-6), p(15e-6), p(3.75e-6), p(0.3e-6))
+				require.Len(t, s.Tiers, 2)
+				requireTier(t, s.Tiers[0], 0, intPtr(200000), "≤200K", p(2e-6), p(15e-6), p(3.75e-6), p(0.3e-6))
+				requireTier(t, s.Tiers[1], 200000, nil, ">200K", p(6e-6), p(15e-6), p(3.75e-6), p(0.3e-6))
 			},
 		},
 		{
@@ -597,7 +598,7 @@ func TestResolveContextPricingSchedule_TimePricing(t *testing.T) {
 		require.Nil(t, sched.TimePricing)
 	})
 
-	t.Run("分组价卡覆盖后渠道分时不再生效", func(t *testing.T) {
+	t.Run("渠道定价覆盖分组价卡后渠道分时仍生效", func(t *testing.T) {
 		bs, resolver := newTokenCostTestEnv(t, PlatformAnthropic, sonnetChannelWithTimePricing(valid), nil)
 		group := &Group{ID: 100, Platform: PlatformAnthropic, LongContextPricingEnabled: true, ModelPricing: []ChannelModelPricing{{
 			Models: []string{"claude-sonnet-4"}, BillingMode: BillingModeToken, InputPrice: testPtrFloat64(1e-6),
@@ -606,7 +607,8 @@ func TestResolveContextPricingSchedule_TimePricing(t *testing.T) {
 			Model: "claude-sonnet-4", Group: group, Platform: PlatformAnthropic,
 		})
 		require.NoError(t, err)
-		require.Nil(t, sched.TimePricing)
+		require.NotNil(t, sched.TimePricing)
+		require.Equal(t, "Asia/Shanghai", sched.TimePricing.Timezone)
 	})
 
 	t.Run("无分时配置为 nil", func(t *testing.T) {

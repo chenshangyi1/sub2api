@@ -53,7 +53,7 @@ type epusdtStatusData struct {
 
 func NewEPUSDT(instanceID string, config map[string]string) (*EPUSDT, error) {
 	cfg := cloneStringMap(config)
-	for _, key := range []string{"pid", "secretKey", "apiBase", "notifyUrl", "returnUrl", "token", "network", "currency"} {
+	for _, key := range []string{"pid", "secretKey", "apiBase", "notifyUrl", "returnUrl", "token", "currency"} {
 		if strings.TrimSpace(cfg[key]) == "" {
 			return nil, fmt.Errorf("epusdt config missing required key: %s", key)
 		}
@@ -81,8 +81,8 @@ func NewEPUSDT(instanceID string, config map[string]string) (*EPUSDT, error) {
 		return nil, fmt.Errorf("epusdt pid is too long")
 	}
 	token := strings.ToUpper(strings.TrimSpace(cfg["token"]))
-	network := strings.ToLower(strings.TrimSpace(cfg["network"]))
-	if token == "" || network == "" {
+	networks := payment.EPUSDTNetworksFromMap(cfg)
+	if token == "" || len(networks) == 0 {
 		return nil, fmt.Errorf("epusdt token and network are required")
 	}
 
@@ -91,7 +91,8 @@ func NewEPUSDT(instanceID string, config map[string]string) (*EPUSDT, error) {
 	cfg["returnUrl"] = returnURL
 	cfg["pid"] = pid
 	cfg["token"] = token
-	cfg["network"] = network
+	cfg["networks"] = strings.Join(networks, ",")
+	cfg["network"] = networks[0]
 	cfg["currency"] = currency
 
 	return &EPUSDT{
@@ -124,15 +125,15 @@ func normalizeEPUSDTOrderReturnURL(raw, configured string) (string, error) {
 	if err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil {
 		return "", fmt.Errorf("epusdt returnUrl configuration is invalid")
 	}
-	if strings.EqualFold(parsed.Scheme, "http") {
-		// The site can be opened through the legacy HTTP/IP entrypoint. EPUSDT
-		// requires HTTPS, so canonicalize that accepted same-site origin to the
-		// configured HTTPS merchant origin instead of forwarding an HTTP URL.
+	if !strings.EqualFold(parsed.Scheme, base.Scheme) || !strings.EqualFold(parsed.Host, base.Host) {
+		// Checkout can be opened on an alias host (milarain.shop) or a legacy
+		// HTTP/IP entrypoint while the EPUSDT instance is bound to one HTTPS
+		// merchant origin (baiyuan.cc.cd). GMPay only accepts that configured
+		// origin, so rewrite the already-accepted return URL onto it instead of
+		// rejecting the order.
 		parsed.Scheme = base.Scheme
 		parsed.Host = base.Host
 		parsed.User = nil
-	} else if !strings.EqualFold(parsed.Scheme, base.Scheme) || !strings.EqualFold(parsed.Host, base.Host) {
-		return "", fmt.Errorf("epusdt returnUrl host mismatch")
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	parsed.RawPath = ""
@@ -154,6 +155,29 @@ func (e *EPUSDT) MerchantIdentityMetadata() map[string]string {
 		"network":  e.config["network"],
 		"currency": e.config["currency"],
 	}
+}
+
+func (e *EPUSDT) resolveUpstreamNetwork(paymentType string) string {
+	wanted := payment.NormalizeEPUSDTNetwork(payment.EPUSDTCheckoutNetwork(paymentType))
+	configured := payment.EPUSDTNetworksFromMap(e.config)
+	if wanted != "" {
+		for _, network := range configured {
+			if network == wanted {
+				return payment.EPUSDTUpstreamNetwork(wanted)
+			}
+		}
+		return ""
+	}
+	if len(configured) == 1 {
+		return payment.EPUSDTUpstreamNetwork(configured[0])
+	}
+	if fallback := payment.NormalizeEPUSDTNetwork(e.config["network"]); fallback != "" {
+		return payment.EPUSDTUpstreamNetwork(fallback)
+	}
+	if len(configured) > 0 {
+		return payment.EPUSDTUpstreamNetwork(configured[0])
+	}
+	return ""
 }
 
 func (e *EPUSDT) CreatePayment(ctx context.Context, req payment.CreatePaymentRequest) (*payment.CreatePaymentResponse, error) {
@@ -187,12 +211,17 @@ func (e *EPUSDT) CreatePayment(ctx context.Context, req payment.CreatePaymentReq
 		return nil, err
 	}
 
+	network := e.resolveUpstreamNetwork(req.PaymentType)
+	if network == "" {
+		return nil, fmt.Errorf("epusdt create payment: network is not configured")
+	}
+
 	payload := map[string]interface{}{
 		"pid":          e.config["pid"],
 		"order_id":     orderID,
 		"currency":     e.config["currency"],
 		"token":        e.config["token"],
-		"network":      e.config["network"],
+		"network":      network,
 		"amount":       amount,
 		"notify_url":   notifyURL,
 		"redirect_url": returnURL,

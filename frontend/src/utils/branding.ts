@@ -1,20 +1,32 @@
 import { sanitizeUrl } from '@/utils/url'
 
-export const defaultBrandLogo = '/logo-v2.svg'
+export const defaultBrandLogo = '/logo.png'
+const legacyDefaultLogos = new Set(['/logo.svg', '/logo-v2.svg', '/logo.png'])
 
-export function resolveBrandLogo(logoUrl: string): string {
-  const sanitizedLogoUrl = sanitizeUrl(logoUrl, { allowRelative: true, allowDataUrl: true })
-  return sanitizedLogoUrl || defaultBrandLogo
+export function resolveBrandLogo(logoUrl = ''): string {
+  const sanitizedLogoUrl = sanitizeUrl(logoUrl, {
+    allowRelative: true,
+    allowDataUrl: true,
+  })
+  if (!sanitizedLogoUrl || legacyDefaultLogos.has(sanitizedLogoUrl)) {
+    return defaultBrandLogo
+  }
+  return sanitizedLogoUrl
 }
 
 export function updateFavicon(logoUrl: string): void {
-  const resolvedLogoUrl = resolveBrandLogo(logoUrl)
+  const sanitizedLogoUrl = resolveBrandLogo(logoUrl)
+  if (!sanitizedLogoUrl) {
+    return
+  }
+
   let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
   if (!link) {
     link = document.createElement('link')
     link.rel = 'icon'
     document.head.appendChild(link)
   }
-  link.type = resolvedLogoUrl.endsWith('.svg') ? 'image/svg+xml' : 'image/x-icon'
-  link.href = resolvedLogoUrl
+
+  link.type = sanitizedLogoUrl.endsWith('.svg') ? 'image/svg+xml' : 'image/x-icon'
+  link.href = sanitizedLogoUrl
 }

@@ -844,11 +844,24 @@ func TestApplyTokenOverrides_IntervalDoesNotPolluteFallbackPrices(t *testing.T) 
 	require.False(t, fp.ImageOutputPriceExplicit, "fallback ImageOutputPriceExplicit polluted")
 }
 
-func TestResolve_GroupPricingOverridesChannel(t *testing.T) {
+func TestResolve_ChannelPricingOverridesGroupCard(t *testing.T) {
 	r := newResolverWithChannel(t, []ChannelModelPricing{{
 		Platform: "anthropic", Models: []string{"claude-sonnet-4"}, BillingMode: BillingModeToken,
 		InputPrice: testPtrFloat64(10e-6), OutputPrice: testPtrFloat64(20e-6),
 	}})
+	group := &Group{ID: 100, ModelPricing: []ChannelModelPricing{{
+		Models: []string{"claude-sonnet-*"}, BillingMode: BillingModeToken,
+		InputPrice: testPtrFloat64(1e-6), OutputPrice: testPtrFloat64(2e-6),
+	}}}
+	resolved := r.Resolve(context.Background(), PricingInput{Model: "claude-sonnet-4", GroupID: groupIDPtr(), Group: group})
+
+	require.Equal(t, PricingSourceChannel, resolved.Source)
+	require.InDelta(t, 10e-6, resolved.BasePricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, 20e-6, resolved.BasePricing.OutputPricePerToken, 1e-12)
+}
+
+func TestResolve_GroupPricingUsedWhenChannelMissing(t *testing.T) {
+	r := newResolverWithChannel(t, nil)
 	group := &Group{ID: 100, ModelPricing: []ChannelModelPricing{{
 		Models: []string{"claude-sonnet-*"}, BillingMode: BillingModeToken,
 		InputPrice: testPtrFloat64(1e-6), OutputPrice: testPtrFloat64(2e-6),

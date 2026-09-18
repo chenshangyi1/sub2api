@@ -1,12 +1,12 @@
 <template>
   <AppLayout>
-    <div :class="['mx-auto w-full space-y-6', activeTab === 'rechargeCenter' ? 'max-w-[1440px]' : 'max-w-4xl']">
+    <div class="mx-auto w-full max-w-4xl space-y-6">
       <div v-if="loading" class="flex items-center justify-center py-20">
         <div class="h-8 w-8 animate-spin rounded-full border-4 border-primary-500 border-t-transparent"></div>
       </div>
       <template v-else>
         <!-- Tab Switcher (hide during payment and subscription confirm) -->
-        <div v-if="tabs.length > 1 && paymentPhase === 'select' && !selectedPlan" class="flex space-x-1 rounded-xl bg-gray-100 p-1 dark:bg-dark-800">
+        <div v-if="tabs.length >= 1 && paymentPhase === 'select' && !selectedPlan" class="flex space-x-1 rounded-xl bg-gray-100 p-1 dark:bg-dark-800">
           <button v-for="tab in tabs" :key="tab.key"
             class="flex-1 rounded-lg px-4 py-2.5 text-sm font-medium transition-all"
             :class="activeTab === tab.key ? 'bg-white text-gray-900 shadow dark:bg-dark-700 dark:text-white' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
@@ -33,15 +33,15 @@
         </template>
         <!-- Tab content (select phase) -->
         <template v-else>
-          <!-- Top-up Tab -->
-          <template v-if="activeTab === 'recharge'">
+          <!-- Native top-up: USDT/other methods, or Alipay+WeChat together -->
+          <template v-if="activeTab === 'recharge' || activeTab === 'rechargeCenter'">
             <!-- Recharge Account Card -->
             <div class="card p-5">
               <p class="text-xs font-medium text-gray-400 dark:text-gray-500">{{ t('payment.rechargeAccount') }}</p>
               <p class="mt-1 text-base font-semibold text-gray-900 dark:text-white">{{ user?.username || '' }}</p>
               <p class="mt-0.5 text-sm font-medium text-green-600 dark:text-green-400">{{ t('payment.currentBalance') }}: {{ user?.balance?.toFixed(2) || '0.00' }}</p>
             </div>
-            <div v-if="enabledMethods.length === 0" class="card py-16 text-center">
+            <div v-if="activeRechargeMethods.length === 0" class="card py-16 text-center">
               <p class="text-gray-500 dark:text-gray-400">{{ t('payment.notAvailable') }}</p>
             </div>
             <template v-else>
@@ -49,17 +49,21 @@
               <AmountInput
                 v-model="amount"
                 :amounts="[10, 20, 50, 100, 200, 500, 1000, 2000, 5000]"
-                :min="globalMinAmount"
-                :max="globalMaxAmount"
+                :min="activeMinAmount"
+                :max="activeMaxAmount"
               />
               <p v-if="amountError" class="mt-2 text-xs text-amber-600 dark:text-amber-300">{{ amountError }}</p>
             </div>
-            <div v-if="enabledMethods.length >= 1" class="card p-6">
+            <div v-if="activeRechargeMethods.length >= 1" class="card p-6">
               <PaymentMethodSelector
                 :methods="methodOptions"
                 :selected="selectedMethod"
+                :label="cryptoNetworkSelector ? t('payment.paymentNetwork') : undefined"
                 @select="selectedMethod = $event"
               />
+              <p v-if="cryptoNetworkSelector" class="mt-3 text-xs font-medium text-red-600 dark:text-red-400">
+                {{ t('payment.cryptoNetworkWarning') }}
+              </p>
             </div>
             <div v-if="validAmount > 0" class="card p-6">
               <div class="space-y-2 text-sm">
@@ -80,7 +84,7 @@
                   <span class="text-gray-900 dark:text-white">${{ creditedAmount.toFixed(2) }}</span>
                 </div>
                 <p v-if="balanceRechargeMultiplier !== 1" class="border-t border-gray-200 pt-2 text-xs text-gray-500 dark:border-dark-600 dark:text-gray-400">
-                  {{ t('payment.rechargeRatePreview', { usd: balanceRechargeMultiplier.toFixed(2) }) }}
+                  {{ t('payment.rechargeRatePreview', { currency: selectedCurrency, usd: balanceRechargeMultiplier.toFixed(2) }) }}
                 </p>
               </div>
             </div>
@@ -92,48 +96,6 @@
               <span v-else>{{ t('payment.createOrder') }} {{ formatSelectedPaymentAmount(totalAmount) }}</span>
             </button>
             </template>
-          </template>
-          <!-- Recharge Center Tab: reuse the configured custom payment center instead of subscriptions -->
-          <template v-else-if="activeTab === 'rechargeCenter'">
-            <div ref="rechargeCenterFrameRef" class="recharge-center-shell overflow-hidden rounded-2xl border border-blue-100/80 bg-white/80 shadow-sm dark:border-blue-900/50 dark:bg-dark-800/80">
-              <div class="flex flex-col gap-3 border-b border-blue-100/70 bg-gradient-to-r from-blue-50/80 via-white to-cyan-50/70 px-5 py-4 sm:flex-row sm:items-center sm:justify-between dark:border-blue-900/40 dark:from-blue-950/40 dark:via-dark-800 dark:to-cyan-950/30">
-                <div>
-                  <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('payment.rechargeCenterTitle') }}</p>
-                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('payment.rechargeCenterDescription') }}</p>
-                </div>
-                <div v-if="rechargeCenterUrl" class="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    class="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-medium text-blue-700 transition hover:border-blue-300 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 dark:border-blue-800 dark:bg-dark-800 dark:text-blue-300 dark:hover:bg-blue-950/40"
-                    :aria-label="isRechargeCenterFullscreen ? t('payment.rechargeCenterExitFullscreen') : t('payment.rechargeCenterFullscreen')"
-                    @click="toggleRechargeCenterFullscreen"
-                  >
-                    <Icon :name="isRechargeCenterFullscreen ? 'x' : 'arrowsUpDown'" size="sm" aria-hidden="true" />
-                    <span>{{ isRechargeCenterFullscreen ? t('payment.rechargeCenterExitFullscreen') : t('payment.rechargeCenterFullscreen') }}</span>
-                  </button>
-                  <a
-                    :href="rechargeCenterUrl"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="inline-flex min-h-10 items-center justify-center rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-medium text-blue-700 transition hover:border-blue-300 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 dark:border-blue-800 dark:bg-dark-800 dark:text-blue-300 dark:hover:bg-blue-950/40"
-                  >
-                    {{ t('payment.rechargeCenterOpen') }}
-                  </a>
-                </div>
-              </div>
-              <div v-if="rechargeCenterUrl" class="recharge-center-frame bg-white p-2 dark:bg-dark-900/30 sm:p-3">
-                <iframe
-                  :src="rechargeCenterUrl"
-                  title="Recharge Center"
-                  class="h-[clamp(720px,calc(100dvh-210px),1080px)] min-h-[720px] w-full rounded-xl border border-gray-100 bg-white dark:border-dark-700"
-                  allow="payment *; clipboard-write"
-                  allowfullscreen
-                ></iframe>
-              </div>
-              <div v-else class="px-5 py-16 text-center text-sm text-gray-500 dark:text-gray-400">
-                {{ t('payment.rechargeCenterUnavailable') }}
-              </div>
-            </div>
           </template>
           <!-- Legacy subscription flow kept for compatibility with existing order recovery links. -->
           <template v-else-if="activeTab === 'subscription'">
@@ -273,13 +235,13 @@
     <Teleport to="body">
       <Transition name="modal">
         <div v-if="showRenewalModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" @click.self="closeRenewalModal">
-          <div class="relative w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl dark:border-dark-700 dark:bg-dark-900">
+          <div class="relative flex max-h-full w-full max-w-lg flex-col rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl dark:border-dark-700 dark:bg-dark-900">
             <!-- Close button -->
             <button class="absolute right-4 top-4 rounded-lg p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-dark-700 dark:hover:text-gray-200" @click="closeRenewalModal">
               <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
-            <h3 class="mb-4 text-lg font-semibold text-gray-900 dark:text-white">{{ t('payment.selectPlan') }}</h3>
-            <div class="space-y-4">
+            <h3 class="mb-4 shrink-0 text-lg font-semibold text-gray-900 dark:text-white">{{ t('payment.selectPlan') }}</h3>
+            <div class="min-h-0 space-y-4 overflow-y-auto">
               <SubscriptionPlanCard v-for="plan in renewalPlans" :key="plan.id" :plan="plan" :active-subscriptions="activeSubscriptions" @select="selectPlanFromModal" />
             </div>
           </div>
@@ -298,7 +260,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
@@ -313,12 +275,13 @@ import type { SubscriptionPlan, CheckoutInfoResponse, CreateOrderResult, OrderTy
 import AppLayout from '@/components/layout/AppLayout.vue'
 import AmountInput from '@/components/payment/AmountInput.vue'
 import PaymentMethodSelector from '@/components/payment/PaymentMethodSelector.vue'
-import { METHOD_ORDER, getPaymentPopupFeatures, isBuiltInAlipayMethod, isBuiltInWxpayMethod } from '@/components/payment/providerConfig'
+import { METHOD_ORDER, getPaymentPopupFeatures, isBuiltInAlipayMethod, isBuiltInWxpayMethod, isEpusdtMethod } from '@/components/payment/providerConfig'
 import {
   PAYMENT_RECOVERY_STORAGE_KEY,
   buildCreateOrderPayload,
   clearPaymentRecoverySnapshot,
   decidePaymentLaunch,
+  checkoutPaymentType,
   getVisibleMethods,
   normalizeVisibleMethod,
   readPaymentRecoverySnapshot,
@@ -333,7 +296,6 @@ import { DEFAULT_PAYMENT_CURRENCY, formatPaymentAmount, normalizePaymentCurrency
 import { planValiditySuffix as validitySuffixOf } from '@/components/payment/validity'
 import type { PaymentMethodOption } from '@/components/payment/PaymentMethodSelector.vue'
 import { buildPaymentErrorToastMessage, describePaymentScenarioError } from './paymentUx'
-import { buildEmbeddedUrl, detectTheme } from '@/utils/embedded-url'
 import { hasWechatResumeQuery, parseWechatResumeRoute, stripWechatResumeQuery } from './paymentWechatResume'
 
 const i18n = useI18n()
@@ -365,9 +327,8 @@ const loading = ref(true)
 const submitting = ref(false)
 const errorMessage = ref('')
 const errorHintMessage = ref('')
-const activeTab = ref<'recharge' | 'rechargeCenter' | 'subscription'>('recharge')
-const rechargeCenterFrameRef = ref<HTMLElement | null>(null)
-const isRechargeCenterFullscreen = ref(false)
+type PurchaseTab = 'recharge' | 'rechargeCenter' | 'subscription'
+const activeTab = ref<PurchaseTab>('recharge')
 const amount = ref<number | null>(null)
 const selectedMethod = ref('')
 const selectedPlan = ref<SubscriptionPlan | null>(null)
@@ -550,20 +511,61 @@ const checkout = ref<CheckoutInfoResponse>({
   plans: [], balance_disabled: false, balance_recharge_multiplier: 1, subscription_usd_to_cny_rate: 0, recharge_fee_rate: 0, help_text: '', help_image_url: '', stripe_publishable_key: '',
 })
 
+function sortPaymentMethods(types: string[]): string[] {
+  const order: readonly string[] = METHOD_ORDER
+  return [...types].sort((a, b) => {
+    const ai = order.indexOf(a)
+    const bi = order.indexOf(b)
+    return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
+  })
+}
+
+const otherRechargeMethods = computed(() =>
+  sortPaymentMethods(enabledMethods.value.filter((type) => !isBuiltInAlipayMethod(type) && !isBuiltInWxpayMethod(type))),
+)
+const cryptoNetworkSelector = computed(() =>
+  activeTab.value === 'recharge' && activeRechargeMethods.value.length > 0 && activeRechargeMethods.value.every(isEpusdtMethod),
+)
 const tabs = computed(() => {
-  const result: { key: 'recharge' | 'rechargeCenter'; label: string }[] = []
-  if (!checkout.value.balance_disabled) result.push({ key: 'recharge', label: t('payment.tabTopUp') })
-  result.push({ key: 'rechargeCenter', label: t('payment.tabRechargeCenter') })
+  const result: { key: PurchaseTab; label: string }[] = []
+  if (!checkout.value.balance_disabled && otherRechargeMethods.value.length) {
+    result.push({ key: 'recharge', label: t('payment.tabTopUp') })
+  }
+  if (hasNativeCnPayMethod.value) result.push({ key: 'rechargeCenter', label: t('payment.tabRechargeCenter') })
   return result
 })
 
 const visibleMethods = computed(() => getVisibleMethods(checkout.value.methods))
 const enabledMethods = computed(() => Object.keys(visibleMethods.value))
-const validAmount = computed(() => amount.value ?? 0)
-const balanceRechargeMultiplier = computed(() => {
-  const multiplier = checkout.value.balance_recharge_multiplier
-  return Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1
+const hasAlipayMethod = computed(() => enabledMethods.value.some((type) => isBuiltInAlipayMethod(type)))
+const hasWxpayMethod = computed(() => enabledMethods.value.some((type) => isBuiltInWxpayMethod(type)))
+const hasNativeCnPayMethod = computed(() => hasAlipayMethod.value || hasWxpayMethod.value)
+const activeRechargeMethods = computed(() => {
+  if (activeTab.value === 'rechargeCenter') {
+    return enabledMethods.value.filter((type) => isBuiltInAlipayMethod(type) || isBuiltInWxpayMethod(type))
+  }
+  return otherRechargeMethods.value
 })
+const validAmount = computed(() => amount.value ?? 0)
+
+function inheritRechargeFeeRate(override: number | null | undefined, fallback: number): number {
+  return override == null || Number.isNaN(override) ? fallback : override
+}
+
+function methodRechargeFeeRate(methodType: string): number {
+  const ml = visibleMethods.value[methodType]
+  return inheritRechargeFeeRate(ml?.recharge_fee_rate, checkout.value?.recharge_fee_rate ?? 0)
+}
+
+function methodBalanceRechargeMultiplier(methodType: string): number {
+  const ml = visibleMethods.value[methodType]
+  const override = ml?.balance_recharge_multiplier
+  if (override != null && Number.isFinite(override) && override > 0) return override
+  const fallback = checkout.value.balance_recharge_multiplier
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : 1
+}
+
+const balanceRechargeMultiplier = computed(() => methodBalanceRechargeMultiplier(selectedMethod.value))
 // 订阅 CNY 换算汇率（1 USD = X CNY）。0 = 未配置，订阅保持 price 直付（与后端 opt-in 条件严格镜像）。
 const subscriptionUsdToCnyRate = computed(() => {
   const rate = checkout.value.subscription_usd_to_cny_rate
@@ -588,20 +590,6 @@ function amountFitsMethod(amt: number, methodType: string): boolean {
   return true
 }
 
-// Visible methods decide the amount range shown to users.
-const globalMinAmount = computed(() => {
-  const limits = Object.values(visibleMethods.value)
-  if (limits.length === 0) return 0
-  if (limits.some(limit => limit.single_min <= 0)) return 0
-  return Math.min(...limits.map(limit => limit.single_min))
-})
-const globalMaxAmount = computed(() => {
-  const limits = Object.values(visibleMethods.value)
-  if (limits.length === 0) return 0
-  if (limits.some(limit => limit.single_max <= 0)) return 0
-  return Math.max(...limits.map(limit => limit.single_max))
-})
-
 // Selected method's limits (for validation and error messages)
 const selectedLimit = computed(() => visibleMethods.value[selectedMethod.value])
 const selectedCurrency = computed(() => normalizePaymentCurrency(selectedLimit.value?.currency))
@@ -613,40 +601,6 @@ const localeCode = computed(() => {
   }
   return undefined
 })
-
-const RECHARGE_CENTER_MENU_ID = '322273f5aaa4d036'
-const rechargeCenterUrl = computed(() => {
-  const item = appStore.cachedPublicSettings?.custom_menu_items?.find(
-    candidate => candidate.id === RECHARGE_CENTER_MENU_ID,
-  )
-  const baseUrl = item?.url?.trim() || ''
-  if (!baseUrl || baseUrl.startsWith('md:')) return ''
-  return buildEmbeddedUrl(
-    baseUrl,
-    authStore.user?.id,
-    authStore.token,
-    detectTheme(),
-    localeCode.value,
-  )
-})
-
-function handleRechargeCenterFullscreenChange() {
-  isRechargeCenterFullscreen.value = typeof document !== 'undefined'
-    && document.fullscreenElement === rechargeCenterFrameRef.value
-}
-
-async function toggleRechargeCenterFullscreen() {
-  if (typeof document === 'undefined' || !rechargeCenterFrameRef.value) return
-  try {
-    if (document.fullscreenElement === rechargeCenterFrameRef.value) {
-      await document.exitFullscreen()
-    } else {
-      await rechargeCenterFrameRef.value.requestFullscreen()
-    }
-  } catch {
-    // Fullscreen can be denied by browser policy; the iframe remains usable.
-  }
-}
 
 function currencyFractionDigits(currency: string): number {
   try {
@@ -686,18 +640,35 @@ function formatSelectedSubscriptionPaymentAmount(value: number): string {
 }
 
 const methodOptions = computed<PaymentMethodOption[]>(() =>
-  enabledMethods.value.map((type) => {
+  activeRechargeMethods.value.map((type) => {
     const ml = visibleMethods.value[type]
     return {
       type,
       display_name: ml?.display_name,
-      fee_rate: ml?.fee_rate ?? 0,
+      fee_rate: methodRechargeFeeRate(type),
       available: ml?.available !== false && amountFitsMethod(validAmount.value, type),
     }
   })
 )
 
-const feeRate = computed(() => checkout.value?.recharge_fee_rate ?? 0)
+const activeMinAmount = computed(() => {
+  const limits = activeRechargeMethods.value
+    .map((type) => visibleMethods.value[type])
+    .filter((limit): limit is NonNullable<typeof limit> => Boolean(limit))
+  if (limits.length === 0) return 0
+  if (limits.some(limit => limit.single_min <= 0)) return 0
+  return Math.min(...limits.map(limit => limit.single_min))
+})
+const activeMaxAmount = computed(() => {
+  const limits = activeRechargeMethods.value
+    .map((type) => visibleMethods.value[type])
+    .filter((limit): limit is NonNullable<typeof limit> => Boolean(limit))
+  if (limits.length === 0) return 0
+  if (limits.some(limit => limit.single_max <= 0)) return 0
+  return Math.max(...limits.map(limit => limit.single_max))
+})
+
+const feeRate = computed(() => methodRechargeFeeRate(selectedMethod.value))
 const feeAmount = computed(() =>
   feeRate.value > 0 && validAmount.value > 0
     ? Math.ceil(((validAmount.value * feeRate.value) / 100) * 100) / 100
@@ -712,7 +683,7 @@ const totalAmount = computed(() =>
 const amountError = computed(() => {
   if (validAmount.value <= 0) return ''
   // No method can handle this amount
-  if (!enabledMethods.value.some((m) => amountFitsMethod(validAmount.value, m))) {
+  if (!activeRechargeMethods.value.some((m) => amountFitsMethod(validAmount.value, m))) {
     return t('payment.amountNoMethod')
   }
   // Selected method can't handle this amount (but others can)
@@ -761,7 +732,7 @@ const subMethodOptions = computed<PaymentMethodOption[]>(() => {
     return {
       type,
       display_name: ml?.display_name,
-      fee_rate: ml?.fee_rate ?? 0,
+      fee_rate: methodRechargeFeeRate(type),
       available: ml?.available !== false && amountFitsMethod(subscriptionTotalAmountForCurrency(price, currency), type),
     }
   })
@@ -774,9 +745,25 @@ const canSubmitSubscription = computed(() =>
 )
 
 // Auto-switch to first available method when current selection can't handle the amount
-watch(() => [validAmount.value, selectedMethod.value] as const, ([amt, method]) => {
+function pickDefaultMethod(pool: string[]) {
+  if (!pool.length) return
+  const order: readonly string[] = METHOD_ORDER
+  const sorted = [...pool].sort((a, b) => {
+    const ai = order.indexOf(a)
+    const bi = order.indexOf(b)
+    return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
+  })
+  selectedMethod.value = sorted[0]
+}
+
+watch(activeTab, () => {
+  if (activeRechargeMethods.value.includes(selectedMethod.value)) return
+  pickDefaultMethod(activeRechargeMethods.value)
+})
+
+watch(() => [validAmount.value, selectedMethod.value, activeTab.value] as const, ([amt, method]) => {
   if (amt <= 0 || amountFitsMethod(amt, method)) return
-  const available = enabledMethods.value.find((m) => amountFitsMethod(amt, m))
+  const available = activeRechargeMethods.value.find((m) => amountFitsMethod(amt, m))
   if (available) selectedMethod.value = available
 })
 
@@ -847,7 +834,7 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
   submitting.value = true
   errorMessage.value = ''
   errorHintMessage.value = ''
-  const requestType = normalizeVisibleMethod(options.paymentType || selectedMethod.value) || options.paymentType || selectedMethod.value
+  const requestType = checkoutPaymentType(options.paymentType || selectedMethod.value)
   try {
     const payload = buildCreateOrderPayload({
       amount: orderAmount,
@@ -1176,19 +1163,13 @@ async function resumeWechatPaymentFromQuery() {
 }
 
 onMounted(async () => {
-  document.addEventListener('fullscreenchange', handleRechargeCenterFullscreenChange)
   try {
     const res = await paymentAPI.getCheckoutInfo()
     checkout.value = res.data
-    if (enabledMethods.value.length) {
-      const order: readonly string[] = METHOD_ORDER
-      const sorted = [...enabledMethods.value].sort((a, b) => {
-        const ai = order.indexOf(a)
-        const bi = order.indexOf(b)
-        return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
-      })
-      selectedMethod.value = sorted[0]
+    if (!otherRechargeMethods.value.length && hasNativeCnPayMethod.value) {
+      activeTab.value = 'rechargeCenter'
     }
+    pickDefaultMethod(activeRechargeMethods.value)
     if (typeof window !== 'undefined') {
       if (hasWechatResumeQuery(route.query)) {
         removeRecoverySnapshot()
@@ -1205,9 +1186,15 @@ onMounted(async () => {
       if (restored) {
         paymentState.value = restored
         paymentPhase.value = 'paying'
-        const restoredMethod = normalizeVisibleMethod(restored.paymentType)
-          || (visibleMethods.value[restored.paymentType] ? restored.paymentType : '')
+        const restoredMethod = visibleMethods.value[restored.paymentType]
+          ? restored.paymentType
+          : (normalizeVisibleMethod(restored.paymentType) || '')
         if (restoredMethod) {
+          if (isBuiltInAlipayMethod(restoredMethod) || isBuiltInWxpayMethod(restoredMethod)) {
+            activeTab.value = 'rechargeCenter'
+          } else {
+            activeTab.value = 'recharge'
+          }
           selectedMethod.value = restoredMethod
         }
       } else {
@@ -1215,7 +1202,7 @@ onMounted(async () => {
       }
     }
     await resumeWechatPaymentFromQuery()
-    if (checkout.value.balance_disabled) {
+    if (checkout.value.balance_disabled && hasNativeCnPayMethod.value) {
       activeTab.value = 'rechargeCenter'
     }
     // Preserve legacy subscription deep links for payment callbacks and old renewal URLs.
@@ -1239,27 +1226,4 @@ onMounted(async () => {
   subscriptionStore.fetchActiveSubscriptions().catch(() => {})
 })
 
-onUnmounted(() => {
-  document.removeEventListener('fullscreenchange', handleRechargeCenterFullscreenChange)
-})
 </script>
-
-<style scoped>
-.recharge-center-shell:fullscreen {
-  display: flex;
-  height: 100dvh;
-  width: 100vw;
-  flex-direction: column;
-  border-radius: 0;
-}
-
-.recharge-center-shell:fullscreen .recharge-center-frame {
-  min-height: 0;
-  flex: 1;
-}
-
-.recharge-center-shell:fullscreen iframe {
-  height: 100%;
-  min-height: 0;
-}
-</style>

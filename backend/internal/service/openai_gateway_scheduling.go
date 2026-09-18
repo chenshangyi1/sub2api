@@ -255,7 +255,8 @@ func (s *OpenAIGatewayService) SelectAccountForModel(ctx context.Context, groupI
 // SelectAccountForModelWithExclusions selects an account supporting the requested model while excluding specified accounts.
 // SelectAccountForModelWithExclusions 选择支持指定模型的账号，同时排除指定的账号。
 func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
-	ctx = withSchedulerFreshness(ctx, s.accountRepo, s.schedulerSnapshot)
+	ctx = withSchedulerRequestMode(ctx, s.accountRepo, s.schedulerSnapshot)
+	ctx = withSchedulerSelectionFallback(ctx)
 	return s.selectAccountForModelWithExclusions(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, 0, "", false)
 }
 
@@ -270,6 +271,8 @@ func (s *OpenAIGatewayService) SelectAccountForTokenCount(
 	requiredCapability OpenAIEndpointCapability,
 	platform string,
 ) (*Account, error) {
+	ctx = withSchedulerRequestMode(ctx, s.accountRepo, s.schedulerSnapshot)
+	ctx = withSchedulerSelectionFallback(ctx)
 	ctx = WithOpenAIProfitControlSuppressed(ctx)
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
 	return s.selectAccountForModelWithExclusions(
@@ -293,10 +296,23 @@ func (s *OpenAIGatewayService) SelectAccountForTokenCount(
 // handler 调度入口仍需导出，保持导出名。）
 func NormalizeOpenAICompatiblePlatform(platform string) string {
 	switch platform {
-	case PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek:
+	case PlatformGrok, PlatformCN, PlatformVideo, PlatformKimi, PlatformZhipu, PlatformDeepseek:
 		return platform
 	default:
 		return PlatformOpenAI
+	}
+}
+
+// IsOpenAICompatibleLeafPlatform reports whether an Adaptive leaf group should
+// be scheduled/forwarded by the OpenAI-compatible engine. Anthropic/Gemini
+// leaves stay on their native schedulers — do not run this through
+// NormalizeOpenAICompatiblePlatform, which would collapse them to openai.
+func IsOpenAICompatibleLeafPlatform(platform string) bool {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case PlatformOpenAI, PlatformGrok, PlatformCN, PlatformVideo, PlatformKimi, PlatformZhipu, PlatformDeepseek:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -406,8 +422,15 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 	if account == nil {
 		return "account_nil"
 	}
-	if account.Platform != platform || !account.IsOpenAICompatible() {
+	if !account.MatchesRequestedPlatform(platform) || !account.IsOpenAICompatible() {
 		return "platform_mismatch"
+	}
+	// A model mismatch is a permanent capability property. Check it before
+	// cooldown/schedulability state so diagnostics report why the account can
+	// never serve this request instead of misclassifying it as a transient
+	// model cooldown.
+	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
+		return "model_not_supported"
 	}
 	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
 		if account.IsSchedulable() {
@@ -444,6 +467,9 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 			}
 			return "quota_auto_pause"
 		}
+	}
+	if !supportsUpstreamModelForRequest(ctx, account, requestedModel, requireCompact) {
+		return "upstream_model_not_supported"
 	}
 	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
 		return "model_not_supported"
@@ -896,7 +922,7 @@ func resolveOpenAIErrorSchedulingModel(billingModel, upstreamModel string) strin
 }
 
 func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability, preferLowUpstreamRate bool) (*Account, error) {
-	ctx = withSchedulerFreshness(ctx, s.accountRepo, s.schedulerSnapshot)
+	ctx = withSchedulerRequestMode(ctx, s.accountRepo, s.schedulerSnapshot)
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
@@ -917,9 +943,6 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 	if err != nil {
 		return nil, fmt.Errorf("query accounts failed: %w", err)
 	}
-	ctx = withSchedulerFreshnessAccounts(ctx, s.accountRepo, s.schedulerSnapshot, accounts)
-	accounts = applySchedulerFreshnessAccounts(ctx, accounts)
-
 	// 3. 按优先级 + LRU 选择最佳账号
 	// Select by priority + LRU
 	selected, compactBlocked, filterStats := s.selectBestAccount(ctx, groupID, platform, accounts, requestedModel, excludedIDs, requireCompact, requiredCapability, preferLowUpstreamRate)
@@ -1099,6 +1122,11 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	}
 	sort.SliceStable(eligible, func(i, j int) bool {
 		a, b := eligible[i], eligible[j]
+		aMapped := len(a.GetModelMapping()) > 0
+		bMapped := len(b.GetModelMapping()) > 0
+		if aMapped != bMapped {
+			return aMapped
+		}
 		if requireCompact && compactTiers[a.ID] != compactTiers[b.ID] {
 			return compactTiers[a.ID] > compactTiers[b.ID]
 		}
@@ -1145,9 +1173,10 @@ func (s *OpenAIGatewayService) isBetterAccount(candidate, current *Account) bool
 
 // SelectAccountWithLoadAwareness selects an account with load-awareness and wait plan.
 func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*AccountSelectionResult, error) {
+	ctx = withSchedulerRequestMode(ctx, s.accountRepo, s.schedulerSnapshot)
+	ctx = withSchedulerSelectionFallback(ctx)
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
 	ctx = s.withOpenAIGroupPrivacyRequirement(ctx, groupID)
-	ctx = withSchedulerFreshness(ctx, s.accountRepo, s.schedulerSnapshot)
 	// 分组利润控制：legacy 公共入口同样装门，保证不经
 	// selectAccountWithScheduler 的调用方也无法绕过利润准入。
 	ctx = s.withOpenAIProfitControlGate(ctx, groupID)
@@ -1204,11 +1233,11 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	if err != nil {
 		return nil, err
 	}
+	accounts, unsupported := filterAccountsSupportingRequestedModel(accounts, requestedModel)
 	if len(accounts) == 0 {
-		return nil, noAvailableOpenAISelectionError(requestedModel, false, openAISelectionFilterStats{}.summary(""))
+		return nil, noAvailableAccountsDueToModelSupport(requestedModel, unsupported)
 	}
-	ctx = withSchedulerFreshnessAccounts(ctx, s.accountRepo, s.schedulerSnapshot, accounts)
-	accounts = applySchedulerFreshnessAccounts(ctx, accounts)
+	accounts = applySchedulerFreshnessForRequest(ctx, s.accountRepo, s.schedulerSnapshot, accounts)
 	if len(accounts) == 0 {
 		return nil, noAvailableOpenAISelectionError(requestedModel, false, openAISelectionFilterStats{}.summary("freshness_unavailable"))
 	}
@@ -1287,6 +1316,15 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			parentCacheL2[id] = a
 			return a
 		}
+		if schedulerSnapshotOnlyFromContext(ctx) && s.schedulerSnapshot != nil {
+			a, err := s.schedulerSnapshot.getAccountForRequest(ctx, id)
+			if err == nil {
+				parentCacheL2[id] = a
+				return a
+			}
+			parentCacheL2[id] = nil
+			return nil
+		}
 		if s.accountRepo == nil {
 			return nil
 		}
@@ -1295,7 +1333,11 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		return a
 	}
 	baseCandidateCount := 0
-	filterStats := openAISelectionFilterStats{pool: len(accounts)}
+	filterStats := openAISelectionFilterStats{pool: len(accounts) + unsupported}
+	if unsupported > 0 {
+		filterStats.exclude("model_not_supported")
+		filterStats.reasons["model_not_supported"] = unsupported
+	}
 	candidates := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		acc := &accounts[i]
@@ -1381,8 +1423,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 
 		sort.SliceStable(available, func(i, j int) bool {
 			a, b := available[i], available[j]
-			if a.account.Priority != b.account.Priority {
-				return a.account.Priority < b.account.Priority
+			aPriority, bPriority := a.account.SchedulingPriority(groupID), b.account.SchedulingPriority(groupID)
+			if aPriority != bPriority {
+				return aPriority < bPriority
 			}
 			if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 				return a.loadInfo.LoadRate < b.loadInfo.LoadRate
@@ -1398,7 +1441,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 			}
 		})
-		shuffleWithinSortGroups(available)
+		shuffleWithinSortGroups(available, groupID)
 		if rateOrder.enabled {
 			sort.SliceStable(available, func(i, j int) bool {
 				return rateOrder.compare(available[i].account, available[j].account) < 0
@@ -1454,7 +1497,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
 		ordered := append([]*Account(nil), candidates...)
-		sortAccountsByPriorityAndLastUsed(ordered, false)
+		sortAccountsByPriorityAndLastUsedForGroup(ordered, groupID, false)
 		if rateOrder.enabled {
 			sort.SliceStable(ordered, func(i, j int) bool {
 				return rateOrder.compare(ordered[i], ordered[j]) < 0
@@ -1504,7 +1547,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	// ============ Layer 3: Fallback wait ============
-	sortAccountsByPriorityAndLastUsed(candidates, false)
+	sortAccountsByPriorityAndLastUsedForGroup(candidates, groupID, false)
 	if rateOrder.enabled {
 		sort.SliceStable(candidates, func(i, j int) bool {
 			return rateOrder.compare(candidates[i], candidates[j]) < 0
@@ -1542,7 +1585,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	if s.schedulerSnapshot != nil {
-		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, false)
+		accounts, _, err := s.schedulerSnapshot.listSchedulableAccountsForRequest(ctx, groupID, platform, false)
 		if err != nil {
 			return accounts, err
 		}
@@ -1656,6 +1699,13 @@ func (s *OpenAIGatewayService) parentAccountLookup(ctx context.Context) func(int
 		if account, known := schedulerFreshnessLookupResult(ctx, id); known {
 			return account
 		}
+		if schedulerSnapshotOnlyFromContext(ctx) && s.schedulerSnapshot != nil {
+			account, err := s.schedulerSnapshot.getAccountForRequest(ctx, id)
+			if err == nil {
+				return account
+			}
+			return nil
+		}
 		if s.accountRepo == nil {
 			return nil
 		}
@@ -1700,7 +1750,12 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDBBeforeProfit(ct
 	}
 
 	latest := account
-	if state := schedulerFreshnessFromContext(ctx); state != nil && state.enabled() {
+	if schedulerSnapshotOnlyFromContext(ctx) {
+		// The selected account came from the published scheduler snapshot.  It is
+		// the authoritative request-time view; a durable recheck is reserved for
+		// explicit recovery contexts.
+		latest = account
+	} else if state := schedulerFreshnessFromContext(ctx); state != nil && state.enabled() {
 		var ok bool
 		latest, ok = state.apply(ctx, account)
 		if !ok {
@@ -1768,7 +1823,7 @@ func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accoun
 		err     error
 	)
 	if s.schedulerSnapshot != nil {
-		account, err = s.schedulerSnapshot.GetAccount(ctx, accountID)
+		account, err = s.schedulerSnapshot.getAccountForRequest(ctx, accountID)
 	} else {
 		account, err = s.accountRepo.GetByID(ctx, accountID)
 	}
@@ -1843,7 +1898,7 @@ func (s *OpenAIGatewayService) hydrateSelectedAccount(ctx context.Context, accou
 		}
 		return hydrated, nil
 	}
-	hydrated, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
+	hydrated, err := s.schedulerSnapshot.getAccountForRequest(ctx, account.ID)
 	if err == nil && hydrated != nil {
 		if state := schedulerFreshnessFromContext(ctx); state != nil && state.enabled() {
 			fresh, ok := state.apply(ctx, hydrated)

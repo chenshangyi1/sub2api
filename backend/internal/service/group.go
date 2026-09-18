@@ -13,6 +13,7 @@ import (
 
 type OpenAIMessagesDispatchModelConfig = domain.OpenAIMessagesDispatchModelConfig
 type GroupModelsListConfig = domain.GroupModelsListConfig
+type GroupCodexModelsManifestConfig = domain.GroupCodexModelsManifestConfig
 type ReasoningEffortMapping = domain.ReasoningEffortMapping
 
 type Group struct {
@@ -28,8 +29,15 @@ type Group struct {
 	PeakEnd            string
 	PeakRateMultiplier float64
 	IsExclusive        bool
-	Status             string
-	Hydrated           bool // indicates the group was loaded from a trusted repository source
+	// UserVisible controls whether this group appears in user-facing lists
+	// (API key picker, model plaza, available channels). False means
+	// infrastructure-only (for example Adaptive leaves). Admins may still
+	// see and bind hidden groups. UserVisibleSet distinguishes an explicit
+	// false from the zero value; schema default is true.
+	UserVisible    bool
+	UserVisibleSet bool
+	Status         string
+	Hydrated       bool // indicates the group was loaded from a trusted repository source
 	// DuplicateOperationID is internal persistence metadata used only to recover
 	// an already committed one-click copy. It must never be mapped to API DTOs.
 	DuplicateOperationID string
@@ -100,11 +108,15 @@ type Group struct {
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch       bool
 	AllowLive                   bool
+	ForceOpenAIFast             bool // 强制 OpenAI 网关请求使用 service_tier=priority
+	FreeOpenAIFast              bool // OpenAI Fast 请求按 Standard 价格向用户计费
 	RequireOAuthOnly            bool // 仅允许非 apikey 类型账号关联（OpenAI/Antigravity/Anthropic/Gemini）
 	RequirePrivacySet           bool // 调度时仅允许 privacy 已成功设置的账号（OpenAI/Antigravity/Anthropic/Gemini）
 	DefaultMappedModel          string
 	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig
 	ModelsListConfig            GroupModelsListConfig
+	ModelAllowlist              GroupModelAllowlist
+	CodexModelsManifestConfig   GroupCodexModelsManifestConfig
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）。
 	// 一旦设置即接管该分组用户的限流（覆盖用户级 rpm_limit），可被 user-group rpm_override 进一步覆盖。
@@ -131,6 +143,18 @@ type Group struct {
 	AccountCount            int64
 	ActiveAccountCount      int64
 	RateLimitedAccountCount int64
+
+	// AdaptiveLeaves is user-facing leaf metadata for an Adaptive parent.
+	// Empty means the group is not an enabled Adaptive pool.
+	AdaptiveLeaves []AdaptiveLeafOption
+}
+
+// AdaptiveLeafOption is a selectable Adaptive leaf shown on API key forms.
+type AdaptiveLeafOption struct {
+	ID             int64
+	Name           string
+	Platform       string
+	RateMultiplier float64
 }
 
 func (g *Group) IsActive() bool {
@@ -399,7 +423,7 @@ func NormalizeGroupPlatform(platform string) string {
 	if platform == "" {
 		return PlatformAnthropic
 	}
-	return platform
+	return CanonicalAccountPlatform(platform)
 }
 
 // ValidateProfitControlConfig 是分组利润控制配置的唯一校验来源，handler 与 service 层共用。
@@ -461,4 +485,22 @@ func (g *Group) GetSearchPricePer1k() *float64 {
 		return nil
 	}
 	return g.SearchPricePer1k
+}
+
+// HiddenFromEndUsers reports whether the group is infrastructure-only.
+// Unset UserVisible is treated as visible because groups.user_visible defaults to true.
+func (g *Group) HiddenFromEndUsers() bool {
+	return g != nil && g.UserVisibleSet && !g.UserVisible
+}
+
+// VisibleToUser reports whether a user may see or bind this group.
+// Admins may always see hidden groups; a nil user is treated as non-admin.
+func (g *Group) VisibleToUser(user *User) bool {
+	if g == nil {
+		return false
+	}
+	if !g.HiddenFromEndUsers() {
+		return true
+	}
+	return user != nil && user.IsAdmin()
 }

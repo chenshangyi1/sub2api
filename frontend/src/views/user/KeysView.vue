@@ -1,8 +1,8 @@
 <template>
   <AppLayout>
-    <TablePageLayout>
+    <TablePageLayout class="signal-keys">
       <template #filters>
-        <div class="flex flex-col gap-3">
+        <div class="signal-key-filters flex flex-col gap-3">
           <div class="flex flex-wrap items-center gap-3">
             <SearchInput
               v-model="filterSearch"
@@ -12,18 +12,19 @@
             />
             <Select
               :model-value="filterGroupId"
-              class="w-40"
+              class="w-full sm:w-40"
               :options="groupFilterOptions"
               @update:model-value="onGroupFilterChange"
             />
             <Select
               :model-value="filterStatus"
-              class="w-40"
+              class="w-full sm:w-40"
               :options="statusFilterOptions"
               @update:model-value="onStatusFilterChange"
             />
           </div>
           <EndpointPopover
+            class="signal-key-endpoints"
             v-if="publicSettings?.api_base_url || customEndpoints.length > 0"
             :api-base-url="publicSettings?.api_base_url || ''"
             :custom-endpoints="customEndpoints"
@@ -32,29 +33,34 @@
       </template>
 
       <template #actions>
-        <div class="flex justify-end gap-3">
+        <div class="signal-workspace-heading">
+          <div class="signal-workspace-title">
+            <p class="signal-workspace-index" aria-hidden="true">02 / ACCESS</p>
+            <h1>{{ t('keys.title') }} <span class="signal-count">{{ pagination.total }}</span></h1>
+          </div>
+          <div class="signal-workspace-actions">
           <button
             @click="loadApiKeys"
             :disabled="loading"
-            class="btn btn-secondary"
+            class="btn btn-secondary btn-icon"
             :title="t('common.refresh')"
+            :aria-label="t('common.refresh')"
           >
             <Icon name="refresh" size="md" :class="loading ? 'animate-spin' : ''" />
           </button>
           <div class="relative" ref="columnDropdownRef">
             <button
               @click="showColumnDropdown = !showColumnDropdown"
-              class="btn btn-secondary px-2 md:px-3"
+              class="btn btn-secondary btn-icon"
               :title="t('keys.columnSettings')"
+              :aria-label="t('keys.columnSettings')"
+              :aria-expanded="showColumnDropdown"
             >
-              <svg class="h-4 w-4 md:mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M9 4.5v15m6-15v15m-10.875 0h15.75c.621 0 1.125-.504 1.125-1.125V5.625c0-.621-.504-1.125-1.125-1.125H4.125C3.504 4.5 3 5.004 3 5.625v12.75c0 .621.504 1.125 1.125 1.125z" />
-              </svg>
-              <span class="hidden md:inline">{{ t('keys.columnSettings') }}</span>
+              <Icon name="grid" size="md" />
             </button>
             <div
               v-if="showColumnDropdown"
-              class="absolute right-0 top-full z-50 mt-1 max-h-80 w-48 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-dark-600 dark:bg-dark-800"
+              class="absolute left-0 top-full z-50 mt-1 max-h-80 w-48 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-dark-600 dark:bg-dark-800 sm:left-auto sm:right-0"
             >
               <button
                 v-for="col in toggleableColumns"
@@ -77,6 +83,7 @@
             <Icon name="plus" size="md" class="mr-2" />
             {{ t('keys.createKey') }}
           </button>
+          </div>
         </div>
       </template>
 
@@ -123,6 +130,10 @@
           <template #cell-name="{ value, row }">
             <div class="flex items-center gap-1.5">
               <span class="font-medium text-gray-900 dark:text-white">{{ value }}</span>
+              <span
+                v-if="isSmartRoutingKey(row)"
+                class="rounded bg-primary-50 px-1.5 py-0.5 text-[10px] font-medium text-primary-700 dark:bg-primary-900/30 dark:text-primary-300"
+              >{{ t('keys.smartRouting') }}</span>
               <Icon
                 v-if="row.ip_whitelist?.length > 0 || row.ip_blacklist?.length > 0"
                 name="shield"
@@ -434,6 +445,7 @@
 
       <template #pagination>
         <Pagination
+          class="signal-pagination"
           v-if="pagination.total > 0"
           :page="pagination.page"
           :total="pagination.total"
@@ -464,11 +476,96 @@
           />
         </div>
 
+        <fieldset>
+          <legend class="input-label">{{ t('keys.providerLabel') }}</legend>
+          <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <label
+              v-for="provider in keyProviders"
+              :key="provider.value"
+              class="relative min-w-0"
+            >
+              <input
+                type="radio"
+                name="key-provider"
+                :value="provider.value"
+                :checked="activeKeyProvider === provider.value"
+                :disabled="!availableKeyProviders.has(provider.value)"
+                class="peer sr-only"
+                @change="selectKeyProvider(provider.value)"
+              />
+              <span class="flex min-h-24 flex-col items-center justify-center gap-2 rounded-lg border border-gray-300 px-2 py-3 text-sm font-semibold text-gray-800 transition-colors peer-enabled:cursor-pointer peer-enabled:hover:border-teal-400 peer-checked:border-teal-500 peer-checked:bg-teal-50 peer-checked:ring-1 peer-checked:ring-teal-500 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-teal-500 peer-disabled:cursor-not-allowed peer-disabled:opacity-40 dark:border-dark-500 dark:text-gray-100 dark:peer-checked:bg-teal-500/10">
+                <span class="flex h-8 items-center justify-center gap-1" aria-hidden="true">
+                  <span
+                    v-for="platform in provider.icons"
+                    :key="platform"
+                    :class="['flex h-8 w-8 items-center justify-center rounded-lg', platformBadgeLightClass(platform)]"
+                  >
+                    <PlatformIcon :platform="platform" size="lg" />
+                  </span>
+                </span>
+                <span class="max-w-full break-words text-center">{{ provider.label }}</span>
+              </span>
+              <span
+                v-if="activeKeyProvider === provider.value"
+                class="pointer-events-none absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-teal-500 text-white"
+                aria-hidden="true"
+              >
+                <Icon name="check" size="xs" />
+              </span>
+            </label>
+          </div>
+        </fieldset>
+
         <div>
-          <label class="input-label">{{ t('keys.groupLabel') }}</label>
+          <div class="mb-2 flex items-center justify-between gap-3">
+            <label class="input-label mb-0">{{ t('keys.groupLabel') }}</label>
+            <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
+              <input v-model="formData.smart_routing" type="checkbox" class="rounded border-gray-300" />
+              {{ t('keys.smartRouting') }}
+            </label>
+          </div>
+          <p v-if="formData.smart_routing" class="mb-3 text-xs text-gray-500 dark:text-dark-400">
+            {{ t('keys.smartRoutingHint') }}
+          </p>
+          <div v-if="formData.smart_routing" class="space-y-2">
+            <div
+              v-for="(groupId, index) in formData.group_ids"
+              :key="`${groupId}-${index}`"
+              class="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 dark:border-dark-600"
+            >
+              <span class="shrink-0 text-xs text-gray-400">{{ t('keys.smartRoutingRoute') }} {{ index + 1 }}</span>
+              <div class="min-w-0 flex-1">
+                <GroupBadge
+                  v-if="groupOptionById(groupId)"
+                  :name="groupOptionById(groupId)!.label"
+                  :platform="groupOptionById(groupId)!.platform"
+                  :subscription-type="groupOptionById(groupId)!.subscriptionType"
+                  :rate-multiplier="groupOptionById(groupId)!.rate"
+                  :user-rate-multiplier="groupOptionById(groupId)!.userRate"
+                  :peak-rate-enabled="groupOptionById(groupId)!.peakRateEnabled"
+                  :peak-start="groupOptionById(groupId)!.peakStart"
+                  :peak-end="groupOptionById(groupId)!.peakEnd"
+                  :peak-rate-multiplier="groupOptionById(groupId)!.peakRateMultiplier"
+                />
+                <span v-else class="text-sm text-gray-400">#{{ groupId }}</span>
+              </div>
+              <button type="button" class="text-gray-400 hover:text-gray-700" @click="moveSmartRoute(index, -1)">↑</button>
+              <button type="button" class="text-gray-400 hover:text-gray-700" @click="moveSmartRoute(index, 1)">↓</button>
+              <button type="button" class="text-gray-400 hover:text-red-600" @click="removeSmartRoute(index)">×</button>
+            </div>
+            <Select
+              :model-value="null"
+              :options="smartRoutingAddOptions"
+              :placeholder="t('keys.smartRoutingAdd')"
+              :searchable="true"
+              :search-placeholder="t('keys.searchGroup')"
+              @update:model-value="addSmartRoute"
+            />
+            <p v-if="formData.group_ids.length === 0" class="text-xs text-gray-400">{{ t('keys.smartRoutingEmpty') }}</p>
+          </div>
           <Select
             v-model="formData.group_id"
-            :options="groupOptions"
+            :options="providerGroupOptions"
             :placeholder="t('keys.selectGroup')"
             :searchable="true"
             :search-placeholder="t('keys.searchGroup')"
@@ -505,6 +602,42 @@
               />
             </template>
           </Select>
+        </div>
+
+        <div v-if="selectedAdaptiveLeaves.length > 0" class="space-y-3 rounded-xl border border-gray-200/80 bg-gray-50/70 p-3 dark:border-dark-600 dark:bg-dark-800/60">
+          <div class="flex items-center justify-between gap-2">
+            <label class="input-label mb-0">{{ t('keys.adaptiveLeavesLabel') }}</label>
+            <div class="flex gap-2 text-xs">
+              <button type="button" class="text-primary-600 hover:underline" @click="selectAllAdaptiveLeaves">{{ t('keys.adaptiveSelectAllLeaves') }}</button>
+              <button type="button" class="text-gray-500 hover:underline" @click="clearAdaptiveLeaves">{{ t('keys.adaptiveClearLeaves') }}</button>
+            </div>
+          </div>
+          <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('keys.adaptiveLeavesHint') }}</p>
+          <div class="grid max-h-56 grid-cols-1 gap-2 overflow-y-auto sm:grid-cols-2">
+            <label
+              v-for="leaf in selectedAdaptiveLeaves"
+              :key="leaf.id"
+              class="flex cursor-pointer items-start gap-2 rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm dark:border-dark-600 dark:bg-dark-700"
+            >
+              <input
+                type="checkbox"
+                class="mt-0.5"
+                :checked="isAdaptiveLeafSelected(leaf.id)"
+                @change="toggleAdaptiveLeaf(leaf.id)"
+              />
+              <span>
+                <span class="block font-medium text-gray-800 dark:text-gray-100">{{ leaf.name }}</span>
+                <span class="block text-xs text-gray-500">{{ leaf.platform }} · {{ leaf.rate_multiplier }}x</span>
+              </span>
+            </label>
+          </div>
+          <div>
+            <label class="input-label">{{ t('keys.adaptivePreferenceLabel') }}</label>
+            <Select
+              v-model="formData.adaptive_routing_preference"
+              :options="adaptivePreferenceOptions"
+            />
+          </div>
         </div>
 
         <!-- Custom Key Section (only for create) -->
@@ -917,7 +1050,7 @@
             form="key-form"
             type="submit"
             :disabled="submitting"
-            class="btn btn-primary"
+            class="btn bg-teal-600 text-white shadow-sm hover:bg-teal-700 focus-visible:ring-teal-500/30 dark:bg-teal-500 dark:hover:bg-teal-600"
             data-tour="key-form-submit"
           >
             <svg
@@ -1117,7 +1250,8 @@
 </template>
 
 <script setup lang="ts">
-	import { ref, reactive, computed, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
+import '@/styles/console-workspace.css'
+	import { ref, reactive, computed, watch, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
 	import { useI18n } from 'vue-i18n'
 	import { useAppStore } from '@/stores/app'
 	import { useOnboardingStore } from '@/stores/onboarding'
@@ -1140,11 +1274,13 @@ import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 	import EndpointPopover from '@/components/keys/EndpointPopover.vue'
 	import GroupBadge from '@/components/common/GroupBadge.vue'
 	import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
+	import PlatformIcon from '@/components/common/PlatformIcon.vue'
 	import type { ApiKey, CustomEndpoint, Group, PublicSettings, SubscriptionType, GroupPlatform, UpdateApiKeyRequest } from '@/types'
 import type { Column } from '@/components/common/types'
 import type { BatchApiKeyUsageStats } from '@/api/usage'
 import { formatDateTime } from '@/utils/format'
 import { maskApiKey } from '@/utils/maskApiKey'
+import { platformBadgeLightClass } from '@/utils/platformColors'
 import {
   buildCcSwitchImportDeeplink,
   type CcSwitchClientType
@@ -1331,6 +1467,8 @@ const setGroupButtonRef = (keyId: number, el: Element | ComponentPublicInstance 
 const formData = ref({
   name: '',
   group_id: null as number | null,
+  group_ids: [] as number[],
+  smart_routing: false,
   status: 'active' as 'active' | 'inactive',
   use_custom_key: false,
   custom_key: '',
@@ -1347,7 +1485,9 @@ const formData = ref({
   rate_limit_7d: null as number | null,
   enable_expiration: false,
   expiration_preset: '30' as '7' | '30' | '90' | 'custom',
-  expiration_date: ''
+  expiration_date: '',
+  adaptive_routing_preference: 'price' as 'intelligence' | 'price',
+  adaptive_leaf_group_ids: [] as number[]
 })
 
 // 自定义Key验证
@@ -1409,6 +1549,49 @@ const onStatusFilterChange = (value: string | number | boolean | null) => {
 }
 
 // Convert groups to Select options format with rate multiplier and subscription type
+const selectedAdaptiveGroup = computed(() =>
+  groups.value.find((group) =>
+    group.id === formData.value.group_id &&
+    (group.platform === 'adaptive' || (group.adaptive_leaves?.length ?? 0) > 0)
+  ) || null
+)
+const selectedAdaptiveLeaves = computed(() => selectedAdaptiveGroup.value?.adaptive_leaves ?? [])
+const adaptivePreferenceOptions = computed(() => [
+  { value: 'price', label: t('keys.adaptivePreferencePrice') },
+  { value: 'intelligence', label: t('keys.adaptivePreferenceIntelligence') }
+])
+const isAdaptiveLeafSelected = (id: number) => {
+  const selected = formData.value.adaptive_leaf_group_ids
+  if (!selected.length) return true
+  return selected.includes(id)
+}
+const toggleAdaptiveLeaf = (id: number) => {
+  const leaves = selectedAdaptiveLeaves.value
+  const current = formData.value.adaptive_leaf_group_ids
+  const effective = current.length ? [...current] : leaves.map((leaf) => leaf.id)
+  const idx = effective.indexOf(id)
+  if (idx >= 0) {
+    effective.splice(idx, 1)
+  } else {
+    effective.push(id)
+  }
+  formData.value.adaptive_leaf_group_ids = effective.length === leaves.length ? [] : effective
+}
+const selectAllAdaptiveLeaves = () => {
+  formData.value.adaptive_leaf_group_ids = []
+}
+const clearAdaptiveLeaves = () => {
+  formData.value.adaptive_leaf_group_ids = []
+}
+const resolvedAdaptiveLeafIDs = () => {
+  const leaves = selectedAdaptiveLeaves.value
+  if (!leaves.length) return [] as number[]
+  const allowed = new Set(leaves.map((leaf) => leaf.id))
+  const selected = formData.value.adaptive_leaf_group_ids.filter((id) => allowed.has(id))
+  if (!selected.length || selected.length === leaves.length) return [] as number[]
+  return selected
+}
+
 const groupOptions = computed(() =>
   groups.value.map((group) => ({
     value: group.id,
@@ -1424,6 +1607,94 @@ const groupOptions = computed(() =>
     platform: group.platform
   }))
 )
+
+const groupOptionById = (id: number) => groupOptions.value.find((opt) => opt.value === id)
+
+type KeyProvider = 'anthropic' | 'openai' | 'cn' | 'other'
+
+const keyProviders = computed<Array<{ value: KeyProvider; label: string; icons: GroupPlatform[] }>>(() => [
+  { value: 'anthropic', label: 'Anthropic', icons: ['anthropic'] },
+  { value: 'openai', label: 'OpenAI', icons: ['openai'] },
+  { value: 'cn', label: t('keys.providerCN'), icons: ['deepseek', 'kimi'] },
+  { value: 'other', label: t('keys.providerOther'), icons: ['gemini', 'grok'] },
+])
+
+const keyProviderForPlatform = (platform: GroupPlatform): KeyProvider => {
+  switch (platform) {
+    case 'anthropic':
+    case 'openai':
+      return platform
+    case 'kimi':
+    case 'zhipu':
+    case 'deepseek':
+    case 'minimax':
+      return 'cn'
+    default:
+      return 'other'
+  }
+}
+
+const selectedKeyProvider = ref<KeyProvider | null>(null)
+const availableKeyProviders = computed(() => new Set(groups.value.map((group) => keyProviderForPlatform(group.platform))))
+const activeKeyProvider = computed(() => {
+  if (selectedKeyProvider.value) return selectedKeyProvider.value
+  const group = groupOptions.value.find((option) => option.value === formData.value.group_id)
+  const platform = group?.platform ?? selectedKey.value?.group?.platform
+  if (platform) return keyProviderForPlatform(platform)
+  return keyProviders.value.find((provider) => availableKeyProviders.value.has(provider.value))?.value ?? 'anthropic'
+})
+const providerGroupOptions = computed(() => groupOptions.value.filter((option) => keyProviderForPlatform(option.platform) === activeKeyProvider.value))
+
+const selectKeyProvider = (provider: KeyProvider) => {
+  selectedKeyProvider.value = provider
+  if (!formData.value.smart_routing && !providerGroupOptions.value.some((option) => option.value === formData.value.group_id)) {
+    formData.value.group_id = null
+    formData.value.group_ids = []
+  }
+}
+
+const isSmartRoutingKey = (key: ApiKey) => (key.group_ids?.length ?? 0) > 1
+
+watch(
+  () => formData.value.smart_routing,
+  (enabled) => {
+    if (enabled) {
+      if (formData.value.group_ids.length === 0 && formData.value.group_id != null) {
+        formData.value.group_ids = [formData.value.group_id]
+      }
+      return
+    }
+    formData.value.group_ids = formData.value.group_id != null ? [formData.value.group_id] : []
+    selectedKeyProvider.value = null
+  }
+)
+
+const smartRoutingAddOptions = computed(() => {
+  const selected = new Set(formData.value.group_ids)
+  return providerGroupOptions.value.filter((opt) => !selected.has(opt.value))
+})
+
+const addSmartRoute = (value: string | number | boolean | null) => {
+  if (typeof value !== 'number') return
+  if (formData.value.group_ids.includes(value)) return
+  formData.value.group_ids = [...formData.value.group_ids, value]
+  formData.value.group_id = formData.value.group_ids[0] ?? null
+}
+
+const removeSmartRoute = (index: number) => {
+  formData.value.group_ids = formData.value.group_ids.filter((_, i) => i !== index)
+  formData.value.group_id = formData.value.group_ids[0] ?? null
+}
+
+const moveSmartRoute = (index: number, delta: number) => {
+  const next = index + delta
+  if (next < 0 || next >= formData.value.group_ids.length) return
+  const copy = [...formData.value.group_ids]
+  const [item] = copy.splice(index, 1)
+  copy.splice(next, 0, item)
+  formData.value.group_ids = copy
+  formData.value.group_id = copy[0] ?? null
+}
 
 // Group dropdown search
 const groupSearchQuery = ref('')
@@ -1569,12 +1840,18 @@ const handleSort = (key: string, order: 'asc' | 'desc') => {
 }
 
 const editKey = (key: ApiKey) => {
+  selectedKeyProvider.value = null
   selectedKey.value = key
   const hasIPRestriction = (key.ip_whitelist?.length > 0) || (key.ip_blacklist?.length > 0)
   const hasExpiration = !!key.expires_at
+  const routeGroupIDs = (key.group_ids && key.group_ids.length > 0)
+    ? [...key.group_ids]
+    : (key.group_id != null ? [key.group_id] : [])
   formData.value = {
     name: key.name,
     group_id: key.group_id,
+    group_ids: routeGroupIDs,
+    smart_routing: routeGroupIDs.length > 1,
     status: key.status === 'quota_exhausted' || key.status === 'expired' ? 'inactive' : key.status,
     use_custom_key: false,
     custom_key: '',
@@ -1589,7 +1866,9 @@ const editKey = (key: ApiKey) => {
     rate_limit_7d: key.rate_limit_7d || null,
     enable_expiration: hasExpiration,
     expiration_preset: 'custom',
-    expiration_date: key.expires_at ? formatDateTimeLocal(key.expires_at) : ''
+    expiration_date: key.expires_at ? formatDateTimeLocal(key.expires_at) : '',
+    adaptive_routing_preference: key.adaptive_routing_preference === 'intelligence' ? 'intelligence' : 'price',
+    adaptive_leaf_group_ids: key.adaptive_leaf_group_ids ? [...key.adaptive_leaf_group_ids] : []
   }
   showEditModal.value = true
 }
@@ -1732,6 +2011,7 @@ const handleSubmit = async () => {
       const updates: UpdateApiKeyRequest = {
         name: formData.value.name,
         group_id: formData.value.group_id,
+        group_ids: formData.value.smart_routing ? formData.value.group_ids : (formData.value.group_id != null ? [formData.value.group_id] : []),
         ip_whitelist: ipWhitelist,
         ip_blacklist: ipBlacklist,
         quota: quota,
@@ -1739,6 +2019,8 @@ const handleSubmit = async () => {
         rate_limit_5h: rateLimitData.rate_limit_5h,
         rate_limit_1d: rateLimitData.rate_limit_1d,
         rate_limit_7d: rateLimitData.rate_limit_7d,
+        adaptive_routing_preference: formData.value.adaptive_routing_preference,
+        adaptive_leaf_group_ids: resolvedAdaptiveLeafIDs()
       }
       if (shouldSubmitEditStatus(selectedKey.value, formData.value.status)) {
         updates.status = formData.value.status
@@ -1755,7 +2037,12 @@ const handleSubmit = async () => {
         ipBlacklist,
         quota,
         expiresInDays,
-        rateLimitData
+        rateLimitData,
+        {
+          routing_preference: formData.value.adaptive_routing_preference,
+          leaf_group_ids: resolvedAdaptiveLeafIDs()
+        },
+        formData.value.smart_routing ? formData.value.group_ids : (formData.value.group_id != null ? [formData.value.group_id] : [])
       )
       appStore.showSuccess(t('keys.keyCreatedSuccess'))
       // Only advance tour if active, on submit step, and creation succeeded
@@ -1795,12 +2082,15 @@ const handleDelete = async () => {
 }
 
 const closeModals = () => {
+  selectedKeyProvider.value = null
   showCreateModal.value = false
   showEditModal.value = false
   selectedKey.value = null
   formData.value = {
     name: '',
     group_id: null,
+    group_ids: [],
+    smart_routing: false,
     status: 'active',
     use_custom_key: false,
     custom_key: '',
@@ -1815,7 +2105,9 @@ const closeModals = () => {
     rate_limit_7d: null,
     enable_expiration: false,
     expiration_preset: '30',
-    expiration_date: ''
+    expiration_date: '',
+    adaptive_routing_preference: 'price',
+    adaptive_leaf_group_ids: []
   }
 }
 
@@ -1834,14 +2126,18 @@ const setExpirationDays = (days: number) => {
 
 // Reset quota used for an API key
 const resetQuotaUsed = async () => {
-  if (!selectedKey.value) return
+  const key = selectedKey.value
+  if (!key) return
   showResetQuotaDialog.value = false
   try {
-    await keysAPI.update(selectedKey.value.id, { reset_quota: true })
+    const updatedKey = await keysAPI.update(key.id, { reset_quota: true })
     appStore.showSuccess(t('keys.quotaResetSuccess'))
-    // Update local state
-    if (selectedKey.value) {
-      selectedKey.value.quota_used = 0
+    key.quota_used = updatedKey.quota_used
+    if (key.status !== updatedKey.status) {
+      key.status = updatedKey.status
+      if (selectedKey.value?.id === key.id) {
+        formData.value.status = updatedKey.status === 'active' ? 'active' : 'inactive'
+      }
     }
   } catch (error: any) {
     const errorMsg = error.response?.data?.detail || t('keys.failedToResetQuota')

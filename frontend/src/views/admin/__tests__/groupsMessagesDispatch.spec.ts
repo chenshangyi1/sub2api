@@ -12,6 +12,7 @@ describe("groupsMessagesDispatch", () => {
   it("supports OpenAI and composite groups", () => {
     expect(supportsMessagesDispatchPlatform("openai")).toBe(true);
     expect(supportsMessagesDispatchPlatform("composite")).toBe(true);
+    expect(supportsMessagesDispatchPlatform("adaptive")).toBe(false);
     expect(supportsMessagesDispatchPlatform("anthropic")).toBe(false);
   });
 

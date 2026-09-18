@@ -30,6 +30,28 @@ func (s *GatewayService) getUserGroupRateMultiplier(ctx context.Context, userID,
 	return resolver.Resolve(ctx, userID, groupID, groupDefaultMultiplier)
 }
 
+// getUserGroupRateMultiplierSnapshotOnly is used by request admission code
+// that has opted into the immutable scheduler snapshot contract. It reuses a
+// warm local override but never falls through to PostgreSQL. Usage billing
+// continues to call getUserGroupRateMultiplier so its durable pricing lookup
+// semantics remain unchanged.
+func (s *GatewayService) getUserGroupRateMultiplierSnapshotOnly(userID, groupID int64, groupDefaultMultiplier float64) float64 {
+	if s == nil {
+		return groupDefaultMultiplier
+	}
+	resolver := s.userGroupRateResolver
+	if resolver == nil {
+		resolver = newUserGroupRateResolver(
+			s.userGroupRateRepo,
+			s.userGroupRateCache,
+			resolveUserGroupRateCacheTTL(s.cfg),
+			&s.userGroupRateSF,
+			"service.gateway",
+		)
+	}
+	return resolver.ResolveSnapshotOnly(userID, groupID, groupDefaultMultiplier)
+}
+
 // ResolveUserGroupRateMultiplier resolves the same cached multiplier used by usage billing.
 func (s *GatewayService) ResolveUserGroupRateMultiplier(ctx context.Context, userID, groupID int64, groupDefaultMultiplier float64) float64 {
 	return s.getUserGroupRateMultiplier(ctx, userID, groupID, groupDefaultMultiplier)
@@ -53,6 +75,7 @@ type RecordUsageInput struct {
 	ForceCacheBilling  bool               // 强制缓存计费：将 input_tokens 转为 cache_read 计费（用于粘性会话切换）
 	APIKeyService      APIKeyQuotaUpdater // 可选：用于更新API Key配额
 	QuotaPlatform      string             // user×platform 配额计量平台：handler 在请求 ctx 内经 QuotaPlatform() 算定后传入（后扣运行在 worker 池 background ctx 上，取不到 ForcePlatform）
+	AdaptiveBilling    *AdaptiveBillingContext
 
 	ChannelUsageFields // 渠道映射信息（由 handler 在 Forward 前解析）
 }
@@ -112,7 +135,7 @@ func QuotaPlatform(ctx context.Context, apiKey *APIKey) string {
 		return platform
 	}
 	platform := PlatformFromAPIKey(apiKey)
-	if platform == PlatformComposite {
+	if platform == PlatformComposite || platform == PlatformAdaptive {
 		return ""
 	}
 	return platform
@@ -655,6 +678,7 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 		ForceCacheBilling:  input.ForceCacheBilling,
 		APIKeyService:      input.APIKeyService,
 		QuotaPlatform:      input.QuotaPlatform,
+		AdaptiveBilling:    input.AdaptiveBilling,
 		ChannelUsageFields: input.ChannelUsageFields,
 	}, &recordUsageOpts{})
 }
@@ -678,6 +702,7 @@ type RecordUsageLongContextInput struct {
 	ForceCacheBilling     bool               // 强制缓存计费：将 input_tokens 转为 cache_read 计费（用于粘性会话切换）
 	APIKeyService         APIKeyQuotaUpdater // API Key 配额服务（可选）
 	QuotaPlatform         string             // user×platform 配额计量平台：handler 在请求 ctx 内经 QuotaPlatform() 算定后传入（后扣运行在 worker 池 background ctx 上，取不到 ForcePlatform）
+	AdaptiveBilling       *AdaptiveBillingContext
 
 	ChannelUsageFields // 渠道映射信息（由 handler 在 Forward 前解析）
 }
@@ -700,6 +725,7 @@ func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *
 		ForceCacheBilling:  input.ForceCacheBilling,
 		APIKeyService:      input.APIKeyService,
 		QuotaPlatform:      input.QuotaPlatform,
+		AdaptiveBilling:    input.AdaptiveBilling,
 		ChannelUsageFields: input.ChannelUsageFields,
 	}, &recordUsageOpts{
 		LongContextThreshold:  input.LongContextThreshold,
@@ -724,6 +750,7 @@ type recordUsageCoreInput struct {
 	ForceCacheBilling  bool
 	APIKeyService      APIKeyQuotaUpdater
 	QuotaPlatform      string
+	AdaptiveBilling    *AdaptiveBillingContext
 	ChannelUsageFields
 }
 
@@ -804,11 +831,17 @@ func logResponseModelBillingApplied(component string, account *Account, requestI
 // recordUsageCore 是 RecordUsage 和 RecordUsageWithLongContext 的统一实现。
 // LongContextThreshold > 0 时 Token 计费回退走 CalculateCostWithLongContext。
 func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsageCoreInput, opts *recordUsageOpts) error {
+	if input != nil && input.AdaptiveBilling != nil && input.AdaptiveBilling.Probe {
+		return nil
+	}
 	result := input.Result
 	apiKey := input.APIKey
 	user := input.User
 	account := input.Account
 	subscription := input.Subscription
+	if err := validateAPIKeyRouteSubscriptionIdentity(apiKey, user, subscription); err != nil {
+		return err
+	}
 	ApplyForwardImageBillingResolution(result)
 	logServiceTierBillingDowngrade("service.gateway", account, result.RequestID, ApplyForwardServiceTierBillingResolution(result))
 
@@ -896,6 +929,15 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		}
 	}
 
+	// Preserve rejected-request usage for diagnostics without charging it.
+	if result.NonBillableUpstreamError {
+		billingMode := string(BillingModeToken)
+		if cost != nil && strings.TrimSpace(cost.BillingMode) != "" {
+			billingMode = cost.BillingMode
+		}
+		cost = &CostBreakdown{BillingMode: billingMode}
+	}
+
 	// 判断计费方式：订阅模式 vs 余额模式
 	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
 	billingType := BillingTypeBalance
@@ -929,6 +971,19 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
 		logger.LegacyPrintf("service.gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
 		s.deferredService.ScheduleLastUsedUpdate(account.ID)
+		return nil
+	}
+
+	// Adaptive parent groups settle through authorize/capture. Capture applies
+	// the frozen leaf/user multiplier and service fee, so it must receive the
+	// original model-price cost rather than cost.ActualCost.
+	if input.AdaptiveBilling != nil {
+		if err := settleAdaptiveCustomerUsage(ctx, s.adaptiveBilling, input.AdaptiveBilling, usageLog, adaptiveSettlementBaseCostForBilling(cost, input.AdaptiveBilling)); err != nil {
+			return err
+		}
+		if s.deferredService != nil && account != nil {
+			s.deferredService.ScheduleLastUsedUpdate(account.ID)
+		}
 		return nil
 	}
 

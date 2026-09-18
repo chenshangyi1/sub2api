@@ -80,8 +80,9 @@ func TestOpenAIForwardFirstOutputTimeoutIncludesResponseHeaderWait(t *testing.T)
 	require.Equal(t, http.StatusGatewayTimeout, failoverErr.StatusCode)
 	require.Contains(t, string(failoverErr.ResponseBody), "first_output_timeout")
 	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.Greater(t, failoverErr.FirstTokenMs, 0)
 	require.Less(t, time.Since(started), 1300*time.Millisecond)
-	require.Empty(t, rec.Body.String())
+	require.NotContains(t, rec.Body.String(), `"type":"response.completed"`)
 	select {
 	case <-upstream.canceled:
 	default:
@@ -139,7 +140,8 @@ func TestOpenAINativeFirstOutputTimeoutIgnoresPreambleAndCleansReader(t *testing
 	require.Equal(t, http.StatusGatewayTimeout, failoverErr.StatusCode)
 	require.Contains(t, string(failoverErr.ResponseBody), "first_output_timeout")
 	require.True(t, failoverErr.SafeToFailoverAfterWrite)
-	require.Empty(t, rec.Body.String())
+	require.Greater(t, failoverErr.FirstTokenMs, 0)
+	require.NotContains(t, rec.Body.String(), `"delta"`)
 	select {
 	case <-body.closed:
 	default:
@@ -175,7 +177,7 @@ func TestOpenAIFirstOutputStageDefaultLimitIsIndependentFromScannerLimit(t *test
 
 func TestOpenAIFirstOutputEventQueueSizeBackpressuresGuardedStreams(t *testing.T) {
 	require.Equal(t, 1, openAIFirstOutputEventQueueSize(true))
-	require.Equal(t, 16, openAIFirstOutputEventQueueSize(false))
+	require.Equal(t, 1, openAIFirstOutputEventQueueSize(false))
 }
 
 func TestOpenAIFirstOutputDynamicScannerLimitsOnlyWhileGuardIsActive(t *testing.T) {
@@ -329,8 +331,8 @@ func TestOpenAINativeFirstOutputTimeoutDisarmsAfterSemanticOutput(t *testing.T) 
 	require.NotNil(t, result.firstTokenMs)
 	require.Contains(t, rec.Body.String(), "response.output_text.delta")
 	require.Contains(t, rec.Body.String(), "response.completed")
-	require.Equal(t, "request-winning", rec.Result().Header.Get("X-Request-Id"))
-	require.Equal(t, "42", rec.Result().Header.Get("X-Ratelimit-Remaining-Requests"))
+	require.Empty(t, rec.Result().Header.Get("X-Request-Id"), "attempt headers stay private after preamble flush")
+	require.Empty(t, rec.Result().Header.Get("X-Ratelimit-Remaining-Requests"), "attempt headers stay private after preamble flush")
 }
 
 func TestOpenAINativeFirstOutputTimeoutWaitsForCompleteSemanticEvent(t *testing.T) {
@@ -499,7 +501,8 @@ func TestOpenAINativeFirstOutputScannerRejectsOversizedLineWithoutLeak(t *testin
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 	require.True(t, failoverErr.SafeToFailoverAfterWrite)
 	require.Contains(t, string(failoverErr.ResponseBody), "line exceeds guarded first-output limit")
-	require.Empty(t, rec.Body.String())
+	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
+	require.NotContains(t, rec.Body.String(), strings.Repeat("x", 32))
 	require.Empty(t, rec.Header().Values("X-Request-Id"))
 	require.Empty(t, rec.Header().Values("X-Ratelimit-Remaining-Requests"))
 }
@@ -542,7 +545,7 @@ func TestOpenAINativeFirstOutputScannerAllowsLargeEventAfterSemanticBoundary(t *
 	require.Equal(t, "request-large-image", rec.Result().Header.Get("X-Request-Id"))
 }
 
-func TestOpenAINativeFirstOutputTimeoutDisabledKeepsPreamblePrivateAcrossKeepalive(t *testing.T) {
+func TestOpenAINativeFirstOutputTimeoutDisabledFlushesPreambleAcrossKeepalive(t *testing.T) {
 	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
 		StreamKeepaliveInterval: 1,
 		MaxLineSize:             defaultMaxLineSize,
@@ -564,8 +567,9 @@ func TestOpenAINativeFirstOutputTimeoutDisabledKeepsPreamblePrivateAcrossKeepali
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
 	require.Contains(t, rec.Body.String(), ":\n\n")
-	require.NotContains(t, rec.Body.String(), "response.created")
-	require.NotContains(t, rec.Body.String(), "response.in_progress")
+	require.Contains(t, rec.Body.String(), "response.created")
+	require.Contains(t, rec.Body.String(), "response.in_progress")
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
 }
 
 func TestOpenAINativeFirstOutputFailoverKeepsAttemptHeadersPrivateAfterKeepaliveCommit(t *testing.T) {
@@ -606,8 +610,11 @@ func TestOpenAINativeFirstOutputFailoverKeepsAttemptHeadersPrivateAfterKeepalive
 	_, firstErr := svc.handleStreamingResponse(c.Request.Context(), firstResp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "model", "model")
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, firstErr, &failoverErr)
-	require.Contains(t, rec.Body.String(), ":\n\n", "first attempt should have committed only a stable keepalive")
-	require.NotContains(t, rec.Body.String(), "resp_first")
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.Contains(t, rec.Body.String(), ":\n\n")
+	require.Contains(t, rec.Body.String(), "resp_first")
+	require.Empty(t, rec.Header().Values("X-Request-Id"))
+	require.Empty(t, rec.Header().Values("X-Ratelimit-Remaining-Requests"))
 
 	secondResp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -627,7 +634,8 @@ func TestOpenAINativeFirstOutputFailoverKeepsAttemptHeadersPrivateAfterKeepalive
 
 	require.NoError(t, secondErr)
 	require.NotNil(t, result)
-	require.Contains(t, rec.Body.String(), "resp_second")
+	require.Contains(t, rec.Body.String(), "resp_first")
+	require.NotContains(t, rec.Body.String(), "resp_second")
 	wireHeaders := rec.Result().Header
 	require.Empty(t, wireHeaders.Values("X-Request-Id"))
 	require.Empty(t, wireHeaders.Values("X-Ratelimit-Remaining-Requests"))

@@ -69,6 +69,7 @@ const (
 	MonitorProviderKimi        = "kimi"
 	MonitorProviderZhipu       = "zhipu"
 	MonitorProviderDeepseek    = "deepseek"
+	MonitorProviderMiniMax     = "minimax"
 
 	// MonitorCheckMode 检测模式（channel_monitors.check_mode）。
 	//   probe       - LLM 探活（默认，原有行为）

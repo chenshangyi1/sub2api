@@ -377,3 +377,175 @@ func TestAccountHandlerSyncUpstreamModels_UpstreamErrorDoesNotExposeBody(t *test
 	require.Contains(t, rec.Body.String(), "Upstream model list request failed with HTTP 502")
 	require.NotContains(t, rec.Body.String(), "SECRET_TOKEN")
 }
+
+func setupSyncUpstreamModelsPreviewRouter(adminSvc service.AdminService, upstream service.HTTPUpstream) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	accountTestSvc := service.NewAccountTestService(
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		upstream,
+		&config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+		nil,
+	)
+	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, accountTestSvc, nil, nil, nil, nil, nil)
+	router.POST("/api/v1/admin/accounts/models/sync-upstream-preview", handler.SyncUpstreamModelsPreview)
+	return router
+}
+
+type capturingSyncUpstream struct {
+	inner       service.HTTPUpstream
+	captured    *string
+	capturedAll *[]string
+}
+
+func (u *capturingSyncUpstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	if req != nil && req.URL != nil {
+		if u.captured != nil && *u.captured == "" {
+			*u.captured = req.URL.String()
+		}
+		if u.capturedAll != nil {
+			*u.capturedAll = append(*u.capturedAll, req.URL.String())
+		}
+	}
+	return u.inner.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+type sequencedSyncUpstream struct {
+	resps []*http.Response
+	idx   int
+}
+
+func (u *sequencedSyncUpstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	if len(u.resps) == 0 {
+		return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	if u.idx >= len(u.resps) {
+		return u.resps[len(u.resps)-1], nil
+	}
+	resp := u.resps[u.idx]
+	u.idx++
+	return resp, nil
+}
+
+func (u *sequencedSyncUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+func (u *capturingSyncUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+func TestAccountHandlerSyncUpstreamModelsPreviewGeminiCustomUsesOpenAIModels(t *testing.T) {
+	var captured string
+	upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gemini-3.8-flash"}]}`)),
+	}}
+	router := setupSyncUpstreamModelsPreviewRouter(newStubAdminService(), &capturingSyncUpstream{inner: upstream, captured: &captured})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/admin/accounts/models/sync-upstream-preview",
+		strings.NewReader(`{
+			"platform":"gemini",
+			"type":"apikey",
+			"base_url":"https://mdkj.lol/v1",
+			"api_key":"sk-gemini",
+			"api_protocol":"chat_completions"
+		}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "https://mdkj.lol/v1/models", captured)
+	require.NotContains(t, captured, "/v1beta/models")
+	var resp struct {
+		Data struct {
+			Models []string `json:"models"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, []string{"gemini-3.8-flash"}, resp.Data.Models)
+}
+
+func TestAccountHandlerSyncUpstreamModelsPreviewGeminiCustomPrefersNativeWithoutProtocol(t *testing.T) {
+	var captured string
+	upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"models":[{"name":"models/gemini-3.8-flash"}]}`)),
+	}}
+	router := setupSyncUpstreamModelsPreviewRouter(newStubAdminService(), &capturingSyncUpstream{inner: upstream, captured: &captured})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/admin/accounts/models/sync-upstream-preview",
+		strings.NewReader(`{
+			"platform":"gemini",
+			"type":"apikey",
+			"base_url":"https://relay.example.com",
+			"api_key":"sk-gemini"
+		}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "https://relay.example.com/v1beta/models", captured)
+	var resp struct {
+		Data struct {
+			Models []string `json:"models"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, []string{"gemini-3.8-flash"}, resp.Data.Models)
+}
+
+func TestAccountHandlerSyncUpstreamModelsPreviewGeminiCustomFallsBackToOpenAIOnNative404(t *testing.T) {
+	var capturedAll []string
+	upstream := &sequencedSyncUpstream{resps: []*http.Response{
+		{
+			StatusCode: http.StatusNotFound,
+			Header:     http.Header{"Content-Type": []string{"text/html"}},
+			Body:       io.NopCloser(strings.NewReader(`<html><title>404 Not Found</title></html>`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gemini-3.8-flash"}]}`)),
+		},
+	}}
+	router := setupSyncUpstreamModelsPreviewRouter(newStubAdminService(), &capturingSyncUpstream{inner: upstream, capturedAll: &capturedAll})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/admin/accounts/models/sync-upstream-preview",
+		strings.NewReader(`{
+			"platform":"gemini",
+			"type":"apikey",
+			"base_url":"https://mdkj.lol",
+			"api_key":"sk-gemini"
+		}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, []string{"https://mdkj.lol/v1beta/models", "https://mdkj.lol/v1/models"}, capturedAll)
+	var resp struct {
+		Data struct {
+			Models []string `json:"models"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, []string{"gemini-3.8-flash"}, resp.Data.Models)
+}

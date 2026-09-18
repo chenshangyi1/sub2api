@@ -14,12 +14,14 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/imroc/req/v3"
@@ -42,6 +44,16 @@ const (
 	openAIImagesResponsesMainModel         = "gpt-5.4-mini"
 	openAIImagesVerbatimPromptInstructions = "When invoking the image_generation tool, use the user's image prompt verbatim. Do not rewrite, expand, summarize, embellish, translate, normalize punctuation, or add or remove visual details or constraints. Preserve the original language, wording, capitalization, quotes, and punctuation exactly."
 )
+
+// openAIImagesResponsesMainModelValue selects the Responses driver independently
+// of the image_generation tool model. An environment override lets operators
+// recover from upstream model retirement without rebuilding the gateway.
+func openAIImagesResponsesMainModelValue() string {
+	if model := strings.TrimSpace(os.Getenv("SUB2API_IMAGES_MAIN_MODEL")); model != "" {
+		return model
+	}
+	return openAIImagesResponsesMainModel
+}
 
 type OpenAIImagesCapability string
 
@@ -472,6 +484,13 @@ func isGrokImageGenerationModel(model string) bool {
 		strings.HasPrefix(model, "grok-imagine-image")
 }
 
+// IsChatUnsupportedMediaModel reports models that must not be dispatched on
+// /v1/chat/completions or /v1/messages. GPT image models and Grok Imagine
+// video models have dedicated media endpoints instead.
+func IsChatUnsupportedMediaModel(model string) bool {
+	return IsGPTImageGenerationModel(model) || xai.IsGrokImagineVideoModel(model)
+}
+
 func validateOpenAIImagesModel(model string) error {
 	model = strings.TrimSpace(model)
 	if isOpenAIImageGenerationModel(model) {
@@ -648,7 +667,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
+		if s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -716,7 +735,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			ImageOutputSizes: imageOutputSizes,
 		}, nil
 	} else {
-		nonStreamUsage, nonStreamCount, nonStreamSizes, err := s.handleOpenAIImagesNonStreamingResponse(resp, c)
+		nonStreamUsage, nonStreamCount, nonStreamSizes, err := s.handleOpenAIImagesNonStreamingResponse(upstreamCtx, resp, c, account, parsed)
 		if err != nil {
 			return nil, err
 		}
@@ -767,7 +786,7 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 	if err != nil {
 		return nil, err
 	}
-	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAIImages))
 	authHeaders, err := s.buildOpenAIAuthenticationHeaders(ctx, account, token)
 	if err != nil {
 		return nil, fmt.Errorf("build openai authentication headers: %w", err)
@@ -887,11 +906,18 @@ func cloneMultipartHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
 	return dst
 }
 
-func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context) (OpenAIUsage, int, []string, error) {
+func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
+	ctx context.Context,
+	resp *http.Response,
+	c *gin.Context,
+	account *Account,
+	parsed *OpenAIImagesRequest,
+) (OpenAIUsage, int, []string, error) {
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return OpenAIUsage{}, 0, nil, err
 	}
+	body = s.backfillOpenAIImagesB64JSON(ctx, account, parsed, body)
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {

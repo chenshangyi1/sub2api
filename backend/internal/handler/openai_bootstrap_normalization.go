@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 // normalizeCodexDelegationBootstrap converts the call-less tool result emitted
@@ -19,6 +21,47 @@ func normalizeCodexDelegationBootstrap(body []byte) ([]byte, bool) {
 
 func normalizeCodexAutomationBootstrap(body []byte) ([]byte, bool) {
 	return normalizeCodexCallOutputBootstrap(body, isCodexAutomationCandidate)
+}
+
+// applyCodexBootstrapNormalizations rewrites call-less Codex bootstrap tool
+// results. Cheap gjson scan first: typical /v1/responses bodies have no
+// automation/delegation items, and a full encoding/json Decoder walk of those
+// bodies was the hottest CPU path on production.
+func applyCodexBootstrapNormalizations(body []byte) (normalized []byte, automationChanged, delegationChanged bool) {
+	if !codexBootstrapInputLooksRelevant(body) {
+		return body, false, false
+	}
+	normalized = body
+	if next, changed := normalizeCodexAutomationBootstrap(normalized); changed {
+		normalized = next
+		automationChanged = true
+	}
+	if next, changed := normalizeCodexDelegationBootstrap(normalized); changed {
+		normalized = next
+		delegationChanged = true
+	}
+	return normalized, automationChanged, delegationChanged
+}
+
+func codexBootstrapInputLooksRelevant(body []byte) bool {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return false
+	}
+	found := false
+	input.ForEach(func(_, item gjson.Result) bool {
+		if item.Get("type").String() != "function_call_output" {
+			return true
+		}
+		namespace := item.Get("namespace").String()
+		name := item.Get("name").String()
+		if isCodexDelegationTool(namespace, name) || (namespace == "codex_app" && name == "automation_update") {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]any) bool) ([]byte, bool) {
@@ -166,7 +209,7 @@ func isCodexAutomationCandidate(item map[string]any) bool {
 		return false
 	}
 	output, ok := item["output"].(string)
-	return ok && validCodexAutomationBootstrap(output)
+	return ok && (validCodexAutomationBootstrap(output) || validCodexAutomationHeartbeat(output))
 }
 
 func stringField(item map[string]any, key string) string {
@@ -237,10 +280,93 @@ func validCodexAutomationLastRun(value string) bool {
 	}
 	runAt, err := time.Parse(time.RFC3339Nano, value[:separator])
 	if err != nil {
-		return false
+		runAt, err = time.Parse(time.RFC3339, value[:separator])
+		if err != nil {
+			return false
+		}
 	}
 	epochMillis, err := strconv.ParseInt(value[separator+2:len(value)-1], 10, 64)
 	return err == nil && runAt.UnixMilli() == epochMillis
+}
+
+func validCodexAutomationHeartbeat(value string) bool {
+	decoder := xml.NewDecoder(strings.NewReader(value))
+	var rootSeen, automationIDSeen bool
+	var childName string
+	var childText bytes.Buffer
+	fields := make(map[string]string)
+	depth := 0
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			id := fields["automation_id"]
+			timestamp, hasTime := fields["current_time_iso"]
+			instructions, hasInstructions := fields["instructions"]
+			timestamp = strings.TrimSpace(timestamp)
+			instructions = strings.TrimSpace(instructions)
+			if hasTime != hasInstructions {
+				return false
+			}
+			if hasTime {
+				if _, err := time.Parse(time.RFC3339Nano, timestamp); err != nil {
+					if _, err := time.Parse(time.RFC3339, timestamp); err != nil || instructions == "" {
+						return false
+					}
+				} else if instructions == "" {
+					return false
+				}
+			}
+			return rootSeen && automationIDSeen && depth == 0 &&
+				strings.TrimSpace(id) == id && validCodexAutomationID(id)
+		}
+		if err != nil {
+			return false
+		}
+		switch current := token.(type) {
+		case xml.StartElement:
+			depth++
+			if current.Name.Space != "" || len(current.Attr) != 0 || depth > 2 {
+				return false
+			}
+			if depth == 1 {
+				if rootSeen || current.Name.Local != "heartbeat" {
+					return false
+				}
+				rootSeen = true
+			} else {
+				childName = current.Name.Local
+				switch childName {
+				case "automation_id", "current_time_iso", "instructions":
+				default:
+					return false
+				}
+				if _, duplicate := fields[childName]; duplicate {
+					return false
+				}
+				childText.Reset()
+			}
+		case xml.EndElement:
+			if current.Name.Space != "" {
+				return false
+			}
+			if depth == 2 {
+				fields[childName] = childText.String()
+				automationIDSeen = automationIDSeen || childName == "automation_id"
+			}
+			depth--
+			if depth < 0 {
+				return false
+			}
+		case xml.CharData:
+			if depth == 2 {
+				_, _ = childText.Write(current)
+			} else if len(bytes.TrimSpace(current)) != 0 {
+				return false
+			}
+		case xml.Comment, xml.ProcInst, xml.Directive:
+			return false
+		}
+	}
 }
 
 func validCodexDelegationEnvelope(value string) bool {

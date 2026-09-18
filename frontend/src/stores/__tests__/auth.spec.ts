@@ -364,6 +364,22 @@ describe('useAuthStore', () => {
       const store = useAuthStore()
       await expect(store.refreshUser()).rejects.toThrow('Not authenticated')
     })
+
+    it('后台轮询在页面隐藏时跳过 /auth/me', async () => {
+      mockLogin.mockResolvedValue(fakeAuthResponse)
+      mockGetCurrentUser.mockResolvedValue({ data: fakeUser })
+      const store = useAuthStore()
+      await store.login({ email: 'test@example.com', password: '123456' })
+      mockGetCurrentUser.mockClear()
+
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000)
+      expect(mockGetCurrentUser).not.toHaveBeenCalled()
+
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false })
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000)
+      expect(mockGetCurrentUser).toHaveBeenCalledTimes(1)
+    })
   })
 
   // --- isSimpleMode ---

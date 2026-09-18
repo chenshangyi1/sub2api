@@ -20,7 +20,7 @@ describe("groupsReasoningEffort", () => {
       "xhigh",
       "max",
     ];
-    for (const platform of ["openai", "composite"] as const) {
+    for (const platform of ["openai", "composite", "adaptive"] as const) {
       expect(
         reasoningEffortOptionsForPlatform(platform).map(
           (option) => option.value,

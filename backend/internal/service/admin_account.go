@@ -156,6 +156,7 @@ func duplicateAccountExtra(value map[string]any) (map[string]any, error) {
 	for key := range duplicateAccountDiscardedExtraKeys {
 		delete(cloned, key)
 	}
+	stripUpstreamModelSnapshotExtra(cloned)
 	return cloned, nil
 }
 
@@ -185,6 +186,35 @@ func duplicateAccountGroups(source *Account) ([]AccountGroup, []int64) {
 		groups = append(groups, AccountGroup{GroupID: groupID, Priority: i + 1})
 	}
 	return groups, groupIDs
+}
+
+func accountGroupIDsFromBindings(groups []AccountGroup, fallback []int64) []int64 {
+	if len(groups) == 0 {
+		return append([]int64(nil), fallback...)
+	}
+	ids := make([]int64, 0, len(groups))
+	seen := make(map[int64]struct{}, len(groups))
+	for _, group := range groups {
+		if group.GroupID <= 0 {
+			continue
+		}
+		if _, ok := seen[group.GroupID]; ok {
+			continue
+		}
+		seen[group.GroupID] = struct{}{}
+		ids = append(ids, group.GroupID)
+	}
+	return ids
+}
+
+func bindAccountGroupMemberships(ctx context.Context, repo AccountRepository, accountID int64, groups []AccountGroup, groupIDs []int64) error {
+	if len(groups) > 0 {
+		return repo.BindAccountGroups(ctx, accountID, groups)
+	}
+	if groupIDs == nil {
+		return nil
+	}
+	return repo.BindGroups(ctx, accountID, groupIDs)
 }
 
 func duplicateAccountOperationID(sourceID int64, actorScope, operationKey string) string {
@@ -399,6 +429,7 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
 // Grok media eligibility helpers live in account_grok_media_eligibility.go.
 
 func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
+	stripUpstreamModelSnapshotExtra(accountExtra)
 	// Probe/session state is system-managed. New accounts always start with automatic refresh disabled.
 	delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
 	delete(accountExtra, UpstreamBillingRateSyncEnabledExtraKey)
@@ -406,7 +437,7 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 	delete(accountExtra, OllamaCloudUsageSessionExtraKey)
 	delete(accountExtra, OllamaCloudUsageAutoRefreshExtraKey)
 	delete(accountExtra, OllamaCloudUsageSnapshotExtraKey)
-	accountExtra = prepareCodexFingerprintExtraForCreate(input.Platform, input.Type, accountExtra)
+	accountExtra = prepareCodexFingerprintExtraForCreate(input.Platform, input.Type, NormalizeProxyModeExtra(accountExtra))
 	account := &Account{
 		Name:        input.Name,
 		Notes:       normalizeAccountNotes(input.Notes),
@@ -462,6 +493,7 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	input.Platform, input.Credentials = PrepareAccountPlatformWrite(input.Platform, input.Credentials)
 	accountExtra, err := normalizeOpenAILongContextBillingExtra(input.Platform, input.Extra)
 	if err != nil {
 		return nil, err
@@ -476,7 +508,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	}
 
 	// 绑定分组
-	groupIDs := input.GroupIDs
+	groupIDs := accountGroupIDsFromBindings(input.AccountGroups, input.GroupIDs)
 	// 如果没有指定分组,自动绑定对应平台的默认分组
 	if len(groupIDs) == 0 && !input.SkipDefaultGroupBind {
 		defaultGroupName := input.Platform + "-default"
@@ -514,8 +546,8 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	}
 
 	// 绑定分组
-	if len(groupIDs) > 0 {
-		if err := s.accountRepo.BindGroups(ctx, account.ID, groupIDs); err != nil {
+	if len(input.AccountGroups) > 0 || len(groupIDs) > 0 {
+		if err := bindAccountGroupMemberships(ctx, s.accountRepo, account.ID, input.AccountGroups, groupIDs); err != nil {
 			return nil, err
 		}
 	}
@@ -667,8 +699,17 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 				normalizedExtra[key] = v
 			}
 		}
-		normalizedExtra = prepareCodexFingerprintExtraForUpdate(account, normalizedExtra)
-		account.Extra = normalizedExtra
+		for _, key := range upstreamModelSnapshotExtraKeys {
+			delete(normalizedExtra, key)
+			if value, ok := account.Extra[key]; ok {
+				normalizedExtra[key] = value
+			}
+		}
+		normalizedExtra = prepareCodexFingerprintExtraForUpdate(account, NormalizeProxyModeExtra(normalizedExtra))
+		if ProtectedProxyModeConflict(account, normalizedExtra) {
+			return nil, ErrProtectedProxyModeChange
+		}
+		account.Extra = preserveMode1ManagedExtra(ctx, account, normalizedExtra)
 		if account.Platform == PlatformAntigravity && wasOveragesEnabled && !account.IsOveragesEnabled() {
 			delete(account.Extra, "antigravity_credits_overages") // 清理旧版 overages 运行态
 			// 清除 AICredits 限流 key
@@ -688,7 +729,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		NormalizeFixedQuotaWindows(account.Extra)
 	}
 	if input.Extra == nil {
-		account.Extra = prepareCodexFingerprintExtraForUpdate(account, account.Extra)
+		account.Extra = preserveMode1ManagedExtra(ctx, account, prepareCodexFingerprintExtraForUpdate(account, NormalizeProxyModeExtra(account.Extra)))
 	}
 	if requestedRateSyncEnabledUpdate != nil && *requestedRateSyncEnabledUpdate {
 		if requestedProbeEnabledUpdate != nil && !*requestedProbeEnabledUpdate {
@@ -793,15 +834,19 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		account.AutoPauseOnExpired = *input.AutoPauseOnExpired
 	}
 
+	updateGroupIDs := accountGroupIDsFromBindings(input.AccountGroups, nil)
+	if input.AccountGroups == nil && input.GroupIDs != nil {
+		updateGroupIDs = append([]int64(nil), *input.GroupIDs...)
+	}
 	// 先验证分组是否存在（在任何写操作之前）
-	if input.GroupIDs != nil {
-		if err := s.validateGroupIDsExist(ctx, *input.GroupIDs); err != nil {
+	if input.AccountGroups != nil || input.GroupIDs != nil {
+		if err := s.validateGroupIDsExist(ctx, updateGroupIDs); err != nil {
 			return nil, err
 		}
 
 		// 检查混合渠道风险（除非用户已确认）
 		if !input.SkipMixedChannelCheck {
-			if err := s.checkMixedChannelRisk(ctx, account.ID, account.Platform, *input.GroupIDs); err != nil {
+			if err := s.checkMixedChannelRisk(ctx, account.ID, account.Platform, updateGroupIDs); err != nil {
 				return nil, err
 			}
 		}
@@ -855,7 +900,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 
 	// 绑定分组
-	if input.GroupIDs != nil {
+	if input.AccountGroups != nil {
+		if err := s.accountRepo.BindAccountGroups(ctx, account.ID, input.AccountGroups); err != nil {
+			return nil, err
+		}
+	} else if input.GroupIDs != nil {
 		if err := s.accountRepo.BindGroups(ctx, account.ID, *input.GroupIDs); err != nil {
 			return nil, err
 		}
@@ -872,7 +921,17 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 // UpdateAccountExtra 仅对 Extra JSONB 做 key 级合并，避免覆盖其它运行态键
 // （如 model_rate_limits / passive_usage_* 等）。
 func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, updates map[string]any) error {
+	if hasMode1ManagedUpdates(updates) {
+		account, err := s.accountRepo.GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		if isMode1ProtectionRequested(account) {
+			return infraerrors.BadRequest("MODE1_MANAGED_FIELDS", "模式一策略字段请通过专用应用/还原接口修改")
+		}
+	}
 	updates = sanitizedCodexFingerprintExtraUpdates(updates)
+	updates = NormalizeProxyModeExtra(updates)
 	updates = stripOpenAIAutoResetCreditManagedExtra(updates, true)
 	delete(updates, UpstreamBillingProbeEnabledExtraKey)
 	delete(updates, UpstreamBillingRateSyncEnabledExtraKey)
@@ -892,12 +951,22 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	if len(updates) == 0 {
 		return nil
 	}
+	account, err := s.accountRepo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if ProtectedProxyModeConflict(account, updates) {
+		return ErrProtectedProxyModeChange
+	}
+	updates = preserveMode1ManagedExtra(ctx, account, updates)
 	return s.accountRepo.UpdateExtra(ctx, id, updates)
 }
 
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
+	input.Extra = maps.Clone(input.Extra)
+	stripUpstreamModelSnapshotExtra(input.Extra)
 	// Managed probe/session state may only enter through dedicated typed endpoints.
 	input.Extra = sanitizedCodexFingerprintExtraUpdates(input.Extra)
 	input.Extra = stripOpenAIAutoResetCreditManagedExtra(input.Extra, true)
@@ -925,8 +994,14 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	if len(input.AccountIDs) == 0 {
 		return result, nil
 	}
+	bulkGroupIDs := accountGroupIDsFromBindings(nil, nil)
 	if input.GroupIDs != nil {
-		if err := s.validateGroupIDsExist(ctx, *input.GroupIDs); err != nil {
+		bulkGroupIDs = append([]int64(nil), *input.GroupIDs...)
+	} else if input.AccountGroups != nil {
+		bulkGroupIDs = accountGroupIDsFromBindings(input.AccountGroups, nil)
+	}
+	if input.AccountGroups != nil || input.GroupIDs != nil {
+		if err := s.validateGroupIDsExist(ctx, bulkGroupIDs); err != nil {
 			return nil, err
 		}
 	}
@@ -935,16 +1010,27 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		return nil, err
 	}
 
-	needMixedChannelCheck := input.GroupIDs != nil && !input.SkipMixedChannelCheck
+	needMixedChannelCheck := (input.GroupIDs != nil || input.AccountGroups != nil) && !input.SkipMixedChannelCheck
 
 	// 预取所有目标账号，供凭据守卫/代理守卫/混合渠道检查共用，避免多次 DB 查询。
 	var cachedTargets []*Account
-	if len(input.Credentials) > 0 || input.ProxyID != nil || needMixedChannelCheck || openAISettings.any() || input.ProbeEnabled != nil || input.RateMultiplier != nil {
+	needProtectionCheck := hasMode1ManagedUpdates(input.Extra) || ProtectedProxyModeConflict(&Account{Extra: input.Extra}, input.Extra)
+	if len(input.Credentials) > 0 || input.ProxyID != nil || needMixedChannelCheck || openAISettings.any() || input.ProbeEnabled != nil || input.RateMultiplier != nil || needProtectionCheck {
 		loaded, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
 		}
 		cachedTargets = loaded
+	}
+	if hasMode1ManagedUpdates(input.Extra) {
+		for _, a := range cachedTargets {
+			if ProtectedProxyModeConflict(a, input.Extra) {
+				return nil, ErrProtectedProxyModeChange
+			}
+			if isMode1ProtectionRequested(a) {
+				return nil, infraerrors.BadRequest("MODE1_MANAGED_FIELDS", "请先还原模式一，再批量修改其策略字段")
+			}
+		}
 	}
 	targetsByID := make(map[int64]*Account, len(cachedTargets))
 	for _, account := range cachedTargets {
@@ -1010,7 +1096,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 			if platform == "" {
 				continue
 			}
-			if err := s.checkMixedChannelRisk(ctx, accountID, platform, *input.GroupIDs); err != nil {
+			if err := s.checkMixedChannelRisk(ctx, accountID, platform, bulkGroupIDs); err != nil {
 				return nil, err
 			}
 		}
@@ -1124,7 +1210,16 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	for _, accountID := range input.AccountIDs {
 		entry := BulkUpdateAccountResult{AccountID: accountID}
 
-		if input.GroupIDs != nil {
+		if input.AccountGroups != nil {
+			if err := s.accountRepo.BindAccountGroups(ctx, accountID, input.AccountGroups); err != nil {
+				entry.Success = false
+				entry.Error = err.Error()
+				result.Failed++
+				result.FailedIDs = append(result.FailedIDs, accountID)
+				result.Results = append(result.Results, entry)
+				continue
+			}
+		} else if input.GroupIDs != nil {
 			if err := s.accountRepo.BindGroups(ctx, accountID, *input.GroupIDs); err != nil {
 				entry.Success = false
 				entry.Error = err.Error()

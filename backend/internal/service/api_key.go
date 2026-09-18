@@ -28,14 +28,32 @@ func IsWindowExpired(windowStart *time.Time, duration time.Duration) bool {
 }
 
 type APIKey struct {
-	ID          int64
-	UserID      int64
-	Key         string
-	Name        string
-	GroupID     *int64
-	Status      string
-	IPWhitelist []string
-	IPBlacklist []string
+	ID      int64
+	UserID  int64
+	Key     string
+	Name    string
+	GroupID *int64
+	// RouteGroupIDs is the ordered smart-routing candidate list. Empty means
+	// fall back to GroupID only. Position 1 is also stored in GroupID.
+	RouteGroupIDs []int64
+	Status        string
+	IPWhitelist   []string
+	IPBlacklist   []string
+	// AdaptiveRoutingPreference is "intelligence" (default) or "price".
+	AdaptiveRoutingPreference string
+	// AdaptiveMaxRateMultiplier excludes Adaptive leaves above this rate ceiling.
+	AdaptiveMaxRateMultiplier *float64
+	// AdaptiveLeafGroupIDs restricts Adaptive planning to these leaf groups.
+	// Empty/nil means every enabled leaf in the parent pool is eligible.
+	AdaptiveLeafGroupIDs []int64
+	// AntiStallTier is off|basic|pro|ultra.
+	AntiStallTier string
+	// AdaptivePassiveFailoverEnabled keeps retryable failures on the current
+	// Adaptive leaf until the request-level passive threshold is reached.
+	AdaptivePassiveFailoverEnabled bool
+	// FallbackGroupIDs is a legacy key-level fallback chain. Current routing
+	// uses Adaptive leaf planning instead of expanding these IDs.
+	FallbackGroupIDs []int64
 	// 预编译的 IP 规则，用于认证热路径避免重复 ParseIP/ParseCIDR。
 	CompiledIPWhitelist *ip.CompiledIPRules `json:"-"`
 	CompiledIPBlacklist *ip.CompiledIPRules `json:"-"`

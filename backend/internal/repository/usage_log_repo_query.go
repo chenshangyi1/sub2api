@@ -19,7 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
-const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, requested_model, upstream_model, upstream_response_model, upstream_model_mismatch, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens, image_output_cost, image_input_tokens, image_input_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, image_input_size, image_output_size, image_size_source, image_size_breakdown, video_count, video_resolution, video_duration_seconds, service_tier, reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, long_context_billing_applied, channel_id, model_mapping_chain, billing_tier, billing_mode, account_stats_cost, session_id, created_at"
+const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, requested_model, upstream_model, upstream_response_model, upstream_model_mismatch, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens, image_output_cost, image_input_tokens, image_input_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, image_input_size, image_output_size, image_size_source, image_size_breakdown, video_count, video_resolution, video_duration_seconds, service_tier, reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, long_context_billing_applied, channel_id, model_mapping_chain, billing_tier, billing_mode, account_stats_cost, adaptive_base_cost, adaptive_management_fee_cost, adaptive_total_cost, adaptive_uncapped_base_cost, adaptive_platform_overage_cost, adaptive_parent_group_id, routed_group_id, adaptive_attempt_no, adaptive_pricing_snapshot_id, adaptive_reservation_id, adaptive_evidence_hash, adaptive_settlement_status, session_id, created_at"
 
 func (r *usageLogRepository) GetByID(ctx context.Context, id int64) (log *service.UsageLog, err error) {
 	query := "SELECT " + usageLogSelectColumns + " FROM usage_logs WHERE id = $1"
@@ -113,7 +113,13 @@ func (r *usageLogRepository) ListWithFilters(ctx context.Context, params paginat
 		args = append(args, filters.AccountID)
 	}
 	if filters.GroupID > 0 {
-		conditions = append(conditions, fmt.Sprintf("group_id = $%d", len(args)+1))
+		// Adaptive rows store leaf in group_id / routed_group_id and parent in
+		// adaptive_parent_group_id; match any so filtering by Adaptive parent works.
+		n := len(args) + 1
+		conditions = append(conditions, fmt.Sprintf(
+			"(group_id = $%d OR adaptive_parent_group_id = $%d OR routed_group_id = $%d)",
+			n, n, n,
+		))
 		args = append(args, filters.GroupID)
 	}
 	if requestID := strings.TrimSpace(filters.RequestID); requestID != "" {
@@ -314,6 +320,16 @@ func (r *usageLogRepository) hydrateUsageLogAssociations(ctx context.Context, lo
 				logs[i].Group = group
 			}
 		}
+		if logs[i].AdaptiveParentGroupID != nil {
+			if group, ok := groups[*logs[i].AdaptiveParentGroupID]; ok {
+				logs[i].AdaptiveParentGroup = group
+			}
+		}
+		if logs[i].RoutedGroupID != nil {
+			if group, ok := groups[*logs[i].RoutedGroupID]; ok {
+				logs[i].RoutedGroup = group
+			}
+		}
 		if logs[i].SubscriptionID != nil {
 			if sub, ok := subs[*logs[i].SubscriptionID]; ok {
 				logs[i].Subscription = sub
@@ -346,6 +362,12 @@ func collectUsageLogIDs(logs []service.UsageLog) usageLogIDs {
 		accountIDs[logs[i].AccountID] = struct{}{}
 		if logs[i].GroupID != nil {
 			groupIDs[*logs[i].GroupID] = struct{}{}
+		}
+		if logs[i].AdaptiveParentGroupID != nil {
+			groupIDs[*logs[i].AdaptiveParentGroupID] = struct{}{}
+		}
+		if logs[i].RoutedGroupID != nil {
+			groupIDs[*logs[i].RoutedGroupID] = struct{}{}
 		}
 		if logs[i].SubscriptionID != nil {
 			subscriptionIDs[*logs[i].SubscriptionID] = struct{}{}
@@ -439,66 +461,78 @@ func (r *usageLogRepository) loadSubscriptions(ctx context.Context, ids []int64)
 
 func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, error) {
 	var (
-		id                        int64
-		userID                    int64
-		apiKeyID                  int64
-		accountID                 int64
-		requestID                 sql.NullString
-		model                     string
-		requestedModel            sql.NullString
-		upstreamModel             sql.NullString
-		upstreamResponseModel     sql.NullString
-		upstreamModelMismatch     sql.NullBool
-		groupID                   sql.NullInt64
-		subscriptionID            sql.NullInt64
-		inputTokens               int
-		outputTokens              int
-		cacheCreationTokens       int
-		cacheReadTokens           int
-		cacheCreation5m           int
-		cacheCreation1h           int
-		imageOutputTokens         int
-		imageOutputCost           float64
-		imageInputTokens          int
-		imageInputCost            float64
-		inputCost                 float64
-		outputCost                float64
-		cacheCreationCost         float64
-		cacheReadCost             float64
-		totalCost                 float64
-		actualCost                float64
-		rateMultiplier            float64
-		accountRateMultiplier     sql.NullFloat64
-		billingType               int16
-		requestTypeRaw            int16
-		stream                    bool
-		openaiWSMode              bool
-		durationMs                sql.NullInt64
-		firstTokenMs              sql.NullInt64
-		userAgent                 sql.NullString
-		ipAddress                 sql.NullString
-		imageCount                int
-		imageSize                 sql.NullString
-		imageInputSize            sql.NullString
-		imageOutputSize           sql.NullString
-		imageSizeSource           sql.NullString
-		imageSizeBreakdown        sql.NullString
-		videoCount                int
-		videoResolution           sql.NullString
-		videoDurationSeconds      sql.NullInt64
-		serviceTier               sql.NullString
-		reasoningEffort           sql.NullString
-		inboundEndpoint           sql.NullString
-		upstreamEndpoint          sql.NullString
-		cacheTTLOverridden        bool
-		longContextBillingApplied bool
-		channelID                 sql.NullInt64
-		modelMappingChain         sql.NullString
-		billingTier               sql.NullString
-		billingMode               sql.NullString
-		accountStatsCost          sql.NullFloat64
-		sessionID                 sql.NullString
-		createdAt                 time.Time
+		id                          int64
+		userID                      int64
+		apiKeyID                    int64
+		accountID                   int64
+		requestID                   sql.NullString
+		model                       string
+		requestedModel              sql.NullString
+		upstreamModel               sql.NullString
+		upstreamResponseModel       sql.NullString
+		upstreamModelMismatch       sql.NullBool
+		groupID                     sql.NullInt64
+		subscriptionID              sql.NullInt64
+		inputTokens                 int
+		outputTokens                int
+		cacheCreationTokens         int
+		cacheReadTokens             int
+		cacheCreation5m             int
+		cacheCreation1h             int
+		imageOutputTokens           int
+		imageOutputCost             float64
+		imageInputTokens            int
+		imageInputCost              float64
+		inputCost                   float64
+		outputCost                  float64
+		cacheCreationCost           float64
+		cacheReadCost               float64
+		totalCost                   float64
+		actualCost                  float64
+		rateMultiplier              float64
+		accountRateMultiplier       sql.NullFloat64
+		billingType                 int16
+		requestTypeRaw              int16
+		stream                      bool
+		openaiWSMode                bool
+		durationMs                  sql.NullInt64
+		firstTokenMs                sql.NullInt64
+		userAgent                   sql.NullString
+		ipAddress                   sql.NullString
+		imageCount                  int
+		imageSize                   sql.NullString
+		imageInputSize              sql.NullString
+		imageOutputSize             sql.NullString
+		imageSizeSource             sql.NullString
+		imageSizeBreakdown          sql.NullString
+		videoCount                  int
+		videoResolution             sql.NullString
+		videoDurationSeconds        sql.NullInt64
+		serviceTier                 sql.NullString
+		reasoningEffort             sql.NullString
+		inboundEndpoint             sql.NullString
+		upstreamEndpoint            sql.NullString
+		cacheTTLOverridden          bool
+		longContextBillingApplied   bool
+		channelID                   sql.NullInt64
+		modelMappingChain           sql.NullString
+		billingTier                 sql.NullString
+		billingMode                 sql.NullString
+		accountStatsCost            sql.NullFloat64
+		adaptiveBaseCost            sql.NullFloat64
+		adaptiveManagementFeeCost   sql.NullFloat64
+		adaptiveTotalCost           sql.NullFloat64
+		adaptiveUncappedBaseCost    sql.NullFloat64
+		adaptivePlatformOverageCost sql.NullFloat64
+		adaptiveParentGroupID       sql.NullInt64
+		routedGroupID               sql.NullInt64
+		adaptiveAttemptNo           sql.NullInt64
+		adaptivePricingSnapshotID   sql.NullString
+		adaptiveReservationID       sql.NullString
+		adaptiveEvidenceHash        sql.NullString
+		adaptiveSettlementStatus    sql.NullString
+		sessionID                   sql.NullString
+		createdAt                   time.Time
 	)
 
 	if err := scanner.Scan(
@@ -560,6 +594,18 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		&billingTier,
 		&billingMode,
 		&accountStatsCost,
+		&adaptiveBaseCost,
+		&adaptiveManagementFeeCost,
+		&adaptiveTotalCost,
+		&adaptiveUncappedBaseCost,
+		&adaptivePlatformOverageCost,
+		&adaptiveParentGroupID,
+		&routedGroupID,
+		&adaptiveAttemptNo,
+		&adaptivePricingSnapshotID,
+		&adaptiveReservationID,
+		&adaptiveEvidenceHash,
+		&adaptiveSettlementStatus,
 		&sessionID,
 		&createdAt,
 	); err != nil {
@@ -567,37 +613,42 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 	}
 
 	log := &service.UsageLog{
-		ID:                        id,
-		UserID:                    userID,
-		APIKeyID:                  apiKeyID,
-		AccountID:                 accountID,
-		Model:                     model,
-		RequestedModel:            coalesceTrimmedString(requestedModel, model),
-		InputTokens:               inputTokens,
-		OutputTokens:              outputTokens,
-		CacheCreationTokens:       cacheCreationTokens,
-		CacheReadTokens:           cacheReadTokens,
-		CacheCreation5mTokens:     cacheCreation5m,
-		CacheCreation1hTokens:     cacheCreation1h,
-		ImageOutputTokens:         imageOutputTokens,
-		ImageOutputCost:           imageOutputCost,
-		ImageInputTokens:          imageInputTokens,
-		ImageInputCost:            imageInputCost,
-		InputCost:                 inputCost,
-		OutputCost:                outputCost,
-		CacheCreationCost:         cacheCreationCost,
-		CacheReadCost:             cacheReadCost,
-		TotalCost:                 totalCost,
-		ActualCost:                actualCost,
-		RateMultiplier:            rateMultiplier,
-		AccountRateMultiplier:     nullFloat64Ptr(accountRateMultiplier),
-		BillingType:               int8(billingType),
-		RequestType:               service.RequestTypeFromInt16(requestTypeRaw),
-		ImageCount:                imageCount,
-		VideoCount:                videoCount,
-		CacheTTLOverridden:        cacheTTLOverridden,
-		LongContextBillingApplied: longContextBillingApplied,
-		CreatedAt:                 createdAt,
+		ID:                          id,
+		UserID:                      userID,
+		APIKeyID:                    apiKeyID,
+		AccountID:                   accountID,
+		Model:                       model,
+		RequestedModel:              coalesceTrimmedString(requestedModel, model),
+		InputTokens:                 inputTokens,
+		OutputTokens:                outputTokens,
+		CacheCreationTokens:         cacheCreationTokens,
+		CacheReadTokens:             cacheReadTokens,
+		CacheCreation5mTokens:       cacheCreation5m,
+		CacheCreation1hTokens:       cacheCreation1h,
+		ImageOutputTokens:           imageOutputTokens,
+		ImageOutputCost:             imageOutputCost,
+		ImageInputTokens:            imageInputTokens,
+		ImageInputCost:              imageInputCost,
+		InputCost:                   inputCost,
+		OutputCost:                  outputCost,
+		CacheCreationCost:           cacheCreationCost,
+		CacheReadCost:               cacheReadCost,
+		TotalCost:                   totalCost,
+		ActualCost:                  actualCost,
+		RateMultiplier:              rateMultiplier,
+		AccountRateMultiplier:       nullFloat64Ptr(accountRateMultiplier),
+		AdaptiveBaseCost:            nullFloat64Ptr(adaptiveBaseCost),
+		AdaptiveManagementFeeCost:   nullFloat64Ptr(adaptiveManagementFeeCost),
+		AdaptiveTotalCost:           nullFloat64Ptr(adaptiveTotalCost),
+		AdaptiveUncappedBaseCost:    nullFloat64Ptr(adaptiveUncappedBaseCost),
+		AdaptivePlatformOverageCost: nullFloat64Ptr(adaptivePlatformOverageCost),
+		BillingType:                 int8(billingType),
+		RequestType:                 service.RequestTypeFromInt16(requestTypeRaw),
+		ImageCount:                  imageCount,
+		VideoCount:                  videoCount,
+		CacheTTLOverridden:          cacheTTLOverridden,
+		LongContextBillingApplied:   longContextBillingApplied,
+		CreatedAt:                   createdAt,
 	}
 	// 先回填 legacy 字段，再基于 legacy + request_type 计算最终请求类型，保证历史数据兼容。
 	log.Stream = stream
@@ -687,6 +738,30 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 	}
 	if accountStatsCost.Valid {
 		log.AccountStatsCost = &accountStatsCost.Float64
+	}
+	if adaptiveParentGroupID.Valid {
+		value := adaptiveParentGroupID.Int64
+		log.AdaptiveParentGroupID = &value
+	}
+	if routedGroupID.Valid {
+		value := routedGroupID.Int64
+		log.RoutedGroupID = &value
+	}
+	if adaptiveAttemptNo.Valid {
+		value := int(adaptiveAttemptNo.Int64)
+		log.AdaptiveAttemptNo = &value
+	}
+	if adaptivePricingSnapshotID.Valid {
+		log.AdaptivePricingSnapshotID = &adaptivePricingSnapshotID.String
+	}
+	if adaptiveReservationID.Valid {
+		log.AdaptiveReservationID = &adaptiveReservationID.String
+	}
+	if adaptiveEvidenceHash.Valid {
+		log.AdaptiveEvidenceHash = &adaptiveEvidenceHash.String
+	}
+	if adaptiveSettlementStatus.Valid {
+		log.AdaptiveSettlementStatus = &adaptiveSettlementStatus.String
 	}
 	if sessionID.Valid {
 		log.SessionID = &sessionID.String

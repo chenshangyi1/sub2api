@@ -2,12 +2,19 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <link rel="icon" type="image/png" href="/logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Sub2API - AI API Gateway</title>
   </head>
   <body>
     <div id="app"></div>
+    <script nonce="__CSP_NONCE_VALUE__">
+      window.setTimeout(function () {
+        var el = document.getElementById('app')
+        if (!el || el.childElementCount > 0) return
+        el.innerHTML = '<div style="min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;font-family:sans-serif;color:#111">页面未加载完成，<a href="/">点击刷新</a></div>'
+      }, 8000)
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

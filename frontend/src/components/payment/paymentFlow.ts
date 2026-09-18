@@ -16,9 +16,10 @@ const VISIBLE_METHOD_ALIASES = {
   wxpay_direct: 'wxpay',
   stripe: 'stripe',
   airwallex: 'airwallex',
+  epusdt: 'epusdt',
 } as const
 
-export type VisiblePaymentMethod = 'alipay' | 'wxpay' | 'stripe' | 'airwallex'
+export type VisiblePaymentMethod = 'alipay' | 'wxpay' | 'stripe' | 'airwallex' | 'epusdt'
 export type StripeVisibleMethod = 'alipay' | 'wechat_pay'
 export type PaymentLaunchKind =
   | 'qr_waiting'
@@ -97,15 +98,24 @@ type CreateOrderFlowResult = CreateOrderResult & {
 type StorageWriter = Pick<Storage, 'removeItem' | 'setItem'>
 
 export function normalizeVisibleMethod(method: string): VisiblePaymentMethod | '' {
-  const normalized = VISIBLE_METHOD_ALIASES[method.trim() as keyof typeof VISIBLE_METHOD_ALIASES]
+  const trimmed = method.trim()
+  if (trimmed === 'epusdt' || trimmed.startsWith('epusdt_')) return 'epusdt'
+  const normalized = VISIBLE_METHOD_ALIASES[trimmed as keyof typeof VISIBLE_METHOD_ALIASES]
   return normalized ?? ''
+}
+
+export function checkoutPaymentType(method: string): string {
+  const trimmed = method.trim()
+  if (trimmed === 'epusdt' || trimmed.startsWith('epusdt_')) return trimmed
+  return normalizeVisibleMethod(trimmed) || trimmed
 }
 
 export function getVisibleMethods(methods: Record<string, MethodLimit>): Record<string, MethodLimit> {
   const visible: Record<string, MethodLimit> = {}
 
   Object.entries(methods).forEach(([type, limit]) => {
-    const normalized = normalizeVisibleMethod(type) || type.trim()
+    const trimmed = type.trim()
+    const normalized = trimmed.startsWith('epusdt_') ? trimmed : (normalizeVisibleMethod(trimmed) || trimmed)
     if (!normalized) return
 
     const isCanonical = type === normalized
@@ -119,7 +129,7 @@ export function getVisibleMethods(methods: Record<string, MethodLimit>): Record<
 }
 
 export function buildCreateOrderPayload(input: BuildCreateOrderPayloadInput): CreateOrderRequest {
-  const visibleMethod = normalizeVisibleMethod(input.paymentType) || input.paymentType.trim()
+  const visibleMethod = checkoutPaymentType(input.paymentType)
   const normalizedOrigin = (input.origin || '').trim().replace(/\/+$/, '')
   // When forceQRCode is enabled for alipay, always tell the backend this is not a mobile
   // request so it generates a QR code instead of a mobile-redirect URL.

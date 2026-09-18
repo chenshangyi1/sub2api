@@ -127,6 +127,14 @@ func (s *accountRepoStub) BindGroups(ctx context.Context, accountID int64, group
 	panic("unexpected BindGroups call")
 }
 
+func (s *accountRepoStub) BindAccountGroups(ctx context.Context, accountID int64, groups []AccountGroup) error {
+	panic("unexpected BindAccountGroups call")
+}
+
+func (s *accountRepoStub) UpdateAccountGroupPriorities(ctx context.Context, accountID int64, groups []AccountGroup) error {
+	panic("unexpected UpdateAccountGroupPriorities call")
+}
+
 func (s *accountRepoStub) ListSchedulable(ctx context.Context) ([]Account, error) {
 	panic("unexpected ListSchedulable call")
 }

@@ -121,7 +121,7 @@ func (s *CNProviderBalanceCheckService) runOnce() {
 			}
 			// payg 余额探测仅 kimi/deepseek（智谱无公开余额端点，payg 账号
 			// 依赖响应式 402/429 处理）。
-			if platform != PlatformZhipu && account.Schedulable {
+			if account.GetCNVendor() != CNVendorZhipu && account.Schedulable {
 				paygTargets = append(paygTargets, account)
 			}
 		}
@@ -246,7 +246,7 @@ func (s *CNProviderBalanceCheckService) checkOne(ctx context.Context, account *A
 }
 
 func (s *CNProviderBalanceCheckService) platforms() []string {
-	return []string{PlatformKimi, PlatformDeepseek}
+	return []string{PlatformCN, PlatformKimi, PlatformDeepseek}
 }
 
 // allCNBalancesBelowThreshold 判断全部币种余额是否均低于阈值。

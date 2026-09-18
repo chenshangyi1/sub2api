@@ -31,7 +31,7 @@ func (h *OpenAIGatewayHandler) Live(c *gin.Context) {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
 		return
 	}
-	if apiKey.Group == nil || (apiKey.Group.Platform != service.PlatformOpenAI && apiKey.Group.Platform != service.PlatformComposite) {
+	if apiKey.Group == nil || (apiKey.Group.Platform != service.PlatformOpenAI && apiKey.Group.Platform != service.PlatformComposite && apiKey.Group.Platform != service.PlatformAdaptive) {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Live is not supported for this platform")
 		return
 	}
@@ -39,6 +39,7 @@ func (h *OpenAIGatewayHandler) Live(c *gin.Context) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", "Live is not enabled for this group")
 		return
 	}
+	apiKey = h.bindAdaptiveParentToMatchingLeaf(c, apiKey, []string{service.PlatformOpenAI}, nil)
 	request, err := parseLiveCallRequest(c)
 	if err != nil {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -245,6 +246,6 @@ func (h *OpenAIGatewayHandler) LiveSideband(c *gin.Context) {
 func liveEnabledForAPIKey(apiKey *service.APIKey) bool {
 	return apiKey != nil &&
 		apiKey.Group != nil &&
-		(apiKey.Group.Platform == service.PlatformOpenAI || apiKey.Group.Platform == service.PlatformComposite) &&
+		(apiKey.Group.Platform == service.PlatformOpenAI || apiKey.Group.Platform == service.PlatformComposite || apiKey.Group.Platform == service.PlatformAdaptive) &&
 		apiKey.Group.AllowLive
 }

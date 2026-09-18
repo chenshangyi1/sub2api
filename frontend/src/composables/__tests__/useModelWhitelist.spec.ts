@@ -104,6 +104,12 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('gemini-3.1-pro')
   })
 
+  it('cn 与 video 不回落到 Claude 默认白名单', () => {
+    expect(getModelsByPlatform('cn')).toEqual([])
+    expect(getModelsByPlatform('video')).toEqual([])
+    expect(getModelsByPlatform('kimi')).toContain('kimi-k2')
+  })
+
   it('whitelist 模式会忽略通配符条目', () => {
     const mapping = buildModelMappingObject('whitelist', ['claude-*', 'gemini-3.1-flash-image'], [])
     expect(mapping).toEqual({

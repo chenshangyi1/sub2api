@@ -765,6 +765,77 @@ func TestOpenAIGatewayMessagesDispatchGateAllowsGrokGroups(t *testing.T) {
 		require.Equal(t, "api_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
 		require.NotContains(t, rec.Body.String(), "This group does not allow /v1/messages dispatch")
 	})
+
+	t.Run("adaptive_openai_parent_without_dispatch_flag_reaches_gateway_dependencies", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-fable-5","messages":[{"role":"user","content":"hi"}]}`))
+		groupID := int64(108)
+		c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
+			ID:      5108,
+			GroupID: &groupID,
+			User:    &service.User{ID: 6108},
+			Group: &service.Group{
+				ID:                    groupID,
+				Platform:              service.PlatformOpenAI,
+				AllowMessagesDispatch: false,
+			},
+		})
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 6108, Concurrency: 1})
+
+		h := &OpenAIGatewayHandler{
+			adaptivePlanner: service.NewAdaptiveRoutePlanner(
+				stubAdaptivePoolRepo{snapshot: &service.AdaptivePoolSnapshot{
+					ParentGroupID: groupID,
+					Platform:      service.PlatformOpenAI,
+					Enabled:       true,
+					Members: []service.AdaptiveLeafRef{{
+						LeafGroupID: 118,
+						Enabled:     true,
+						SortOrder:   1,
+					}},
+				}},
+				nil,
+				stubAdaptiveGroupRepo{groups: map[int64]*service.Group{
+					118: {ID: 118, Platform: service.PlatformAnthropic, Status: service.StatusActive},
+				}},
+				nil, nil,
+			),
+			cfg: &config.Config{Gateway: config.GatewayConfig{AdaptiveRoutingEnabled: true}},
+		}
+		h.Messages(c)
+
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		require.Equal(t, "api_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+		require.NotContains(t, rec.Body.String(), "This group does not allow /v1/messages dispatch")
+	})
+
+	t.Run("adaptive_inbound_platform_without_dispatch_flag_reaches_gateway_dependencies", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-fable-5","messages":[{"role":"user","content":"hi"}]}`))
+		groupID := int64(108)
+		c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
+			ID:      5109,
+			GroupID: &groupID,
+			User:    &service.User{ID: 6109},
+			Group: &service.Group{
+				ID:                    groupID,
+				Platform:              service.PlatformAdaptive,
+				AllowMessagesDispatch: false,
+			},
+		})
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 6109, Concurrency: 1})
+
+		h := &OpenAIGatewayHandler{
+			cfg: &config.Config{Gateway: config.GatewayConfig{AdaptiveRoutingEnabled: true}},
+		}
+		h.Messages(c)
+
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		require.Equal(t, "api_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+		require.NotContains(t, rec.Body.String(), "This group does not allow /v1/messages dispatch")
+	})
 }
 
 func TestOpenAIModelMappedBody(t *testing.T) {
@@ -1896,6 +1967,10 @@ func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableByGroupIDAndPlatfor
 	return s.ListSchedulableByPlatform(ctx, platform)
 }
 
+func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableByGroupID(_ context.Context, _ int64) ([]service.Account, error) {
+	return []service.Account{s.account}, nil
+}
+
 func (s *openAIWSUsageHandlerAccountRepoStub) GetByID(ctx context.Context, id int64) (*service.Account, error) {
 	if s.account.ID != id {
 		return nil, nil
@@ -2010,6 +2085,16 @@ func (s *openAIWSFailoverHandlerAccountRepoStub) ListSchedulableByPlatform(ctx c
 
 func (s *openAIWSFailoverHandlerAccountRepoStub) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]service.Account, error) {
 	return s.ListSchedulableByPlatform(ctx, platform)
+}
+
+func (s *openAIWSFailoverHandlerAccountRepoStub) ListSchedulableByGroupID(_ context.Context, _ int64) ([]service.Account, error) {
+	out := make([]service.Account, 0, len(s.accounts))
+	for _, account := range s.accounts {
+		if account.IsSchedulable() {
+			out = append(out, account)
+		}
+	}
+	return out, nil
 }
 
 func (s *openAIWSFailoverHandlerAccountRepoStub) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
@@ -2186,7 +2271,7 @@ func TestOpenAIResponses_APIKeyPassthroughPool5xxRetriesThenExhaustsMaxSwitches(
 	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
 		ID: 1803, GroupID: &groupID,
 		User:  &service.User{ID: 1703, Status: service.StatusActive},
-		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive},
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, Hydrated: true},
 	})
 	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1703, Concurrency: 0})
 
@@ -2287,7 +2372,7 @@ func TestOpenAIResponses_APIKeyPassthroughPoolAuthFailureRetriesThenSwitchesToHe
 			c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
 				ID: 1803, GroupID: &groupID,
 				User:  &service.User{ID: 1703, Status: service.StatusActive},
-				Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive},
+				Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, Hydrated: true},
 			})
 			c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1703, Concurrency: 0})
 
@@ -2369,7 +2454,7 @@ func TestOpenAIResponses_APIKeyPassthroughSSERateLimitUsesConfiguredPoolRetry(t 
 	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
 		ID: 1804, GroupID: &groupID,
 		User:  &service.User{ID: 1704, Status: service.StatusActive},
-		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive},
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, Hydrated: true},
 	})
 	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1704, Concurrency: 0})
 
@@ -2379,7 +2464,7 @@ func TestOpenAIResponses_APIKeyPassthroughSSERateLimitUsesConfiguredPoolRetry(t 
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)
 	require.Equal(t, "1", rec.Header().Get("Retry-After"))
 	require.Equal(t, "rate_limit_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
-	require.Equal(t, "Upstream rate limit exceeded, please retry later", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.Equal(t, "Concurrency limit exceeded for account, please retry later", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
 }
 
 func TestOpenAIResponsesWebSocket_FailoverOnUpstreamUsageLimitEvent(t *testing.T) {
@@ -2531,7 +2616,7 @@ func TestOpenAIResponsesWebSocket_FailoverOnUpstreamUsageLimitEvent(t *testing.T
 		ID:      1802,
 		GroupID: &groupID,
 		User:    &service.User{ID: 1702, Status: service.StatusActive},
-		Group:   &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive},
+		Group:   &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, Hydrated: true},
 	}
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
@@ -2717,7 +2802,7 @@ func TestOpenAIResponsesWebSocket_FirstOutputTimeoutWithoutDownstreamReusesClien
 		ID:      1812,
 		GroupID: &groupID,
 		User:    &service.User{ID: 1712, Status: service.StatusActive},
-		Group:   &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive},
+		Group:   &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, Hydrated: true},
 	}
 	handlerDone := make(chan struct{})
 	router := gin.New()
@@ -2942,6 +3027,10 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		ID:      1801,
 		GroupID: &groupID,
 		User:    &service.User{ID: 1701, Status: service.StatusActive},
+	}
+	apiKey.Group.Hydrated = true
+	if apiKey.Group.Status == "" {
+		apiKey.Group.Status = service.StatusActive
 	}
 	router := gin.New()
 	router.Use(func(c *gin.Context) {

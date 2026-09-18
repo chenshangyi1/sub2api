@@ -315,6 +315,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		PaymentVisibleMethodWxpayEnabled:                       settings.PaymentVisibleMethodWxpayEnabled,
 		OpenAILowUpstreamRatePriorityEnabled:                   settings.OpenAILowUpstreamRatePriorityEnabled,
 		OpenAIOAuthSchedulingRateMultiplier:                    settings.OpenAIOAuthSchedulingRateMultiplier,
+		AdaptiveServiceFeePercent:                              settings.AdaptiveServiceFeePercent,
 		CodexQuotaOverdraftEnabled:                             settings.CodexQuotaOverdraftEnabled,
 		CodexQuotaOverdraftBusinessInjectionEnabled:            settings.CodexQuotaOverdraftBusinessInjectionEnabled,
 		OpenAIAdvancedSchedulerEnabled:                         settings.OpenAIAdvancedSchedulerEnabled,

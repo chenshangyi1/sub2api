@@ -123,8 +123,8 @@ func (s *CNProviderBalanceService) QueryBalanceForAccount(ctx context.Context, a
 }
 
 func (s *CNProviderBalanceService) queryBalanceForAccount(ctx context.Context, account *Account) (*CNProviderBalanceResult, error) {
-	provider := account.Platform
-	if provider != PlatformKimi && provider != PlatformDeepseek {
+	provider := account.GetCNVendor()
+	if provider != CNVendorKimi && provider != CNVendorDeepseek {
 		return nil, infraerrors.New(http.StatusBadRequest, "CN_BALANCE_NO_ENDPOINT", "account provider has no balance endpoint")
 	}
 
@@ -292,10 +292,10 @@ func (s *CNProviderBalanceService) resolveProxyURL(ctx context.Context, account 
 //   - Kimi：固定 https://api.moonshot.cn/v1/users/me/balance（与 base_url 无关，Moonshot 仅此一处）
 //   - DeepSeek：基于 base_url 拼接 /user/balance（支持自定义域名）
 func cnBalanceURL(account *Account) string {
-	switch account.Platform {
-	case PlatformKimi:
+	switch account.GetCNVendor() {
+	case CNVendorKimi:
 		return "https://api.moonshot.cn/v1/users/me/balance"
-	case PlatformDeepseek:
+	case CNVendorDeepseek:
 		// Anthropic 协议账号的凭证 base_url 指向 /anthropic 端点，余额探测需回退
 		// 到 OpenAI 格式 base（协议感知）再拼接 /user/balance。
 		return strings.TrimRight(account.GetOpenAIFormatBaseURL(), "/") + "/user/balance"

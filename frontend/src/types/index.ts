@@ -528,7 +528,7 @@ export interface PaginationConfig {
 
 // ==================== API Key & Group Types ====================
 
-export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'composite'
+export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'cn' | 'video' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'composite' | 'adaptive'
 
 export type VideoModelPrices = Record<string, Record<string, number>>
 
@@ -556,6 +556,7 @@ export interface Group {
   max_reasoning_effort?: string // OpenAI/Codex reasoning ceiling; empty means unlimited
   reasoning_effort_mappings?: ReasoningEffortMapping[]
   is_exclusive: boolean
+  user_visible?: boolean
   status: 'active' | 'inactive'
   subscription_type: SubscriptionType
   daily_limit_usd: number | null
@@ -605,6 +606,7 @@ export interface Group {
   require_privacy_set: boolean
   created_at: string
   updated_at: string
+  adaptive_leaves?: AdaptiveLeafOption[]
 }
 
 export interface AdminGroup extends Group {
@@ -639,6 +641,13 @@ export interface AdminGroup extends Group {
   sort_order: number
 }
 
+export interface AdaptiveLeafOption {
+  id: number
+  name: string
+  platform: GroupPlatform
+  rate_multiplier: number
+}
+
 export interface ModelsListConfig {
   enabled: boolean
   models: string[]
@@ -663,7 +672,7 @@ export interface CompositeModelRoute {
   group_id: number
   public_model: string
   match_type: CompositeRouteMatchType
-  target_platform: Exclude<GroupPlatform, 'composite'>
+  target_platform: Exclude<GroupPlatform, 'composite' | 'adaptive'>
   upstream_model: string
   endpoint: CompositeRouteEndpoint
   priority: number
@@ -676,7 +685,7 @@ export interface CompositeModelRoute {
 export interface CompositeModelRouteInput {
   public_model: string
   match_type: CompositeRouteMatchType
-  target_platform: Exclude<GroupPlatform, 'composite'>
+  target_platform: Exclude<GroupPlatform, 'composite' | 'adaptive'>
   upstream_model?: string
   endpoint: CompositeRouteEndpoint
   priority?: number
@@ -694,7 +703,7 @@ export interface CompositeRouteDecision {
   source: CompositeRouteSource
   group_id: number
   public_model: string
-  target_platform: Exclude<GroupPlatform, 'composite'> | ''
+  target_platform: Exclude<GroupPlatform, 'composite' | 'adaptive'> | ''
   upstream_model: string
   endpoint: CompositeRouteEndpoint
   route?: CompositeModelRoute
@@ -707,6 +716,7 @@ export interface ApiKey {
   key: string
   name: string
   group_id: number | null
+  group_ids?: number[]
   status: 'active' | 'inactive' | 'quota_exhausted' | 'expired'
   ip_whitelist: string[]
   ip_blacklist: string[]
@@ -731,11 +741,15 @@ export interface ApiKey {
   reset_5h_at: string | null
   reset_1d_at: string | null
   reset_7d_at: string | null
+  adaptive_routing_preference?: 'intelligence' | 'price'
+  adaptive_max_rate_multiplier?: number | null
+  adaptive_leaf_group_ids?: number[]
 }
 
 export interface CreateApiKeyRequest {
   name: string
   group_id?: number | null
+  group_ids?: number[]
   custom_key?: string // Optional custom API Key
   ip_whitelist?: string[]
   ip_blacklist?: string[]
@@ -744,11 +758,15 @@ export interface CreateApiKeyRequest {
   rate_limit_5h?: number
   rate_limit_1d?: number
   rate_limit_7d?: number
+  adaptive_routing_preference?: 'intelligence' | 'price'
+  adaptive_max_rate_multiplier?: number | null
+  adaptive_leaf_group_ids?: number[]
 }
 
 export interface UpdateApiKeyRequest {
   name?: string
   group_id?: number | null
+  group_ids?: number[]
   status?: 'active' | 'inactive'
   ip_whitelist?: string[]
   ip_blacklist?: string[]
@@ -759,6 +777,9 @@ export interface UpdateApiKeyRequest {
   rate_limit_1d?: number
   rate_limit_7d?: number
   reset_rate_limit_usage?: boolean
+  adaptive_routing_preference?: 'intelligence' | 'price'
+  adaptive_max_rate_multiplier?: number | null
+  adaptive_leaf_group_ids?: number[]
 }
 
 export interface CreateGroupRequest {
@@ -767,6 +788,7 @@ export interface CreateGroupRequest {
   platform?: GroupPlatform
   rate_multiplier?: number
   is_exclusive?: boolean
+  user_visible?: boolean
   subscription_type?: SubscriptionType
   daily_limit_usd?: number | null
   weekly_limit_usd?: number | null
@@ -828,6 +850,7 @@ export interface UpdateGroupRequest {
   platform?: GroupPlatform
   rate_multiplier?: number
   is_exclusive?: boolean
+  user_visible?: boolean
   status?: 'active' | 'inactive'
   subscription_type?: SubscriptionType
   daily_limit_usd?: number | null
@@ -885,7 +908,7 @@ export interface UpdateGroupRequest {
 
 // ==================== Account & Proxy Types ====================
 
-export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek'
+export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'cn' | 'video' | 'kimi' | 'zhipu' | 'deepseek'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
@@ -1124,6 +1147,9 @@ export interface Account {
   credentials_status?: Record<string, boolean>
   ollama_cloud_usage?: OllamaCloudUsageState
   // Extra fields including Codex usage, OpenAI compact capability, and model-level rate limits.
+  anti_degradation?: boolean
+  protection_scope?: string
+  protection_mode?: string
   extra?: (CodexUsageSnapshot & OpenAICompactState & {
     model_rate_limits?: Record<string, { rate_limited_at: string; rate_limit_reset_at: string }>
     antigravity_credits_overages?: Record<string, { activated_at: string; active_until: string }>
@@ -1171,6 +1197,7 @@ export interface Account {
   proxy?: Proxy
   group_ids?: number[] // Groups this account belongs to
   groups?: Group[] // Preloaded group objects
+  account_groups?: AccountGroupMembership[]
 
   // Rate limit & scheduling fields
   schedulable: boolean
@@ -1247,6 +1274,13 @@ export interface Account {
   parent_privacy_mode?: string
   parent_subscription_expires_at?: string
   parent_chatgpt_account_id?: string
+}
+
+export interface AccountGroupMembership {
+  account_id: number
+  group_id: number
+  priority: number
+  created_at?: string
 }
 
 export interface AccountSchedulerGroupScore {
@@ -1434,6 +1468,7 @@ export interface CreateAccountRequest {
   priority?: number
   rate_multiplier?: number // Account billing multiplier (>=0, 0 means free)
   group_ids?: number[]
+  account_groups?: AccountGroupMembership[]
   expires_at?: number | null
   auto_pause_on_expired?: boolean
   upstream_billing_probe_enabled?: boolean
@@ -1454,6 +1489,7 @@ export interface UpdateAccountRequest {
   schedulable?: boolean
   status?: 'active' | 'inactive' | 'error'
   group_ids?: number[]
+  account_groups?: AccountGroupMembership[]
   expires_at?: number | null
   auto_pause_on_expired?: boolean
   upstream_billing_probe_enabled?: boolean
@@ -1566,6 +1602,7 @@ export interface CodexSessionImportRequest {
   name?: string
   notes?: string | null
   group_ids?: number[]
+  account_groups?: AccountGroupMembership[]
   proxy_id?: number | null
   concurrency?: number
   priority?: number
@@ -1585,6 +1622,7 @@ export interface OpenAICodexPATCreateRequest {
   name?: string
   notes?: string | null
   group_ids?: number[]
+  account_groups?: AccountGroupMembership[]
   proxy_id?: number | null
   concurrency?: number
   priority?: number

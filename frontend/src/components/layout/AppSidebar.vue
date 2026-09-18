@@ -1,9 +1,9 @@
 <template>
   <aside
-    class="sidebar"
+    class="sidebar app-sidebar"
     :class="[
-      sidebarCollapsed ? 'w-[72px]' : 'w-64',
-      { '-translate-x-full lg:translate-x-0': !mobileOpen }
+      sidebarCollapsed ? 'w-[76px]' : 'w-64',
+      { 'max-lg:-translate-x-full': !mobileOpen, 'signal-sidebar': isConsoleSignal }
     ]"
   >
     <!-- Logo/Brand -->
@@ -11,10 +11,10 @@
       <!-- Custom Logo or Default Logo -->
       <router-link
         :to="homePath"
-        class="sidebar-logo flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl shadow-glow transition-opacity hover:opacity-80"
+        class="sidebar-logo transition-opacity hover:opacity-90"
         @click="handleMenuItemClick(homePath)"
       >
-        <img v-if="settingsLoaded" :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
+        <BrandLogo v-if="settingsLoaded" :src="siteLogo" alt="Logo" size="sm" />
       </router-link>
       <div class="sidebar-brand" :class="{ 'sidebar-brand-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'">
         <router-link
@@ -148,11 +148,12 @@
     </nav>
 
     <!-- Bottom Section -->
-    <div class="mt-auto border-t border-gray-100 p-3 dark:border-dark-800">
+    <div class="sidebar-footer mt-auto border-t border-gray-100 p-3 dark:border-dark-800">
       <!-- Theme Toggle -->
       <button
         @click="toggleTheme"
         class="sidebar-link mb-2 w-full"
+        data-test="theme-toggle"
         :class="{ 'sidebar-link-collapsed': sidebarCollapsed }"
         :title="sidebarCollapsed ? (isDark ? t('nav.lightMode') : t('nav.darkMode')) : undefined"
       >
@@ -181,7 +182,7 @@
   <transition name="fade">
     <div
       v-if="mobileOpen"
-      class="fixed inset-0 z-30 bg-black/50 lg:hidden"
+      class="app-sidebar-overlay fixed inset-0 z-[var(--layer-sidebar-overlay,55)] lg:hidden"
       @click="closeMobile"
     ></div>
   </transition>
@@ -192,12 +193,15 @@ import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'v
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAdminSettingsStore, useAppStore, useAuthStore, useOnboardingStore } from '@/stores'
+import { useAnnouncementStore } from '@/stores/announcements'
 import VersionBadge from '@/components/common/VersionBadge.vue'
+import BrandLogo from '@/components/common/BrandLogo.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { sanitizeSvg } from '@/utils/sanitize'
 import { sanitizeUrl } from '@/utils/url'
 import { FeatureFlags, makeSidebarFlag } from '@/utils/featureFlags'
 import { useBatchImageAccess } from '@/composables/useBatchImageAccess'
+import { useConsoleSignal } from '@/composables/useConsoleSignal'
 
 interface NavItem {
   path: string
@@ -238,8 +242,10 @@ function applyFeatureFlags(items: NavItem[]): NavItem[] {
 const { t } = useI18n()
 
 const route = useRoute()
+const { isConsoleSignal } = useConsoleSignal()
 const router = useRouter()
 const appStore = useAppStore()
+const announcementStore = useAnnouncementStore()
 const authStore = useAuthStore()
 const onboardingStore = useOnboardingStore()
 const adminSettingsStore = useAdminSettingsStore()
@@ -248,6 +254,7 @@ const { canUseBatchImage, refreshBatchImageAccess } = useBatchImageAccess()
 const sidebarCollapsed = computed(() => appStore.sidebarCollapsed)
 const mobileOpen = computed(() => appStore.mobileOpen)
 const isAdmin = computed(() => authStore.isAdmin)
+const settingsLoaded = computed(() => appStore.publicSettingsLoaded)
 const sidebarNavRef = ref<HTMLElement | null>(null)
 const isDark = ref(document.documentElement.classList.contains('dark'))
 
@@ -260,7 +267,6 @@ const expandedGroups = ref<Set<string>>(new Set())
 const siteName = computed(() => appStore.siteName)
 const siteLogo = computed(() => sanitizeUrl(appStore.siteLogo || '', { allowRelative: true, allowDataUrl: true }))
 const siteVersion = computed(() => appStore.siteVersion)
-const settingsLoaded = computed(() => appStore.publicSettingsLoaded)
 
 // SVG Icon Components
 const DashboardIcon = {
@@ -277,6 +283,8 @@ const DashboardIcon = {
       ]
     )
 }
+
+
 
 const KeyIcon = {
   render: () =>
@@ -308,6 +316,31 @@ const BatchImageIcon = {
           'stroke-linecap': 'round',
           'stroke-linejoin': 'round',
           d: 'M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zM18.75 10.5h.008v.008h-.008V10.5z'
+        })
+      ]
+    )
+}
+
+const InfiniteCanvasIcon = {
+  render: () =>
+    h(
+      'svg',
+      { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' },
+      [
+        h('path', {
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+          d: 'M3.75 4.5A.75.75 0 014.5 3.75h15a.75.75 0 01.75.75v15a.75.75 0 01-.75.75h-15a.75.75 0 01-.75-.75v-15z'
+        }),
+        h('path', {
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+          d: 'M8.25 8.25h7.5v7.5h-7.5z'
+        }),
+        h('path', {
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+          d: 'M12 10.5v3m-1.5-1.5h3'
         })
       ]
     )
@@ -383,6 +416,22 @@ const FolderIcon = {
           'stroke-linecap': 'round',
           'stroke-linejoin': 'round',
           d: 'M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z'
+        })
+      ]
+    )
+}
+
+/** Adaptive parent → ordered leaf routing */
+const AdaptiveIcon = {
+  render: () =>
+    h(
+      'svg',
+      { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' },
+      [
+        h('path', {
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+          d: 'M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5'
         })
       ]
     )
@@ -694,14 +743,15 @@ const flagPluginManagement = makeSidebarFlag(FeatureFlags.pluginManagement)
 const flagOpsMonitoring = () => adminSettingsStore.opsMonitoringEnabled
 const flagAdminPayment = () => adminSettingsStore.paymentEnabled
 const flagBatchImageAccess = () => canUseBatchImage.value
+const flagModelPlaza = makeSidebarFlag(FeatureFlags.modelPlaza)
 
-// This custom menu is embedded into /purchase and should not appear as a second sidebar entry.
-const RECHARGE_CENTER_MENU_ID = '322273f5aaa4d036'
+// Embedded into /purchase; do not show a second sidebar entry.
+const HIDDEN_RECHARGE_CENTER_MENU_IDS = new Set(['322273f5aaa4d036', '7b1e9c4a2d58f013'])
 
 // buildSelfNavItems 构造用户自己的导航项（用户端主菜单和管理员的"我的账户"子菜单共享这组声明）。
 // withDashboard=true 时包含仪表盘（用户端），false 时不含（管理员的个人区已经有独立仪表盘入口）。
 //
-// 条目顺序：密钥 → 用量 → 可用渠道 → 渠道状态 → 支付 → 兑换/资料。
+// 条目顺序：密钥 → 用量 → 可用渠道 → 渠道状态 → 订阅/支付 → 兑换/资料。
 // 可用渠道紧挨渠道状态之上，让用户"先看自己能用什么、再看对应状态"。
 function buildSelfNavItems(withDashboard: boolean): NavItem[] {
   const items: NavItem[] = []
@@ -710,6 +760,8 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
   }
   items.push(
     { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
+    { path: '/infinite-canvas', label: t('nav.infiniteCanvas'), icon: InfiniteCanvasIcon },
+    { path: '/model-plaza', label: t('nav.modelPlaza'), icon: DashboardIcon, featureFlag: flagModelPlaza },
     { path: '/batch-image', label: t('nav.batchImage'), icon: BatchImageIcon, hideInSimpleMode: true, featureFlag: flagBatchImageAccess },
     { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
     { path: '/available-channels', label: t('nav.availableChannels'), icon: ChannelIcon, hideInSimpleMode: true, featureFlag: flagAvailableChannels },
@@ -747,7 +799,7 @@ const personalNavItems = computed((): NavItem[] => finalizeNav(buildSelfNavItems
 const customMenuItemsForUser = computed(() => {
   const items = appStore.cachedPublicSettings?.custom_menu_items ?? []
   return items
-    .filter((item) => item.visibility === 'user' && item.id !== RECHARGE_CENTER_MENU_ID)
+    .filter((item) => item.visibility === 'user' && !HIDDEN_RECHARGE_CENTER_MENU_IDS.has(item.id))
     .sort((a, b) => a.sort_order - b.sort_order)
 })
 
@@ -764,6 +816,7 @@ const adminNavItems = computed((): NavItem[] => {
     { path: '/admin/ops', label: t('nav.ops'), icon: ChartIcon, featureFlag: flagOpsMonitoring },
     { path: '/admin/users', label: t('nav.users'), icon: UsersIcon, hideInSimpleMode: true },
     { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon, hideInSimpleMode: true },
+    { path: '/admin/adaptive-groups', label: t('nav.adaptiveGroups'), icon: AdaptiveIcon, hideInSimpleMode: true },
     {
       path: '/admin/channels',
       label: t('nav.channelManagement'),
@@ -850,6 +903,7 @@ function toggleSidebar() {
 function toggleTheme() {
   isDark.value = !isDark.value
   document.documentElement.classList.toggle('dark', isDark.value)
+  document.documentElement.style.colorScheme = isDark.value ? 'dark' : 'light'
   localStorage.setItem('theme', isDark.value ? 'dark' : 'light')
 }
 
@@ -858,6 +912,7 @@ function closeMobile() {
 }
 
 function handleMenuItemClick(itemPath: string) {
+  announcementStore.hidePopupForNavigation()
   if (mobileOpen.value) {
     setTimeout(() => {
       appStore.setMobileOpen(false)
@@ -920,14 +975,17 @@ function handleGroupClick(item: NavItem) {
   }
 }
 
-// Initialize theme
+// Initialize theme (always set both directions so light is not stuck after dark)
 const savedTheme = localStorage.getItem('theme')
-if (
+const preferDark =
   savedTheme === 'dark' ||
   (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)
-) {
-  isDark.value = true
-  document.documentElement.classList.add('dark')
+isDark.value = preferDark
+document.documentElement.classList.toggle('dark', preferDark)
+if (!savedTheme) {
+  // keep system preference until user explicitly toggles
+} else {
+  localStorage.setItem('theme', preferDark ? 'dark' : 'light')
 }
 
 // Fetch admin settings (for feature-gated nav items like Ops).
@@ -965,8 +1023,10 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .sidebar-logo {
-  flex: 0 0 2.25rem;
-  min-width: 2.25rem;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
 }
 
 .sidebar-header-collapsed {

@@ -7,8 +7,7 @@ describe('Composite channel platform options', () => {
     const source = readFileSync(resolve('src/views/admin/ChannelsView.vue'), 'utf8')
     const declaration = source.match(/const compositePlatforms:[^=]+=[^\n]+/)?.[0]
 
-    expect(declaration).toContain("'kimi'")
-    expect(declaration).toContain("'zhipu'")
-    expect(declaration).toContain("'deepseek'")
+    expect(declaration).toContain("'cn'")
+    expect(declaration).toContain("'video'")
   })
 })

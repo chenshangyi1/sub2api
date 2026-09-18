@@ -225,6 +225,16 @@ describe('useSubscriptionStore', () => {
       store.stopPolling()
     })
 
+    it('页面隐藏时跳过订阅轮询', () => {
+      const store = useSubscriptionStore()
+      mockGetActiveSubscriptions.mockResolvedValue([])
+      store.startPolling()
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+      vi.advanceTimersByTime(5 * 60 * 1000)
+      expect(mockGetActiveSubscriptions).not.toHaveBeenCalled()
+      store.stopPolling()
+    })
+
     it('stopPolling 停止定期刷新', () => {
       const store = useSubscriptionStore()
       mockGetActiveSubscriptions.mockResolvedValue([])

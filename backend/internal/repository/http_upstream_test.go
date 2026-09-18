@@ -202,7 +202,7 @@ func TestHTTPUpstreamDoAppliesGrokCLIIdentityBeforeOAuthRoundTrip(t *testing.T) 
 			isolation := svc.getIsolationMode()
 			profile := service.HTTPUpstreamProfileDefault
 			proxyKey := directProxyKey
-			protocolMode := svc.resolveProtocolMode(profile, proxyKey, nil)
+			protocolMode := svc.resolveProtocolMode(profile, proxyKey, nil, "")
 			settings := svc.resolvePoolSettings(isolation, 1)
 			settings = svc.applyProfilePoolSettings(settings, profile)
 			cacheKey := buildCacheKey(isolation, proxyKey, accountID, protocolMode)
@@ -252,7 +252,7 @@ func TestHTTPUpstreamDoFallsBackToOfficialGrokAPIOnCLIAccessDenied(t *testing.T)
 	isolation := svc.getIsolationMode()
 	profile := service.HTTPUpstreamProfileDefault
 	proxyKey := directProxyKey
-	protocolMode := svc.resolveProtocolMode(profile, proxyKey, nil)
+	protocolMode := svc.resolveProtocolMode(profile, proxyKey, nil, "")
 	settings := svc.resolvePoolSettings(isolation, 1)
 	settings = svc.applyProfilePoolSettings(settings, profile)
 	cacheKey := buildCacheKey(isolation, proxyKey, accountID, protocolMode)
@@ -607,7 +607,7 @@ func (s *HTTPUpstreamSuite) TestCustomResponseHeaderTimeout() {
 // 验证解析失败时拒绝回退到直连模式
 func (s *HTTPUpstreamSuite) TestGetOrCreateClient_InvalidURLReturnsError() {
 	svc := s.newService()
-	_, err := svc.getClientEntry("://bad-proxy-url", 1, 1, service.HTTPUpstreamProfileDefault, false, false)
+	_, err := svc.getClientEntry("://bad-proxy-url", 1, 1, service.HTTPUpstreamProfileDefault, false, false, "")
 	require.Error(s.T(), err, "expected error for invalid proxy URL")
 }
 
@@ -620,7 +620,7 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileDefaultsToHTTP2AndNoHeaderTimeout()
 		},
 	}
 	svc := s.newService()
-	entry, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false)
+	entry, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false, "")
 	require.NoError(s.T(), err)
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")
@@ -638,7 +638,7 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileCustomHeaderTimeout() {
 		},
 	}
 	svc := s.newService()
-	entry, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false)
+	entry, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false, "")
 	require.NoError(s.T(), err)
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")
@@ -660,12 +660,30 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintDoesNotInheritGeneric
 	require.Equal(s.T(), time.Duration(0), transport.ResponseHeaderTimeout, "OpenAI TLS path should not inherit generic header timeout")
 }
 
+func (s *HTTPUpstreamSuite) TestOpenAIImagesProfileForcesHTTP1() {
+	s.cfg.Gateway = config.GatewayConfig{
+		ResponseHeaderTimeout: 600,
+		OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{
+			Enabled:                   true,
+			AllowProxyFallbackToHTTP1: true,
+		},
+	}
+	svc := s.newService()
+	entry, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAIImages, false, false, "")
+	require.NoError(s.T(), err)
+	transport, ok := entry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.False(s.T(), transport.ForceAttemptHTTP2, "image generations stall on HTTP/2 idle PING")
+	require.Equal(s.T(), defaultResponseHeaderTimeout, transport.ResponseHeaderTimeout)
+	require.Equal(s.T(), upstreamProtocolModeOpenAIH1, entry.protocolMode)
+}
+
 func (s *HTTPUpstreamSuite) TestOpenAIProfileHTTP2DisabledUsesHTTP1Transport() {
 	s.cfg.Gateway = config.GatewayConfig{
 		OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{Enabled: false},
 	}
 	svc := s.newService()
-	entry, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false)
+	entry, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false, "")
 	require.NoError(s.T(), err)
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")
@@ -674,16 +692,51 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileHTTP2DisabledUsesHTTP1Transport() {
 	require.Equal(s.T(), upstreamProtocolModeOpenAIH1, entry.protocolMode)
 }
 
+func (s *HTTPUpstreamSuite) TestOpenAIThirdPartyHostForcesHTTP1() {
+	s.cfg.Gateway = config.GatewayConfig{
+		OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{Enabled: true},
+	}
+	svc := s.newService()
+	entry, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false, "rc.lukyface.com")
+	require.NoError(s.T(), err)
+	transport, ok := entry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.False(s.T(), transport.ForceAttemptHTTP2)
+	require.Equal(s.T(), upstreamProtocolModeOpenAIH1, entry.protocolMode)
+}
+
+func (s *HTTPUpstreamSuite) TestOfficialOpenAIHostKeepsHTTP2() {
+	s.cfg.Gateway = config.GatewayConfig{
+		OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{Enabled: true},
+	}
+	svc := s.newService()
+	entry, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false, "api.openai.com")
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), upstreamProtocolModeOpenAIH2, entry.protocolMode)
+	transport, ok := entry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok)
+	require.True(s.T(), transport.ForceAttemptHTTP2)
+}
+
+func TestIsOfficialOpenAIUpstreamHost(t *testing.T) {
+	require.True(t, isOfficialOpenAIUpstreamHost("api.openai.com"))
+	require.True(t, isOfficialOpenAIUpstreamHost("chatgpt.com"))
+	require.True(t, isOfficialOpenAIUpstreamHost("API.OpenAI.com:443"))
+	require.False(t, isOfficialOpenAIUpstreamHost("rc.lukyface.com"))
+	require.False(t, isOfficialOpenAIUpstreamHost("api.lukyface.com"))
+	require.False(t, isOfficialOpenAIUpstreamHost(""))
+}
+
 func (s *HTTPUpstreamSuite) TestOpenAIHeaderTimeoutChangeRebuildsClient() {
 	s.cfg.Gateway = config.GatewayConfig{
 		OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{Enabled: true},
 	}
 	svc := s.newService()
-	entry1, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false)
+	entry1, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false, "")
 	require.NoError(s.T(), err)
 
 	s.cfg.Gateway.OpenAIResponseHeaderTimeout = 1800
-	entry2, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false)
+	entry2, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false, "")
 	require.NoError(s.T(), err)
 	require.NotSame(s.T(), entry1, entry2, "OpenAI header timeout changes must rebuild cached client")
 	transport, ok := entry2.client.Transport.(*http.Transport)
@@ -722,7 +775,7 @@ func (s *HTTPUpstreamSuite) TestOpenAIHTTP2ProxyCompatibilityErrorActivatesFallb
 	svc.recordOpenAIHTTP2Failure(service.HTTPUpstreamProfileOpenAI, upstreamProtocolModeOpenAIH2, proxyURL, errors.New("http2: protocol error"))
 	require.True(s.T(), svc.isOpenAIHTTP2FallbackActive(proxyURL))
 
-	entry, err := svc.getClientEntry(proxyURL, 1, 1, service.HTTPUpstreamProfileOpenAI, false, false)
+	entry, err := svc.getClientEntry(proxyURL, 1, 1, service.HTTPUpstreamProfileOpenAI, false, false, "")
 	require.NoError(s.T(), err)
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")

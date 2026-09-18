@@ -634,7 +634,7 @@ import { extractApiErrorMessage } from '@/utils/apiError'
 import { adminAPI } from '@/api/admin'
 import type { Channel, ChannelModelPricing, CreateChannelRequest, UpdateChannelRequest, AccountStatsPricingRule } from '@/api/admin/channels'
 import type { PricingFormEntry } from '@/components/admin/channel/types'
-import { apiIntervalsToForm, apiTimePricingToForm, createDefaultTimePricingForm, findModelConflict, formIntervalsToAPI, formTimePricingToAPI, isValidPositiveMultiplier, mTokToPerToken, perTokenToMTok, validateIntervals, validateTimePricing } from '@/components/admin/channel/types'
+import { apiIntervalsToForm, apiTimePricingToForm, collectChannelModelPricing, createDefaultTimePricingForm, findModelConflict, formIntervalsToAPI, isValidPositiveMultiplier, mTokToPerToken, perTokenToMTok, validateIntervals, validateTimePricing } from '@/components/admin/channel/types'
 import type { AdminGroup, GroupPlatform } from '@/types'
 import type { Column } from '@/components/common/types'
 import { platformTextClass, platformBadgeLightClass } from '@/utils/platformColors'
@@ -763,9 +763,9 @@ const form = reactive({
 let abortController: AbortController | null = null
 
 // ── Platform config ──
-const platformOrder: GroupPlatform[] = ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek']
+const platformOrder: GroupPlatform[] = ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'cn', 'video']
 // Composite pricing/mapping may target every concrete schedulable provider.
-const compositePlatforms: GroupPlatform[] = ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek']
+const compositePlatforms: GroupPlatform[] = ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'cn', 'video']
 
 // ── Helpers ──
 function formatDate(value: string): string {
@@ -1098,12 +1098,14 @@ function accountStatsRulesToAPI(): AccountStatsPricingRule[] {
 // ── Form ↔ API conversion ──
 function formToAPI(): { group_ids: number[], model_pricing: ChannelModelPricing[], model_mapping: Record<string, Record<string, string>>, features_config: Record<string, unknown> } {
   const group_ids: number[] = []
-  const model_pricing: ChannelModelPricing[] = []
   const model_mapping: Record<string, Record<string, string>> = {}
   // Preserve existing features_config fields not managed by the form
   const featuresConfig: Record<string, unknown> = editingChannel.value?.features_config
     ? { ...editingChannel.value.features_config }
     : {}
+
+  // Filled token cards must persist even if that platform tab is unchecked.
+  const model_pricing = collectChannelModelPricing(form.platforms)
 
   for (const section of form.platforms) {
     if (!section.enabled) continue
@@ -1112,27 +1114,6 @@ function formToAPI(): { group_ids: number[], model_pricing: ChannelModelPricing[
     // Model mapping per platform
     if (Object.keys(section.model_mapping).length > 0) {
       model_mapping[section.platform] = { ...section.model_mapping }
-    }
-
-    // Model pricing with platform tag
-    for (const entry of section.model_pricing) {
-      if (entry.models.length === 0) continue
-      model_pricing.push({
-        platform: section.platform,
-        models: entry.models,
-        billing_mode: entry.billing_mode,
-        input_price: mTokToPerToken(entry.input_price),
-        output_price: mTokToPerToken(entry.output_price),
-        cache_write_price: mTokToPerToken(entry.cache_write_price),
-        cache_read_price: mTokToPerToken(entry.cache_read_price),
-        fast_multiplier: entry.fast_multiplier != null && entry.fast_multiplier !== '' ? Number(entry.fast_multiplier) : null,
-        flex_multiplier: entry.flex_multiplier != null && entry.flex_multiplier !== '' ? Number(entry.flex_multiplier) : null,
-        image_input_price: mTokToPerToken(entry.image_input_price),
-        image_output_price: mTokToPerToken(entry.image_output_price),
-        per_request_price: entry.per_request_price != null && entry.per_request_price !== '' ? Number(entry.per_request_price) : null,
-        intervals: formIntervalsToAPI(entry.intervals || []),
-        time_pricing: formTimePricingToAPI(entry.time_pricing)
-      })
     }
   }
   const uniqueGroupIds = Array.from(new Set(group_ids))

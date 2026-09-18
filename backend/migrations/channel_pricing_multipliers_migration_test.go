@@ -8,7 +8,7 @@ import (
 )
 
 func TestChannelPricingMultipliersMigration(t *testing.T) {
-	content, err := FS.ReadFile("228_channel_pricing_multipliers.sql")
+	content, err := FS.ReadFile("236_channel_pricing_multipliers.sql")
 	require.NoError(t, err)
 
 	sql := strings.Join(strings.Fields(string(content)), " ")

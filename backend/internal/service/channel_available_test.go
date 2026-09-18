@@ -31,6 +31,12 @@ func (s *stubGroupRepoForAvailable) ListActive(ctx context.Context) ([]Group, er
 
 func (s *stubGroupRepoForAvailable) Create(ctx context.Context, group *Group) error { return nil }
 func (s *stubGroupRepoForAvailable) GetByID(ctx context.Context, id int64) (*Group, error) {
+	for i := range s.activeGroups {
+		if s.activeGroups[i].ID == id {
+			g := s.activeGroups[i]
+			return &g, nil
+		}
+	}
 	return nil, nil
 }
 func (s *stubGroupRepoForAvailable) GetByIDLite(ctx context.Context, id int64) (*Group, error) {

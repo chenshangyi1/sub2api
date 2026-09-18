@@ -11,6 +11,8 @@ type AdminHandlers struct {
 	User                   *admin.UserHandler
 	Group                  *admin.GroupHandler
 	Account                *admin.AccountHandler
+	AccountTraffic         *admin.AccountTrafficHandler
+	AntiDegrade            *admin.AntiDegradeHandler
 	Announcement           *admin.AnnouncementHandler
 	DataManagement         *admin.DataManagementHandler
 	Backup                 *admin.BackupHandler
@@ -37,12 +39,14 @@ type AdminHandlers struct {
 	Channel                *admin.ChannelHandler
 	ChannelMonitor         *admin.ChannelMonitorHandler
 	ChannelMonitorTemplate *admin.ChannelMonitorRequestTemplateHandler
+	GroupMonitor           *admin.GroupMonitorHandler
 	ContentModeration      *admin.ContentModerationHandler
 	PromptAudit            *securityaudit.PromptAdminHandler
 	Payment                *admin.PaymentHandler
 	Affiliate              *admin.AffiliateHandler
 	Compliance             *admin.ComplianceHandler
 	AuditLog               *admin.AuditLogHandler
+	Adaptive               *admin.AdaptiveHandler
 }
 
 // Handlers contains all HTTP handlers
@@ -55,6 +59,7 @@ type Handlers struct {
 	Subscription     *SubscriptionHandler
 	Announcement     *AnnouncementHandler
 	ChannelMonitor   *ChannelMonitorUserHandler
+	GroupMonitor     *GroupMonitorUserHandler
 	ChannelMonitorV2 *ChannelMonitorV2Handler
 	Admin            *AdminHandlers
 	Gateway          *GatewayHandler

@@ -45,6 +45,30 @@ func (f AccountGroupFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.AccountGroupMutation", m)
 }
 
+// The AdaptiveGroupConfigFunc type is an adapter to allow the use of ordinary
+// function as AdaptiveGroupConfig mutator.
+type AdaptiveGroupConfigFunc func(context.Context, *ent.AdaptiveGroupConfigMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f AdaptiveGroupConfigFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.AdaptiveGroupConfigMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.AdaptiveGroupConfigMutation", m)
+}
+
+// The AdaptiveGroupMembershipFunc type is an adapter to allow the use of ordinary
+// function as AdaptiveGroupMembership mutator.
+type AdaptiveGroupMembershipFunc func(context.Context, *ent.AdaptiveGroupMembershipMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f AdaptiveGroupMembershipFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.AdaptiveGroupMembershipMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.AdaptiveGroupMembershipMutation", m)
+}
+
 // The AnnouncementFunc type is an adapter to allow the use of ordinary
 // function as Announcement mutator.
 type AnnouncementFunc func(context.Context, *ent.AnnouncementMutation) (ent.Value, error)

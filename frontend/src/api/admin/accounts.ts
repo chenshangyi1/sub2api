@@ -4,6 +4,7 @@
  */
 
 import { apiClient } from '../client'
+import { DEFAULT_ANTI_DEGRADE_MODE } from '@/utils/accountProtection'
 import type {
   Account,
   CreateAccountRequest,
@@ -287,11 +288,7 @@ export async function applyOAuthCredentials(
  */
 export async function getStats(id: number, days: number = 30): Promise<AccountUsageStatsResponse> {
   const { data } = await apiClient.get<AccountUsageStatsResponse>(`/admin/accounts/${id}/stats`, {
-    params: { days },
-    // Account history aggregates can legitimately take longer on large
-    // installations. Keep this longer timeout local to the stats endpoint;
-    // the shared API client timeout remains 30s for normal admin requests.
-    timeout: 180000
+    params: { days }
   })
   return data
 }
@@ -545,6 +542,26 @@ export async function getAvailableModels(id: number): Promise<ClaudeModel[]> {
 
 export interface SyncUpstreamModelsResult {
   models: string[]
+  metadata?: Record<string, UpstreamModelMetadata>
+  warnings?: UpstreamModelSyncWarning[]
+}
+
+export interface UpstreamModelSyncWarning {
+  code: string
+  message: string
+}
+
+export interface UpstreamModelMetadata {
+  id: string
+  display_name?: string
+  description?: string
+  reasoning?: boolean
+  default_reasoning_level?: string
+  supported_reasoning_levels?: string[]
+  input_modalities?: string[]
+  context_window?: number
+  max_context_window?: number
+  max_output_tokens?: number
 }
 
 /**
@@ -734,10 +751,65 @@ export interface BatchOperationResult {
   total: number
   success: number
   failed: number
-  success_ids?: number[]
-  failed_ids?: number[]
   errors?: Array<{ account_id: number; error: string }>
   warnings?: Array<{ account_id: number; warning: string }>
+}
+
+export interface OpenAIOAuthBatchDeleteResult {
+  total: number
+  deleted: number
+  deleted_ids: number[]
+  skipped: Array<{ account_id: number; reason: string }>
+  failed: Array<{ account_id: number; error: string }>
+  success?: boolean
+  failed_ids?: number[]
+}
+
+export interface OpenAIOAuthBatchTestItem {
+  account_id: number
+  success: boolean
+  skipped?: boolean
+  latency_ms?: number
+  error?: string
+}
+
+export interface OpenAIOAuthBatchTestResult {
+  total: number
+  success: number
+  failed: number
+  skipped: number
+  results: OpenAIOAuthBatchTestItem[]
+}
+
+export async function batchTestOpenAIOAuth(
+  accountIds: number[]
+): Promise<OpenAIOAuthBatchTestResult> {
+  const { data } = await apiClient.post<OpenAIOAuthBatchTestResult>(
+    '/admin/accounts/openai-oauth/batch-test',
+    { account_ids: accountIds },
+    { timeout: 180000 }
+  )
+  return data
+}
+
+export async function batchDeleteOpenAIOAuth(
+  accountIds: number[]
+): Promise<OpenAIOAuthBatchDeleteResult> {
+  const { data } = await apiClient.post<OpenAIOAuthBatchDeleteResult>(
+    '/admin/accounts/openai-oauth/batch-delete',
+    { account_ids: accountIds }
+  )
+  return data
+}
+
+export async function batchDelete(
+  accountIds: number[]
+): Promise<{ success: number; failed: number; failed_ids: number[] }> {
+  const { data } = await apiClient.post<{ success: number; failed: number; failed_ids: number[] }>(
+    '/admin/accounts/batch-delete',
+    { account_ids: accountIds }
+  )
+  return data
 }
 
 /**
@@ -747,16 +819,6 @@ export interface BatchOperationResult {
  */
 export async function revertProxyFallback(id: number): Promise<{ message: string }> {
   const { data } = await apiClient.post<{ message: string }>(`/admin/accounts/${id}/revert-proxy-fallback`)
-  return data
-}
-
-/**
- * Delete multiple accounts with bounded server-side concurrency.
- */
-export async function batchDelete(accountIds: number[]): Promise<BatchOperationResult> {
-  const { data } = await apiClient.post<BatchOperationResult>('/admin/accounts/batch-delete', {
-    account_ids: accountIds
-  })
   return data
 }
 
@@ -853,53 +915,29 @@ export interface OpenAIQuotaResetResult {
   code: string
   credit?: OpenAIQuotaResetCredit | null
   windows_reset: number
-  quota?: OpenAIQuotaUsage | null
-  account?: Account | null
-  cache_refreshed: boolean
-  account_state_recovered: boolean
-  warning_code?:
-    | 'reset_credit_cache_refresh_failed'
-    | 'account_state_recovery_failed'
-    | 'account_state_refresh_failed'
-}
-
-/** Usage payload plus whether the reset-credit snapshot was persisted. */
-export interface OpenAIQuotaRefreshResult extends OpenAIQuotaUsage {
-  cache_persisted: boolean
+  quota?: any
+  account?: any
+  warning_code?: string
+  cache_refreshed?: boolean
 }
 
 /**
- * Query the upstream quota AND persist the reset-credit snapshot on the account
- * so the card can be rehydrated without an upstream round-trip. It is a POST
- * because it writes account state (and must therefore be audited).
- *
- * The read-only `GET /admin/openai/accounts/:id/quota` endpoint still exists for
- * API consumers; the panel always wants the snapshot persisted, so it has no
- * client binding here.
+ * Query OpenAI/Codex rate-limit usage for an OAuth account.
  */
-export async function refreshOpenAIQuota(id: number): Promise<OpenAIQuotaRefreshResult> {
-  const { data } = await apiClient.post<OpenAIQuotaRefreshResult>(
-    `/admin/openai/accounts/${id}/quota/refresh`
-  )
+export async function queryOpenAIQuota(id: number): Promise<OpenAIQuotaUsage> {
+  const { data } = await apiClient.get<OpenAIQuotaUsage>(`/admin/openai/accounts/${id}/quota`)
   return data
 }
 
 /**
  * Consume one rate-limit-reset credit for an OpenAI/Codex OAuth account.
- *
- * The credit is non-refundable and the endpoint chains an upstream reset with an
- * upstream re-query, so it needs a larger budget than the default client
- * timeout: aborting locally would report a successful consumption as a failure
- * and invite a retry that spends a second credit.
  */
 export async function resetOpenAIQuota(id: number): Promise<OpenAIQuotaResetResult> {
-  const { data } = await apiClient.post<OpenAIQuotaResetResult>(
-    `/admin/openai/accounts/${id}/reset-quota`,
-    undefined,
-    { timeout: 90_000 }
-  )
+  const { data } = await apiClient.post<OpenAIQuotaResetResult>(`/admin/openai/accounts/${id}/reset-quota`)
   return data
 }
+
+export const refreshOpenAIQuota = resetOpenAIQuota;
 
 export interface SparkShadowCreatePayload {
   name?: string
@@ -989,6 +1027,78 @@ export async function refreshOllamaCloudUsage(id: number): Promise<OllamaCloudUs
   return data
 }
 
+export type AntiDegradeMode =
+  | 'mode1'
+  | 'mode2'
+  | 'legacy'
+  | 'native_baseline'
+  | 'minimal_compat'
+  | 'session_standard'
+  | 'tls_node24'
+  | 'low_concurrency'
+
+export interface AntiDegradeChange {
+  key: string
+  from?: unknown
+  to: unknown
+  note?: string
+}
+
+export interface AntiDegradeStrategyProfile {
+  id: AntiDegradeMode
+  name: string
+  description: string
+  category: string
+  identity_mode: string
+  tls_profile: string
+  max_concurrency: number
+  risk: string
+  apply_supported: boolean
+  requires_openai_oauth?: boolean
+  diagnostic_only?: boolean
+}
+
+export interface AntiDegradePreview {
+  runtime?: {
+    strategy: string; identity_mode: string; configured_tls: string; effective_tls: string
+    tls_reason?: string; observed: boolean; concurrency: number
+    integrity_mode?: 'off' | 'observe' | 'enforce'
+  }
+  account_id: number
+  enabled: boolean
+  eligible: boolean
+  active_mode?: AntiDegradeMode | ''
+  policy_version?: number
+  identity_ready?: boolean
+  tls_profile?: string
+  issues?: string[]
+  reason?: string
+  changes: AntiDegradeChange[]
+}
+
+export async function previewAntiDegrade(id: number, mode: AntiDegradeMode = DEFAULT_ANTI_DEGRADE_MODE): Promise<AntiDegradePreview> {
+  const { data } = await apiClient.get<AntiDegradePreview>(`/admin/accounts/${id}/anti-degrade`, { params: { mode } })
+  return data
+}
+
+export async function listAntiDegradeStrategies(): Promise<AntiDegradeStrategyProfile[]> {
+  const { data } = await apiClient.get<{ strategies: AntiDegradeStrategyProfile[] }>('/admin/accounts/anti-degrade/strategies')
+  return data.strategies || []
+}
+
+export async function applyAntiDegrade(id: number, mode: AntiDegradeMode = DEFAULT_ANTI_DEGRADE_MODE): Promise<Account> {
+  const { data } = await apiClient.post<Account>(`/admin/accounts/${id}/anti-degrade/apply`, null, { params: { mode } })
+  return data
+}
+
+export async function revertAntiDegrade(id: number, confirmDisable = false): Promise<Account> {
+  const url = `/admin/accounts/${id}/anti-degrade/revert`
+  const { data } = confirmDisable
+    ? await apiClient.post<Account>(url, { confirm_disable: true })
+    : await apiClient.post<Account>(url)
+  return data
+}
+
 export const accountsAPI = {
   list,
   listWithEtag,
@@ -1030,12 +1140,15 @@ export const accountsAPI = {
   importCodexSession,
   createOpenAICodexPAT,
   getAntigravityDefaultModelMapping,
-  batchDelete,
   batchClearError,
   batchRefresh,
+  batchDeleteOpenAIOAuth,
+  batchTestOpenAIOAuth,
+  batchDelete,
+  batchTest: batchTestOpenAIOAuth,
   setPrivacy,
   revertProxyFallback,
-  refreshOpenAIQuota,
+  queryOpenAIQuota,
   resetOpenAIQuota,
   createSparkShadow,
   getUpstreamBillingProbeSettings,
@@ -1049,7 +1162,11 @@ export const accountsAPI = {
   saveOllamaCloudUsageSession,
   deleteOllamaCloudUsageSession,
   setOllamaCloudUsageAutoRefresh,
-  refreshOllamaCloudUsage
+  refreshOllamaCloudUsage,
+  previewAntiDegrade,
+  listAntiDegradeStrategies,
+  applyAntiDegrade,
+  revertAntiDegrade
 }
 
 export default accountsAPI

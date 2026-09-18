@@ -28,7 +28,11 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
-      checkMixedChannelRisk: checkMixedChannelRiskMock
+      checkMixedChannelRisk: checkMixedChannelRiskMock,
+      listAntiDegradeStrategies: vi.fn().mockResolvedValue([]),
+      previewAntiDegrade: vi.fn(),
+      applyAntiDegrade: vi.fn(),
+      revertAntiDegrade: vi.fn()
     },
     settings: {
       getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
@@ -110,7 +114,8 @@ function mountModal(account: any) {
         Icon: true,
         ProxySelector: true,
         GroupSelector: true,
-        ModelWhitelistSelector: true
+        ModelWhitelistSelector: true,
+        AccountTrafficControls: true
       }
     }
   })

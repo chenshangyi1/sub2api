@@ -13,7 +13,7 @@
         </svg>
         <span class="font-mono">{{ concurrencyUsed }}</span>
         <span class="text-gray-400 dark:text-gray-500">/</span>
-        <span class="font-mono">{{ concurrencyMax }}</span>
+        <span class="font-mono">{{ concurrencyMax > 0 ? concurrencyMax : '∞' }}</span>
       </span>
     </div>
 

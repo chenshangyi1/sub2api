@@ -51,17 +51,19 @@ func EvaluateAccountSchedulingThreshold(account *Account, thresholds map[string]
 	}
 
 	var winner *accountSchedulingThresholdCandidate
-	switch decision.Platform {
+	switch CanonicalAccountPlatform(decision.Platform) {
 	case PlatformOpenAI:
 		winner = pickLatestResetSchedulingCandidate(openAIThresholdCandidates(account, now), threshold, now)
 	case PlatformAnthropic:
 		winner = pickLatestResetSchedulingCandidate(anthropicThresholdCandidates(account), threshold, now)
 	case PlatformGrok:
 		winner = pickLatestResetSchedulingCandidate(grokThresholdCandidates(account), threshold, now)
-	case PlatformKimi:
-		winner = pickLatestResetSchedulingCandidate(cnProviderThresholdCandidates(account, PlatformKimi), threshold, now)
-	case PlatformZhipu:
-		winner = pickLatestResetSchedulingCandidate(cnProviderThresholdCandidates(account, PlatformZhipu), threshold, now)
+	case PlatformCN:
+		vendor := account.GetCNVendor()
+		if vendor != CNVendorKimi && vendor != CNVendorZhipu {
+			return decision
+		}
+		winner = pickLatestResetSchedulingCandidate(cnProviderThresholdCandidates(account, vendor), threshold, now)
 	default:
 		return decision
 	}
@@ -76,6 +78,48 @@ func EvaluateAccountSchedulingThreshold(account *Account, thresholds map[string]
 	decision.UsedPercent = winner.usedPercent
 	decision.Until = winner.until
 	return decision
+}
+
+func evaluateAnthropicFableSchedulingThreshold(account *Account, thresholds map[string]int, now time.Time) AccountSchedulingThresholdDecision {
+	decision := AccountSchedulingThresholdDecision{}
+	if account == nil || !strings.EqualFold(strings.TrimSpace(account.Platform), PlatformAnthropic) {
+		return decision
+	}
+
+	decision.Platform = PlatformAnthropic
+	threshold, ok := resolveEffectiveAccountSchedulingThreshold(account, thresholds, PlatformAnthropic)
+	decision.ThresholdPercent = threshold
+	if !ok || threshold >= 100 {
+		return decision
+	}
+
+	candidate := anthropicFableThresholdCandidate(account)
+	if !candidateMatchesThreshold(candidate, threshold, now) {
+		return decision
+	}
+
+	decision.ShouldPause = true
+	decision.Window = candidate.window
+	decision.Scope = candidate.scope
+	decision.UsedPercent = candidate.usedPercent
+	decision.Until = candidate.until
+	return decision
+}
+
+func anthropicFableThresholdCandidate(account *Account) *accountSchedulingThresholdCandidate {
+	if account == nil {
+		return nil
+	}
+	usedPercent := utilizationAsPercent(account.Extra["passive_usage_7d_oi_utilization"])
+	if usedPercent <= 0 {
+		return nil
+	}
+	return &accountSchedulingThresholdCandidate{
+		window:      "7d_oi",
+		scope:       anthropicFableRateLimitKey,
+		usedPercent: usedPercent,
+		until:       parseSchedulingResetAt(account.Extra["passive_usage_7d_oi_reset"]),
+	}
 }
 
 func isAllowedSchedulingThresholdPlatform(platform string) bool {
@@ -93,7 +137,7 @@ func resolveEffectiveAccountSchedulingThreshold(account *Account, thresholds map
 			return threshold, true
 		}
 	}
-	return lookupAccountSchedulingThreshold(thresholds, platform)
+	return lookupCNAccountSchedulingThreshold(thresholds, account, platform)
 }
 
 func accountSchedulingThresholdOverride(account *Account) (int, bool) {
@@ -149,8 +193,32 @@ func lookupAccountSchedulingThreshold(thresholds map[string]int, platform string
 	if len(thresholds) == 0 {
 		return 0, false
 	}
-	value, ok := thresholds[platform]
-	return value, ok
+	if value, ok := thresholds[platform]; ok {
+		return value, true
+	}
+	canonical := CanonicalAccountPlatform(platform)
+	if canonical != platform {
+		if value, ok := thresholds[canonical]; ok {
+			return value, true
+		}
+	}
+	return 0, false
+}
+
+func lookupCNAccountSchedulingThreshold(thresholds map[string]int, account *Account, platform string) (int, bool) {
+	if value, ok := lookupAccountSchedulingThreshold(thresholds, platform); ok {
+		return value, true
+	}
+	if account == nil || !IsCNProvider(platform) {
+		return 0, false
+	}
+	vendor := account.GetCNVendor()
+	if vendor == CNVendorKimi || vendor == CNVendorZhipu {
+		if value, ok := thresholds[vendor]; ok {
+			return value, true
+		}
+	}
+	return 0, false
 }
 
 func openAIThresholdCandidates(account *Account, now time.Time) []*accountSchedulingThresholdCandidate {

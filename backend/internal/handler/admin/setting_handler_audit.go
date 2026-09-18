@@ -506,6 +506,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.OpenAIOAuthSchedulingRateMultiplier != after.OpenAIOAuthSchedulingRateMultiplier {
 		changed = append(changed, "openai_oauth_scheduling_rate_multiplier")
 	}
+	if before.AdaptiveServiceFeePercent != after.AdaptiveServiceFeePercent {
+		changed = append(changed, "adaptive_service_fee_percent")
+	}
 	if before.CodexQuotaOverdraftEnabled != after.CodexQuotaOverdraftEnabled {
 		changed = append(changed, "codex_quota_overdraft_enabled")
 	}
@@ -697,13 +700,6 @@ func float64ValueOrDefault(value *float64, fallback float64) float64 {
 }
 
 func intValueOrDefault(value *int, fallback int) int {
-	if value == nil {
-		return fallback
-	}
-	return *value
-}
-
-func boolValueOrDefault(value *bool, fallback bool) bool {
 	if value == nil {
 		return fallback
 	}

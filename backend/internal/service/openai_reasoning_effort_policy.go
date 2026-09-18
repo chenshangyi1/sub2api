@@ -17,6 +17,7 @@ const (
 var openAIReasoningEffortValues = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
 
 type openAIReasoningEffortPolicyContextKey struct{}
+type requestedReasoningEffortContextKey struct{}
 
 type openAIReasoningEffortPolicy struct {
 	maxEffort string
@@ -49,7 +50,7 @@ func NormalizeMaxReasoningEffort(raw string) string {
 }
 
 func reasoningEffortValuesForPlatform(platform string) []string {
-	if platform != PlatformOpenAI && platform != PlatformComposite {
+	if platform != PlatformOpenAI && platform != PlatformComposite && platform != PlatformAdaptive {
 		return nil
 	}
 	return openAIReasoningEffortValues
@@ -63,9 +64,10 @@ func normalizeMaxReasoningEffortForPlatform(platform, raw string) (string, error
 	allowedValues := reasoningEffortValuesForPlatform(platform)
 	if len(allowedValues) == 0 {
 		return "", fmt.Errorf(
-			"reasoning effort policy is only supported for platforms %q and %q",
+			"reasoning effort policy is only supported for platforms %q, %q and %q",
 			PlatformOpenAI,
 			PlatformComposite,
+			PlatformAdaptive,
 		)
 	}
 
@@ -139,6 +141,90 @@ func NormalizeReasoningEffortMappings(platform string, raw []ReasoningEffortMapp
 // WithOpenAIReasoningEffortPolicy binds a group policy to a request after its
 // concrete target platform has been resolved to OpenAI. The policy is copied so
 // retries and asynchronous forwarding cannot observe later slice mutations.
+func WithRequestedReasoningEffort(ctx context.Context, effort string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	effort = strings.TrimSpace(effort)
+	if effort == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, requestedReasoningEffortContextKey{}, effort)
+}
+
+func RequestedReasoningEffortFromContext(ctx context.Context) *string {
+	if ctx == nil {
+		return nil
+	}
+	value, ok := ctx.Value(requestedReasoningEffortContextKey{}).(string)
+	if !ok {
+		return nil
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func CanonicalRequestedReasoningEffort(body []byte, modelCandidates ...string) *string {
+	if raw := strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String()); raw != "" {
+		canonical := NormalizeMaxReasoningEffort(raw)
+		if canonical == "" {
+			return nil
+		}
+		return &canonical
+	}
+	if raw := strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String()); raw != "" {
+		canonical := NormalizeMaxReasoningEffort(raw)
+		if canonical == "" {
+			return nil
+		}
+		return &canonical
+	}
+	if raw := strings.TrimSpace(gjson.GetBytes(body, "output_config.effort").String()); raw != "" {
+		canonical := NormalizeMaxReasoningEffort(raw)
+		if canonical == "" {
+			return nil
+		}
+		return &canonical
+	}
+	for _, model := range modelCandidates {
+		if value := canonicalReasoningEffortFromModelSuffix(model); value != "" {
+			return &value
+		}
+	}
+	if model := strings.TrimSpace(gjson.GetBytes(body, "model").String()); model != "" {
+		if value := canonicalReasoningEffortFromModelSuffix(model); value != "" {
+			return &value
+		}
+	}
+	return nil
+}
+
+func canonicalReasoningEffortFromModelSuffix(model string) string {
+	if strings.TrimSpace(model) == "" {
+		return ""
+	}
+	modelID := strings.TrimSpace(model)
+	if strings.Contains(modelID, "/") {
+		parts := strings.Split(modelID, "/")
+		modelID = parts[len(parts)-1]
+	}
+	parts := strings.FieldsFunc(strings.ToLower(modelID), func(r rune) bool {
+		switch r {
+		case '-', '_', ' ':
+			return true
+		default:
+			return false
+		}
+	})
+	if len(parts) == 0 {
+		return ""
+	}
+	return NormalizeMaxReasoningEffort(parts[len(parts)-1])
+}
+
 func WithOpenAIReasoningEffortPolicy(ctx context.Context, maxEffort string, mappings []ReasoningEffortMapping) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -161,6 +247,17 @@ func ApplyOpenAIReasoningEffortPolicyFromContext(ctx context.Context, body []byt
 		return body, false
 	}
 	return ApplyOpenAIReasoningEffortPolicy(body, policy.maxEffort, policy.mappings)
+}
+
+func applyOpenAIWSReasoningEffortPolicy(payload []byte, hooks *OpenAIWSIngressHooks) ([]byte, error) {
+	if hooks == nil || (hooks.MaxReasoningEffort == "" && len(hooks.ReasoningEffortMappings) == 0) {
+		return payload, nil
+	}
+	capped, changed := ApplyOpenAIReasoningEffortPolicy(payload, hooks.MaxReasoningEffort, hooks.ReasoningEffortMappings)
+	if changed {
+		return capped, nil
+	}
+	return payload, nil
 }
 
 func mapReasoningEffort(raw string, mappings []ReasoningEffortMapping) (string, bool) {

@@ -38,7 +38,8 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		return nil, fmt.Errorf("missing model in request")
 	}
 
-	clientStream := responsesReq.Stream
+	inboundStream := responsesReq.Stream
+	upstreamStream := inboundStream || account.RequiresOpenAIStreamOnly()
 	// custom 工具（如 codex 的 exec）降级为 function 工具转发，回程需按名字还原为
 	// custom_tool_call 项，先记下名字集合；tool_search 工具同理，回程还原为
 	// tool_search_call 项；namespace 子工具（如 MCP 工具）摊平转发，回程按映射还原
@@ -71,7 +72,8 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	// 国产模型默认 effort 补充：需要 mappedModel 判定，推迟到 billingModel 算出之后。
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
 	chatReq.Model = upstreamModel
-	if clientStream {
+	chatReq.Stream = upstreamStream
+	if upstreamStream {
 		chatReq.StreamOptions = &apicompat.ChatStreamOptions{IncludeUsage: true}
 	}
 
@@ -97,7 +99,9 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		zap.String("original_model", originalModel),
 		zap.String("billing_model", billingModel),
 		zap.String("upstream_model", upstreamModel),
-		zap.Bool("stream", clientStream),
+		zap.Bool("inbound_stream", inboundStream),
+		zap.Bool("upstream_stream", upstreamStream),
+		zap.Bool("openai_stream_only", account.RequiresOpenAIStreamOnly()),
 	)
 	SetOpsUpstreamModel(c, upstreamModel)
 
@@ -106,7 +110,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	if err != nil {
 		return nil, err
 	}
-	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, chatBody, clientStream, apiKey, account.GetOpenAIUserAgent(), "")
+	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, chatBody, upstreamStream, apiKey, account.GetOpenAIUserAgent(), "")
 	if err != nil {
 		return nil, err
 	}
@@ -120,10 +124,54 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		return s.handleErrorResponse(ctx, resp, c, account, chatBody, billingModel)
 	}
 
-	if clientStream {
+	if inboundStream {
 		return s.streamChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
+	if upstreamStream {
+		return s.aggregateChatCompletionsAsResponses(c, resp, account, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	}
 	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+}
+
+func (s *OpenAIGatewayService) aggregateChatCompletionsAsResponses(
+	c *gin.Context,
+	resp *http.Response,
+	account *Account,
+	originalModel string,
+	customTools map[string]bool,
+	functionTools map[string]bool,
+	toolSearch bool,
+	namespaceTools map[string]apicompat.NamespacedToolName,
+	billingModel string,
+	upstreamModel string,
+	reasoningEffort *string,
+	serviceTier *string,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	requestID := resp.Header.Get("x-request-id")
+	acc, err := s.collectRawChatCompletionSSE(c, resp, originalModel, requestID)
+	if err != nil {
+		return nil, newOpenAIRawStreamTruncatedFailoverError(c, account, requestID, err)
+	}
+	chatResp := acc.Response()
+	responsesResp := apicompat.ChatCompletionsResponseToResponses(&chatResp, originalModel, customTools, functionTools, toolSearch, namespaceTools)
+	s.cacheReasoningItemsFromOutput(responsesResp.Output)
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	c.JSON(http.StatusOK, responsesResp)
+	return &OpenAIForwardResult{
+		RequestID:       requestID,
+		Usage:           acc.Usage,
+		Model:           originalModel,
+		BillingModel:    billingModel,
+		UpstreamModel:   upstreamModel,
+		ReasoningEffort: reasoningEffort,
+		ServiceTier:     resolvedOpenAIUpstreamServiceTier(c, serviceTier),
+		Stream:          false,
+		Duration:        time.Since(startTime),
+	}, nil
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(

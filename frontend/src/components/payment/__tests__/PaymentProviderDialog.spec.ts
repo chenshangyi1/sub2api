@@ -65,12 +65,14 @@ function mountDialog(options: { editing?: ProviderInstance | null } = {}) {
         { value: 'wxpay', label: 'WeChat Pay' },
         { value: 'stripe', label: 'Stripe' },
         { value: 'airwallex', label: 'Airwallex' },
+        { value: 'epusdt', label: 'EPUSDT' },
       ],
       enabledKeyOptions: [
         { value: 'easypay', label: 'EasyPay' },
         { value: 'alipay', label: 'Alipay' },
         { value: 'wxpay', label: 'WeChat Pay' },
         { value: 'airwallex', label: 'Airwallex' },
+        { value: 'epusdt', label: 'EPUSDT' },
       ],
       allPaymentTypes: [
         { value: 'alipay', label: 'Alipay' },
@@ -166,7 +168,7 @@ describe('PaymentProviderDialog payment guide', () => {
     expect(payload.config.accountId).toBe('')
   })
 
-  it('serializes EasyPay custom methods and adds them to supported_types', async () => {
+  it.each(['epay', 'usdt.trc20'])('serializes EasyPay upstream type %s and adds the local type to supported_types', async (upstreamType) => {
     const provider = providerFactory({
       provider_key: 'easypay',
       name: 'EasyPay',
@@ -197,7 +199,7 @@ describe('PaymentProviderDialog payment guide', () => {
     }
 
     await ldcTypeInput.setValue('ldc')
-    await upstreamTypeInput.setValue('epay')
+    await upstreamTypeInput.setValue(upstreamType)
     await displayNameInput.setValue('LDC')
     await wrapper.find('form').trigger('submit.prevent')
 
@@ -205,8 +207,114 @@ describe('PaymentProviderDialog payment guide', () => {
       config: Record<string, string>
       supported_types: string[]
     }
-    expect(payload.config.customMethods).toBe('[{"type":"ldc","upstreamType":"epay","displayName":"LDC"}]')
+    expect(JSON.parse(payload.config.customMethods)).toEqual([{ type: 'ldc', upstreamType, displayName: 'LDC' }])
     expect(payload.supported_types).toEqual(['alipay', 'wxpay', 'ldc'])
+  })
+
+  it('saves multiple EPUSDT networks as a comma-separated config value', async () => {
+    const provider = providerFactory({
+      provider_key: 'epusdt',
+      name: 'USDT',
+      supported_types: ['epusdt'],
+      config: {
+        pid: '1000',
+        apiBase: 'https://ep.baiyuan.cc.cd',
+        token: 'USDT',
+        network: 'bsc',
+        currency: 'CNY',
+        notifyUrl: 'https://example.com/api/v1/payments/callback',
+        returnUrl: 'https://example.com/payment/result',
+      },
+    })
+    const wrapper = mountDialog({ editing: provider })
+    ;(wrapper.vm as unknown as { loadProvider: (provider: ProviderInstance) => void }).loadProvider(provider)
+    await nextTick()
+
+    const trc20 = wrapper.find('[data-testid="epusdt-network-trc20"]')
+    const erc20 = wrapper.find('[data-testid="epusdt-network-erc20"]')
+    if (!trc20.exists() || !erc20.exists()) {
+      throw new Error('EPUSDT network chips not found')
+    }
+    await trc20.trigger('click')
+    await erc20.trigger('click')
+    await wrapper.find('form').trigger('submit.prevent')
+
+    const payload = wrapper.emitted('save')?.[0]?.[0] as { config: Record<string, string> }
+    expect(payload.config.networks.split(',').sort()).toEqual(['bsc', 'erc20', 'trc20'])
+    expect(payload.config.network).toBe('bsc')
+  })
+
+  it.each(['alipay', 'wxpay', 'epusdt'])('loads and saves per-instance recharge fee fields for %s', async (providerKey) => {
+    const provider = providerFactory({
+      provider_key: providerKey,
+      name: `${providerKey} merchant`,
+      supported_types: [providerKey],
+      recharge_fee_rate: 1.5,
+      balance_recharge_multiplier: 0.14,
+      config: providerKey === 'epusdt'
+        ? {
+            pid: 'pid-1',
+            apiBase: 'https://ep.kedaya.xyz',
+            token: 'USDT',
+            network: 'bsc',
+            currency: 'CNY',
+          }
+        : providerKey === 'alipay'
+          ? { appId: 'app-1' }
+          : {
+              appId: 'wx-app',
+              mchId: 'mch-1',
+              certSerial: 'serial-1',
+              publicKeyId: 'pubkey-1',
+            },
+    })
+    const wrapper = mountDialog({ editing: provider })
+
+    ;(wrapper.vm as unknown as { loadProvider: (provider: ProviderInstance) => void }).loadProvider(provider)
+    await nextTick()
+
+    const feeInput = wrapper.get('[data-testid="instance-recharge-fee-rate"]')
+    const multiplierInput = wrapper.get('[data-testid="instance-balance-recharge-multiplier"]')
+    expect((feeInput.element as HTMLInputElement).value).toBe('1.5')
+    expect((multiplierInput.element as HTMLInputElement).value).toBe('0.14')
+
+    await feeInput.setValue('2.5')
+    await multiplierInput.setValue('0.2')
+    await wrapper.find('form').trigger('submit.prevent')
+
+    const payload = wrapper.emitted('save')?.[0]?.[0] as {
+      recharge_fee_rate: number
+      balance_recharge_multiplier: number
+    }
+    expect(payload.recharge_fee_rate).toBe(2.5)
+    expect(payload.balance_recharge_multiplier).toBe(0.2)
+  })
+
+  it('clears per-instance recharge fee override when the field is emptied', async () => {
+    const provider = providerFactory({
+      provider_key: 'epusdt',
+      name: 'USDT',
+      supported_types: ['epusdt'],
+      recharge_fee_rate: 3,
+      config: {
+        pid: 'pid-1',
+        apiBase: 'https://ep.kedaya.xyz',
+        token: 'USDT',
+        network: 'bsc',
+        currency: 'CNY',
+      },
+    })
+    const wrapper = mountDialog({ editing: provider })
+    ;(wrapper.vm as unknown as { loadProvider: (provider: ProviderInstance) => void }).loadProvider(provider)
+    await nextTick()
+
+    await wrapper.get('[data-testid="instance-recharge-fee-rate"]').setValue('')
+    await wrapper.find('form').trigger('submit.prevent')
+
+    const payload = wrapper.emitted('save')?.[0]?.[0] as {
+      recharge_fee_rate: number | null
+    }
+    expect(payload.recharge_fee_rate).toBeNull()
   })
 
   it('rejects custom EasyPay method types with built-in payment prefixes', async () => {
@@ -239,9 +347,9 @@ describe('PaymentProviderDialog payment guide', () => {
       throw new Error('custom method inputs not found')
     }
 
-    await typeInput.setValue('alipay_hk')
-    await upstreamTypeInput.setValue('hkpay')
-    await displayNameInput.setValue('Hong Kong Alipay')
+    await typeInput.setValue(type)
+    await upstreamTypeInput.setValue(upstreamType)
+    await displayNameInput.setValue('Custom payment')
     await wrapper.find('form').trigger('submit.prevent')
 
     expect(wrapper.emitted('save')).toBeUndefined()

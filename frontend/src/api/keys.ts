@@ -65,11 +65,19 @@ export async function create(
   ipBlacklist?: string[],
   quota?: number,
   expiresInDays?: number,
-  rateLimitData?: { rate_limit_5h?: number; rate_limit_1d?: number; rate_limit_7d?: number }
+  rateLimitData?: { rate_limit_5h?: number; rate_limit_1d?: number; rate_limit_7d?: number },
+  adaptive?: {
+    routing_preference?: 'intelligence' | 'price'
+    leaf_group_ids?: number[]
+  },
+  groupIds?: number[]
 ): Promise<ApiKey> {
   const payload: CreateApiKeyRequest = { name }
   if (groupId !== undefined) {
     payload.group_id = groupId
+  }
+  if (groupIds && groupIds.length > 0) {
+    payload.group_ids = groupIds
   }
   if (customKey) {
     payload.custom_key = customKey
@@ -94,6 +102,12 @@ export async function create(
   }
   if (rateLimitData?.rate_limit_7d && rateLimitData.rate_limit_7d > 0) {
     payload.rate_limit_7d = rateLimitData.rate_limit_7d
+  }
+  if (adaptive?.routing_preference) {
+    payload.adaptive_routing_preference = adaptive.routing_preference
+  }
+  if (adaptive?.leaf_group_ids) {
+    payload.adaptive_leaf_group_ids = adaptive.leaf_group_ids
   }
 
   const { data } = await apiClient.post<ApiKey>('/keys', payload)

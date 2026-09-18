@@ -16,13 +16,13 @@ export const CONCRETE_PLATFORM_OPTIONS = [
   { value: 'gemini', label: 'Gemini' },
   { value: 'antigravity', label: 'Antigravity' },
   { value: 'grok', label: 'Grok' },
-  { value: 'kimi', label: 'Kimi' },
-  { value: 'zhipu', label: 'Zhipu GLM' },
-  { value: 'deepseek', label: 'DeepSeek' }
+  { value: 'cn', label: '国模' },
+  { value: 'video', label: '视频' }
 ] as const satisfies readonly PlatformOption<AccountPlatform>[]
 
 /** Platforms that can own a group. */
 export const GROUP_PLATFORM_OPTIONS = [
   ...CONCRETE_PLATFORM_OPTIONS,
-  { value: 'composite', label: 'Composite' }
+  { value: 'composite', label: 'Composite' },
+  { value: 'adaptive', label: 'Adaptive' }
 ] as const satisfies readonly PlatformOption<GroupPlatform>[]

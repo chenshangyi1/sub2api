@@ -78,7 +78,7 @@ func (s *adminServiceImpl) GetGroupModelsListCandidates(ctx context.Context, id 
 		seen[model] = struct{}{}
 	}
 	for _, acc := range accounts {
-		if platform == PlatformComposite {
+		if platform == PlatformComposite || platform == PlatformAdaptive {
 			if !isConcreteRequestPlatform(acc.Platform) {
 				continue
 			}
@@ -124,6 +124,9 @@ func (s *adminServiceImpl) CreateCompositeRoute(ctx context.Context, groupID int
 	if err := s.compositeRouteRepo.Create(ctx, route); err != nil {
 		return nil, err
 	}
+	if s.compositeResolver != nil {
+		s.compositeResolver.InvalidateGroup(groupID)
+	}
 	return route, nil
 }
 
@@ -147,6 +150,9 @@ func (s *adminServiceImpl) UpdateCompositeRoute(ctx context.Context, groupID, ro
 	if err := s.compositeRouteRepo.Update(ctx, route); err != nil {
 		return nil, err
 	}
+	if s.compositeResolver != nil {
+		s.compositeResolver.InvalidateGroup(groupID)
+	}
 	return route, nil
 }
 
@@ -162,7 +168,13 @@ func (s *adminServiceImpl) DeleteCompositeRoute(ctx context.Context, groupID, ro
 	} else if !ok {
 		return ErrCompositeRouteNotFound
 	}
-	return s.compositeRouteRepo.Delete(ctx, routeID)
+	if err := s.compositeRouteRepo.Delete(ctx, routeID); err != nil {
+		return err
+	}
+	if s.compositeResolver != nil {
+		s.compositeResolver.InvalidateGroup(groupID)
+	}
+	return nil
 }
 
 func (s *adminServiceImpl) PreviewCompositeRoute(ctx context.Context, groupID int64, input CompositeRoutePreviewRequest) (*CompositeRouteDecision, error) {
@@ -209,6 +221,7 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 	if input.PublicModel == "" {
 		return nil, fmt.Errorf("public_model is required")
 	}
+	input.TargetPlatform = CanonicalAccountPlatform(input.TargetPlatform)
 	if !isConcreteRequestPlatform(input.TargetPlatform) {
 		return nil, fmt.Errorf("target_platform must be a concrete provider")
 	}
@@ -247,7 +260,9 @@ func defaultModelsListCandidateIDs(platform string) []string {
 		return ids
 	case PlatformGrok:
 		return xai.DefaultModelIDs()
-	case PlatformComposite:
+	case PlatformCN, PlatformVideo, PlatformKimi, PlatformZhipu, PlatformDeepseek:
+		return nil
+	case PlatformComposite, PlatformAdaptive:
 		return compositeDefaultModelsListCandidateIDs()
 	default:
 		ids := make([]string, 0, len(claude.DefaultModels))
@@ -267,7 +282,7 @@ func defaultAllowImageGenerationForPlatform(platform string) bool {
 func compositeDefaultModelsListCandidateIDs() []string {
 	seen := make(map[string]struct{})
 	ids := make([]string, 0)
-	for _, platform := range []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek} {
+	for _, platform := range []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformCN, PlatformVideo} {
 		for _, id := range defaultModelsListCandidateIDs(platform) {
 			if _, ok := seen[id]; ok {
 				continue
@@ -280,6 +295,9 @@ func compositeDefaultModelsListCandidateIDs() []string {
 }
 
 func canCopyAccountsFromGroupPlatform(targetPlatform, sourcePlatform string) bool {
+	if targetPlatform == PlatformAdaptive {
+		return false
+	}
 	if targetPlatform == PlatformComposite {
 		return sourcePlatform == PlatformComposite || isConcreteRequestPlatform(sourcePlatform)
 	}
@@ -295,9 +313,22 @@ func groupSupportsOAuthOnlyFilter(platform string) bool {
 		platform == PlatformComposite
 }
 
+func groupSupportsOpenAIFast(platform string) bool {
+	return platform == PlatformOpenAI || platform == PlatformComposite
+}
+
+func sanitizeGroupOpenAIFast(group *Group) {
+	if group == nil || !groupSupportsOpenAIFast(group.Platform) {
+		if group != nil {
+			group.ForceOpenAIFast = false
+			group.FreeOpenAIFast = false
+		}
+	}
+}
+
 func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupInput) (*Group, error) {
-	if input.RateMultiplier <= 0 {
-		return nil, errors.New("rate_multiplier must be > 0")
+	if input.RateMultiplier < 0 {
+		return nil, errors.New("rate_multiplier must be >= 0")
 	}
 
 	platform := NormalizeGroupPlatform(input.Platform)
@@ -377,7 +408,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	// 先归一化（非订阅分组清空高峰配置、清洗停用状态下的脏字段）再校验，与 UpdateGroup 同一收口。
 	peakRateEnabled, peakStart, peakEnd, peakRateMultiplier := NormalizePeakRateConfig(subscriptionType, input.PeakRateEnabled, input.PeakStart, input.PeakEnd, peakRateMultiplier)
 	if err := ValidatePeakRateConfig(subscriptionType, peakRateEnabled, peakStart, peakEnd, peakRateMultiplier); err != nil {
-		return nil, err
+		return nil, infraerrors.BadRequest("INVALID_PEAK_RATE_CONFIG", err.Error())
 	}
 
 	profitMinMargin := 0.0
@@ -458,6 +489,8 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		Platform:                        platform,
 		RateMultiplier:                  input.RateMultiplier,
 		IsExclusive:                     input.IsExclusive,
+		UserVisible:                     input.UserVisible,
+		UserVisibleSet:                  true,
 		Status:                          StatusActive,
 		SubscriptionType:                subscriptionType,
 		DailyLimitUSD:                   dailyLimit,
@@ -510,7 +543,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		ReasoningEffortMappings:         reasoningEffortMappings,
 	}
 	sanitizeGroupMessagesDispatchFields(group)
-	if group.Platform != PlatformOpenAI && group.Platform != PlatformComposite {
+	if group.Platform != PlatformOpenAI && group.Platform != PlatformComposite && group.Platform != PlatformAdaptive {
 		group.AllowLive = false
 	}
 	sanitizeGroupReasoningEffortPolicy(group)
@@ -651,16 +684,20 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		group.Description = *input.Description
 	}
 	if input.Platform != "" {
-		group.Platform = input.Platform
+		group.Platform = NormalizeGroupPlatform(input.Platform)
 	}
 	if input.RateMultiplier != nil {
-		if *input.RateMultiplier <= 0 {
-			return nil, errors.New("rate_multiplier must be > 0")
+		if *input.RateMultiplier < 0 {
+			return nil, errors.New("rate_multiplier must be >= 0")
 		}
 		group.RateMultiplier = *input.RateMultiplier
 	}
 	if input.IsExclusive != nil {
 		group.IsExclusive = *input.IsExclusive
+	}
+	if input.UserVisible != nil {
+		group.UserVisible = *input.UserVisible
+		group.UserVisibleSet = true
 	}
 	if input.Status != "" {
 		group.Status = input.Status
@@ -748,7 +785,7 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	// 防止单独修改 start/end 导致最终 start>=end 等非法配置入库。与 CreateGroup 同一收口。
 	group.PeakRateEnabled, group.PeakStart, group.PeakEnd, group.PeakRateMultiplier = NormalizePeakRateConfig(group.SubscriptionType, group.PeakRateEnabled, group.PeakStart, group.PeakEnd, group.PeakRateMultiplier)
 	if err := ValidatePeakRateConfig(group.SubscriptionType, group.PeakRateEnabled, group.PeakStart, group.PeakEnd, group.PeakRateMultiplier); err != nil {
-		return nil, err
+		return nil, infraerrors.BadRequest("INVALID_PEAK_RATE_CONFIG", err.Error())
 	}
 	if input.ProfitControlEnabled != nil {
 		group.ProfitControlEnabled = *input.ProfitControlEnabled
@@ -890,7 +927,7 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		group.ReasoningEffortMappings = reasoningEffortMappings
 	}
 	sanitizeGroupMessagesDispatchFields(group)
-	if group.Platform != PlatformOpenAI && group.Platform != PlatformComposite {
+	if group.Platform != PlatformOpenAI && group.Platform != PlatformComposite && group.Platform != PlatformAdaptive {
 		group.AllowLive = false
 	}
 	sanitizeGroupReasoningEffortPolicy(group)

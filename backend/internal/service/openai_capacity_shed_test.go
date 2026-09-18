@@ -61,6 +61,30 @@ func TestTempUnscheduleRetryableErrorSkipsRequestScopedTransient(t *testing.T) {
 	})
 }
 
+func TestTempUnscheduleRetryableErrorCoolsConsecutiveUnusableFailures(t *testing.T) {
+	resetConsecutiveUnusableFailuresForTest()
+	t.Cleanup(resetConsecutiveUnusableFailuresForTest)
+
+	repo := &capacityShedAccountRepoStub{}
+	svc := &GatewayService{accountRepo: repo}
+
+	svc.TempUnscheduleRetryableError(context.Background(), 9, &UpstreamFailoverError{
+		StatusCode: http.StatusNotFound,
+	})
+	require.Zero(t, repo.tempUnschedCalls, "first unusable failure should not cool yet")
+
+	svc.TempUnscheduleRetryableError(context.Background(), 9, &UpstreamFailoverError{
+		StatusCode: http.StatusNotFound,
+	})
+	require.Equal(t, 1, repo.tempUnschedCalls, "second consecutive unusable failure cools for 5 minutes")
+}
+
+func TestEmptyResponseCooldownIsFiveMinutes(t *testing.T) {
+	require.Equal(t, 5*time.Minute, emptyResponseCooldown)
+	require.Equal(t, 5*time.Minute, consecutiveUnusableFailureCooldown)
+	require.Equal(t, 2, consecutiveUnusableFailureThreshold)
+}
+
 // 非池模式账号同样要先在同账号重试：换号不改变降载因素。
 func TestStreamFailedEventCapacityShedRetriesOnSameAccount(t *testing.T) {
 	nonPool := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
@@ -195,10 +219,12 @@ func TestOpenAIStreamMetadataPreambleAndMessageOnlyOverloadFailOver(t *testing.T
 			require.ErrorAs(t, err, &failoverErr)
 			require.True(t, failoverErr.RetryableOnSameAccount)
 			require.True(t, failoverErr.RequestScopedTransient)
+			require.True(t, failoverErr.SafeToFailoverAfterWrite)
 			require.Equal(t, http.StatusServiceUnavailable, failoverErr.ClientStatusCode)
 			require.Contains(t, failoverErr.ClientMessage, "servers are currently overloaded")
-			require.False(t, c.Writer.Written())
-			require.Empty(t, rec.Body.String())
+			require.Contains(t, rec.Body.String(), `"type":"response.created"`)
+			require.NotContains(t, rec.Body.String(), `"type":"error"`)
+			require.NotContains(t, rec.Body.String(), "response.failed")
 		})
 	}
 }
@@ -241,8 +267,10 @@ func TestOpenAIStreamCapacityShedErrorFramePrecedingFailedStillFailsOver(t *test
 	require.ErrorAs(t, err, &failoverErr)
 	require.True(t, failoverErr.RetryableOnSameAccount)
 	require.True(t, failoverErr.RequestScopedTransient)
-	require.False(t, c.Writer.Written())
-	require.Empty(t, rec.Body.String())
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
+	require.NotContains(t, rec.Body.String(), `"type":"error"`)
+	require.NotContains(t, rec.Body.String(), "response.failed")
 }
 
 // Some upstreams keep the capacity message but normalize the error code to
@@ -284,9 +312,11 @@ func TestOpenAIStreamGenericServerErrorOverloadStillFailsOver(t *testing.T) {
 	require.ErrorAs(t, err, &failoverErr)
 	require.True(t, failoverErr.RetryableOnSameAccount)
 	require.True(t, failoverErr.RequestScopedTransient)
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
 	require.Equal(t, http.StatusServiceUnavailable, failoverErr.ClientStatusCode)
-	require.False(t, c.Writer.Written())
-	require.Empty(t, rec.Body.String())
+	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
+	require.NotContains(t, rec.Body.String(), `"type":"error"`)
+	require.NotContains(t, rec.Body.String(), "response.failed")
 }
 
 // 流中途（已有真实输出）降载时无法再 failover，此时必须把降载码改写为客户端

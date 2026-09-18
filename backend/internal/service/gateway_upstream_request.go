@@ -124,12 +124,13 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if err != nil {
 		return nil, nil, err
 	}
+	req = WithAccountTrafficRequest(req, account)
 
 	// 设置认证头（保持原始大小写）
 	if tokenType == "oauth" {
 		setHeaderRaw(req.Header, "authorization", "Bearer "+token)
 	} else {
-		setAnthropicAPIKeyAuthHeader(req.Header, account, token)
+		setAnthropicAPIKeyAuthHeader(req.Header, account, token, account.GetBaseURL())
 	}
 
 	// 白名单透传 headers
@@ -339,7 +340,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicVertex(
 		"stream":     strconv.FormatBool(reqStream),
 	})
 
-	return req, nil
+	return WithAccountTrafficRequest(req, account), nil
 }
 
 // getBetaHeader 处理anthropic-beta header

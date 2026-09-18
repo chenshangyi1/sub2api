@@ -8,7 +8,7 @@ import (
 )
 
 func TestUsageLogEffectiveModelIndexesMigration(t *testing.T) {
-	content, err := FS.ReadFile("226_add_usage_log_effective_model_indexes_notx.sql")
+	content, err := FS.ReadFile("234_add_usage_log_effective_model_indexes_notx.sql")
 	require.NoError(t, err)
 
 	sql := strings.Join(strings.Fields(string(content)), " ")

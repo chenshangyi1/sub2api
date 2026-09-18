@@ -85,6 +85,13 @@ func (f optionalLimitField) ToServiceInput() *float64 {
 	return &zero
 }
 
+func boolValueOrDefault(value *bool, defaultValue bool) bool {
+	if value == nil {
+		return defaultValue
+	}
+	return *value
+}
+
 // NewGroupHandler creates a new admin group handler
 func NewGroupHandler(adminService service.AdminService, dashboardService *service.DashboardService, groupCapacityService *service.GroupCapacityService) *GroupHandler {
 	return &GroupHandler{
@@ -98,9 +105,10 @@ func NewGroupHandler(adminService service.AdminService, dashboardService *servic
 type CreateGroupRequest struct {
 	Name                      string                        `json:"name" binding:"required"`
 	Description               string                        `json:"description"`
-	Platform                  string                        `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek composite"`
+	Platform                  string                        `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity grok cn video kimi zhipu deepseek composite adaptive"`
 	RateMultiplier            float64                       `json:"rate_multiplier"`
 	IsExclusive               bool                          `json:"is_exclusive"`
+	UserVisible               *bool                         `json:"user_visible"`
 	SubscriptionType          string                        `json:"subscription_type" binding:"omitempty,oneof=standard subscription"`
 	DailyLimitUSD             optionalLimitField            `json:"daily_limit_usd"`
 	WeeklyLimitUSD            optionalLimitField            `json:"weekly_limit_usd"`
@@ -166,9 +174,10 @@ type CreateGroupRequest struct {
 type UpdateGroupRequest struct {
 	Name                      string                         `json:"name"`
 	Description               *string                        `json:"description"`
-	Platform                  string                         `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek composite"`
+	Platform                  string                         `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity grok cn video kimi zhipu deepseek composite adaptive"`
 	RateMultiplier            *float64                       `json:"rate_multiplier"`
 	IsExclusive               *bool                          `json:"is_exclusive"`
+	UserVisible               *bool                          `json:"user_visible"`
 	Status                    string                         `json:"status" binding:"omitempty,oneof=active inactive"`
 	SubscriptionType          string                         `json:"subscription_type" binding:"omitempty,oneof=standard subscription"`
 	DailyLimitUSD             optionalLimitField             `json:"daily_limit_usd"`
@@ -234,7 +243,7 @@ type UpdateGroupRequest struct {
 type CompositeRouteRequest struct {
 	PublicModel    string `json:"public_model" binding:"required"`
 	MatchType      string `json:"match_type" binding:"omitempty,oneof=exact prefix"`
-	TargetPlatform string `json:"target_platform" binding:"required,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek"`
+	TargetPlatform string `json:"target_platform" binding:"required,oneof=anthropic openai gemini antigravity grok cn video kimi zhipu deepseek"`
 	UpstreamModel  string `json:"upstream_model"`
 	Endpoint       string `json:"endpoint" binding:"omitempty,oneof=any messages count_tokens responses chat_completions embeddings images gemini"`
 	Priority       int    `json:"priority"`
@@ -508,6 +517,7 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		Platform:                        req.Platform,
 		RateMultiplier:                  req.RateMultiplier,
 		IsExclusive:                     req.IsExclusive,
+		UserVisible:                     boolValueOrDefault(req.UserVisible, true),
 		SubscriptionType:                req.SubscriptionType,
 		DailyLimitUSD:                   req.DailyLimitUSD.ToServiceInput(),
 		WeeklyLimitUSD:                  req.WeeklyLimitUSD.ToServiceInput(),
@@ -636,6 +646,7 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		Platform:                        req.Platform,
 		RateMultiplier:                  req.RateMultiplier,
 		IsExclusive:                     req.IsExclusive,
+		UserVisible:                     req.UserVisible,
 		Status:                          req.Status,
 		SubscriptionType:                req.SubscriptionType,
 		DailyLimitUSD:                   req.DailyLimitUSD.ToServiceInput(),

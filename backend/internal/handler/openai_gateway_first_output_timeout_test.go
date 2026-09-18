@@ -27,6 +27,25 @@ func TestOpenAIForwardMayFailoverOnlyAfterNonSemanticWrite(t *testing.T) {
 	require.False(t, openAIForwardMayFailover(c, before, &service.UpstreamFailoverError{}))
 }
 
+func TestOpenAIForwardMayFailoverAfterFlushedPreamble(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	before := service.OpenAICompactKeepaliveAdjustedWrittenSize(c)
+
+	payload := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_first\"}}\n\n"
+	_, err := fmt.Fprint(c.Writer, payload)
+	require.NoError(t, err)
+	c.Writer.Flush()
+	service.RecordOpenAIStreamPreambleBytes(c, len(payload))
+
+	require.True(t, openAIForwardMayFailover(c, before, &service.UpstreamFailoverError{
+		SafeToFailoverAfterWrite: true,
+	}))
+	require.True(t, openAIForwardMayFailover(c, before, &service.UpstreamFailoverError{}),
+		"accounted preamble must not freeze same-connection failover")
+}
+
 func TestOpenAIRequestAllowsFailoverReplayStopsCanceledClient(t *testing.T) {
 	require.False(t, openAIRequestAllowsFailoverReplay(nil))
 

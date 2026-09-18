@@ -48,6 +48,8 @@ type PlazaGroup struct {
 	PeakEnd            string
 	PeakRateMultiplier float64
 	IsExclusive        bool
+	UserVisible        bool
+	UserVisibleSet     bool
 	// 图片按次实付倍率：ImageRateIndependent 为 true 时，图片计费模型的实付
 	// = 档位价 × ImageRateMultiplier，不乘分组/用户专属倍率（与计费口径一致）。
 	ImageRateIndependent bool
@@ -67,6 +69,8 @@ type ModelPlazaService struct {
 	pricingService *PricingService
 	billingService *BillingService
 	resolver       *ModelPricingResolver
+	adaptivePool   AdaptivePoolSnapshotRepository
+	accountRepo    AccountRepository
 }
 
 // NewModelPlazaService 创建模型广场服务。
@@ -86,6 +90,22 @@ func NewModelPlazaService(
 	}
 }
 
+// SetAdaptivePool attaches Adaptive topology so a visible parent can show
+// models from hidden cross-platform leaves.
+func (s *ModelPlazaService) SetAdaptivePool(pool AdaptivePoolSnapshotRepository) {
+	if s != nil {
+		s.adaptivePool = pool
+	}
+}
+
+// SetAccountRepo lets plaza fall back to real account mappings
+// when no billing channels are bound (common for Adaptive + account-only groups).
+func (s *ModelPlazaService) SetAccountRepo(repo AccountRepository) {
+	if s != nil {
+		s.accountRepo = repo
+	}
+}
+
 // ListGroups 返回模型广场数据：每个活跃分组附带其可用模型与定价。
 //
 // 模型枚举口径与 ListAvailable 一致（Active 渠道、SupportedModels ∪ 全局定价回落、
@@ -98,7 +118,8 @@ func NewModelPlazaService(
 //   - 只返回 Models 非空的分组；分组按 RateMultiplier 升序（同倍率按名称），
 //     组内模型按名称排序。
 //
-// 可见性过滤（专属分组）不在此层做，由 handler 按登录态裁剪。
+// user_visible=false 分组在此层剔除（基础设施/Adaptive 叶子）。专属分组可见性
+// 仍由 handler 按登录态裁剪。
 func (s *ModelPlazaService) ListGroups(ctx context.Context) ([]PlazaGroup, error) {
 	channels, err := s.channelRepo.ListAll(ctx)
 	if err != nil {
@@ -118,6 +139,9 @@ func (s *ModelPlazaService) ListGroups(ctx context.Context) ([]PlazaGroup, error
 	order := make([]int64, 0, len(groups))
 	for i := range groups {
 		g := &groups[i]
+		if g.HiddenFromEndUsers() {
+			continue
+		}
 		byGroup[g.ID] = &PlazaGroup{
 			ID:                        g.ID,
 			Name:                      g.Name,
@@ -130,6 +154,8 @@ func (s *ModelPlazaService) ListGroups(ctx context.Context) ([]PlazaGroup, error
 			PeakEnd:                   g.PeakEnd,
 			PeakRateMultiplier:        g.PeakRateMultiplier,
 			IsExclusive:               g.IsExclusive,
+			UserVisible:               g.UserVisible,
+			UserVisibleSet:            g.UserVisibleSet,
 			ImageRateIndependent:      g.ImageRateIndependent,
 			ImageRateMultiplier:       g.ImageRateMultiplier,
 			LongContextPricingEnabled: g.LongContextPricingEnabled,
@@ -142,8 +168,56 @@ func (s *ModelPlazaService) ListGroups(ctx context.Context) ([]PlazaGroup, error
 		platform string
 		name     string
 	}
+	adaptiveParents := make(map[int64]struct{})
+	leafToParents := make(map[int64][]int64)
+	if s.adaptivePool != nil {
+		for gid := range byGroup {
+			snap, err := s.adaptivePool.GetAdaptivePoolSnapshot(ctx, gid)
+			if err != nil || snap == nil || !snap.Enabled {
+				continue
+			}
+			adaptiveParents[gid] = struct{}{}
+			for _, member := range snap.Members {
+				if !member.Enabled || member.LeafGroupID <= 0 {
+					continue
+				}
+				leafToParents[member.LeafGroupID] = append(leafToParents[member.LeafGroupID], gid)
+			}
+		}
+	}
 	// modelIdx[groupID][platform+modelName] = index into byGroup[groupID].Models
 	modelIdx := make(map[int64]map[modelKey]int, len(groups))
+	addModels := func(targetID int64, pg *PlazaGroup, supported []SupportedModel) {
+		idx := modelIdx[targetID]
+		if idx == nil {
+			idx = make(map[modelKey]int, len(supported))
+			modelIdx[targetID] = idx
+		}
+		_, hybrid := adaptiveParents[targetID]
+		for j := range supported {
+			m := supported[j]
+			if pg.Platform == PlatformComposite || hybrid {
+				if !isConcreteRequestPlatform(m.Platform) {
+					continue
+				}
+			} else if m.Platform != pg.Platform {
+				continue
+			}
+			key := modelKey{platform: m.Platform, name: strings.ToLower(m.Name)}
+			if at, seen := idx[key]; seen {
+				if pg.Models[at].Pricing == nil && m.Pricing != nil {
+					pg.Models[at].Pricing = m.Pricing
+				}
+				continue
+			}
+			idx[key] = len(pg.Models)
+			pg.Models = append(pg.Models, PlazaModel{
+				Name:     m.Name,
+				Platform: m.Platform,
+				Pricing:  m.Pricing,
+			})
+		}
+	}
 	for i := range channels {
 		ch := &channels[i]
 		if ch.Status != StatusActive {
@@ -154,41 +228,29 @@ func (s *ModelPlazaService) ListGroups(ctx context.Context) ([]PlazaGroup, error
 		fillGlobalPricingFallback(s.pricingService, supported)
 
 		for _, gid := range ch.GroupIDs {
-			pg, ok := byGroup[gid]
-			if !ok {
-				continue
+			seenTarget := make(map[int64]struct{}, 2)
+			targets := make([]int64, 0, 2)
+			if _, ok := byGroup[gid]; ok {
+				targets = append(targets, gid)
+				seenTarget[gid] = struct{}{}
 			}
-			idx := modelIdx[gid]
-			if idx == nil {
-				idx = make(map[modelKey]int, len(supported))
-				modelIdx[gid] = idx
-			}
-			for j := range supported {
-				m := supported[j]
-				if pg.Platform == PlatformComposite {
-					if !isConcreteRequestPlatform(m.Platform) {
-						continue
-					}
-				} else if m.Platform != pg.Platform {
+			for _, parentID := range leafToParents[gid] {
+				if _, ok := seenTarget[parentID]; ok {
 					continue
 				}
-				key := modelKey{platform: m.Platform, name: m.Name}
-				if at, seen := idx[key]; seen {
-					// 先见者胜；仅当已存条目无定价而新条目有定价时升级。
-					if pg.Models[at].Pricing == nil && m.Pricing != nil {
-						pg.Models[at].Pricing = m.Pricing
-					}
+				if _, ok := byGroup[parentID]; !ok {
 					continue
 				}
-				idx[key] = len(pg.Models)
-				pg.Models = append(pg.Models, PlazaModel{
-					Name:     m.Name,
-					Platform: m.Platform,
-					Pricing:  m.Pricing,
-				})
+				targets = append(targets, parentID)
+				seenTarget[parentID] = struct{}{}
+			}
+			for _, targetID := range targets {
+				addModels(targetID, byGroup[targetID], supported)
 			}
 		}
 	}
+
+	s.enrichPlazaCatalogFromGroups(ctx, byGroup, groupEnt, adaptiveParents, leafToParents, addModels)
 
 	officialMemo := make(map[string]*PlazaOfficialPricing)
 	out := make([]PlazaGroup, 0, len(order))
@@ -218,6 +280,101 @@ func (s *ModelPlazaService) ListGroups(ctx context.Context) ([]PlazaGroup, error
 		return out[i].Name < out[j].Name
 	})
 	return out, nil
+}
+
+func plazaSupportedModels(platform string, names []string) []SupportedModel {
+	out := make([]SupportedModel, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		plat := strings.TrimSpace(platform)
+		if plat == "" {
+			plat = PlatformOpenAI
+		}
+		out = append(out, SupportedModel{Name: name, Platform: plat})
+	}
+	return out
+}
+
+func (s *ModelPlazaService) catalogNamesForGroup(ctx context.Context, groupID int64, platform string) []string {
+	seen := make(map[string]struct{})
+	names := make([]string, 0)
+	add := func(model string) {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			return
+		}
+		key := strings.ToLower(model)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		names = append(names, key)
+	}
+	if s != nil && s.accountRepo != nil && groupID > 0 {
+		accounts, err := s.accountRepo.ListSchedulableByGroupID(ctx, groupID)
+		if err == nil {
+			for i := range accounts {
+				for model := range accounts[i].GetModelMapping() {
+					add(model)
+				}
+			}
+		}
+	}
+	if s != nil && s.groupRepo != nil && groupID > 0 {
+		if g, err := s.groupRepo.GetByID(ctx, groupID); err == nil && g != nil && g.CustomModelsListEnabled() {
+			for _, model := range g.ModelsListConfig.Models {
+				add(model)
+			}
+		}
+	}
+	return names
+}
+
+func (s *ModelPlazaService) enrichPlazaCatalogFromGroups(
+	ctx context.Context,
+	byGroup map[int64]*PlazaGroup,
+	groupEnt map[int64]*Group,
+	adaptiveParents map[int64]struct{},
+	leafToParents map[int64][]int64,
+	addModels func(int64, *PlazaGroup, []SupportedModel),
+) {
+	if s == nil || addModels == nil {
+		return
+	}
+	parentLeaves := make(map[int64][]int64, len(adaptiveParents))
+	for leafID, parents := range leafToParents {
+		for _, parentID := range parents {
+			parentLeaves[parentID] = append(parentLeaves[parentID], leafID)
+		}
+	}
+	for gid, pg := range byGroup {
+		if pg == nil {
+			continue
+		}
+		if _, hybrid := adaptiveParents[gid]; hybrid {
+			for _, leafID := range parentLeaves[gid] {
+				platform := ""
+				if s.groupRepo != nil {
+					if leaf, err := s.groupRepo.GetByID(ctx, leafID); err == nil && leaf != nil {
+						platform = strings.ToLower(strings.TrimSpace(leaf.Platform))
+					}
+				}
+				addModels(gid, pg, plazaSupportedModels(platform, s.catalogNamesForGroup(ctx, leafID, platform)))
+			}
+			continue
+		}
+		if len(pg.Models) > 0 {
+			continue
+		}
+		platform := ""
+		if g := groupEnt[gid]; g != nil {
+			platform = strings.ToLower(strings.TrimSpace(g.Platform))
+		}
+		addModels(gid, pg, plazaSupportedModels(platform, s.catalogNamesForGroup(ctx, gid, platform)))
+	}
 }
 
 // fillDisplayPricing 把模型的展示定价换成实收口径：

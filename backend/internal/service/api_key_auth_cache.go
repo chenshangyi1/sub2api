@@ -26,6 +26,10 @@ type APIKeyAuthSnapshot struct {
 	RateLimit5h float64 `json:"rate_limit_5h"`
 	RateLimit1d float64 `json:"rate_limit_1d"`
 	RateLimit7d float64 `json:"rate_limit_7d"`
+
+	AdaptiveRoutingPreference string   `json:"adaptive_routing_preference,omitempty"`
+	AdaptiveMaxRateMultiplier *float64 `json:"adaptive_max_rate_multiplier,omitempty"`
+	AdaptiveLeafGroupIDs      []int64  `json:"adaptive_leaf_group_ids,omitempty"`
 }
 
 // APIKeyAuthUserSnapshot 用户快照

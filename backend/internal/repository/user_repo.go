@@ -236,6 +236,48 @@ func (r *userRepository) GetByEmail(ctx context.Context, email string) (*service
 	return out, nil
 }
 
+// GetByUsername resolves the login username using the same trimming and
+// case-insensitive behavior as email login. Usernames are profile identifiers,
+// so reject an ambiguous legacy database rather than selecting arbitrarily.
+func (r *userRepository) GetByUsername(ctx context.Context, username string) (*service.User, error) {
+	loginID := strings.TrimSpace(username)
+	if loginID == "" {
+		return nil, service.ErrUserNotFound
+	}
+
+	matches, err := r.client.User.Query().
+		Where(predicate.User(func(s *entsql.Selector) {
+			s.Where(entsql.P(func(b *entsql.Builder) {
+				b.WriteString("LOWER(TRIM(").
+					Ident(s.C(dbuser.FieldUsername)).
+					WriteString(")) = ").
+					Arg(strings.ToLower(loginID))
+			}))
+		})).
+		Order(dbent.Asc(dbuser.FieldID)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(matches) == 0 {
+		return nil, service.ErrUserNotFound
+	}
+	if len(matches) > 1 {
+		return nil, fmt.Errorf("case-insensitive username lookup matched multiple users for %q", loginID)
+	}
+
+	m := matches[0]
+	out := userEntityToService(m)
+	groups, err := r.loadAllowedGroups(ctx, []int64{m.ID})
+	if err != nil {
+		return nil, err
+	}
+	if v, ok := groups[m.ID]; ok {
+		out.AllowedGroups = v
+	}
+	return out, nil
+}
+
 func (r *userRepository) Update(ctx context.Context, userIn *service.User, fields service.UserUpdateFields) error {
 	if userIn == nil {
 		return nil

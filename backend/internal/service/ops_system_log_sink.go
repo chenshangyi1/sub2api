@@ -166,9 +166,8 @@ func (s *OpsSystemLogSink) shouldIndex(event *logger.LogEvent) bool {
 			component = fc
 		}
 	}
-	if strings.Contains(component, "http.access") {
-		return true
-	}
+	// http.access 已经写 nginx timing + 文件日志。每条再入 PG 会拖着
+	// 11 个索引膨胀（现网 19 天 2.8GB，近 1h 84% 是 access），热路径不值得。
 	if strings.Contains(component, "audit") {
 		return true
 	}

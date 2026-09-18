@@ -9,6 +9,17 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func bindRequestedReasoningEffort(c *gin.Context, body []byte, model string) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	effort := service.CanonicalRequestedReasoningEffort(body, model)
+	if effort == nil {
+		return
+	}
+	c.Request = c.Request.WithContext(service.WithRequestedReasoningEffort(c.Request.Context(), *effort))
+}
+
 func ensureCompositeTargetPlatform(c *gin.Context, apiKey *service.APIKey, model string) {
 	if c == nil || c.Request == nil || apiKey == nil || apiKey.Group == nil || apiKey.Group.Platform != service.PlatformComposite {
 		return
@@ -63,10 +74,10 @@ func openAIReasoningEffortPolicyForRequest(c *gin.Context, apiKey *service.APIKe
 	if apiKey == nil || apiKey.Group == nil {
 		return "", nil, false
 	}
-	if apiKey.Group.Platform != service.PlatformOpenAI && apiKey.Group.Platform != service.PlatformComposite {
+	if apiKey.Group.Platform != service.PlatformOpenAI && apiKey.Group.Platform != service.PlatformComposite && apiKey.Group.Platform != service.PlatformAdaptive {
 		return "", nil, false
 	}
-	if effectiveAPIKeyPlatform(c, apiKey) != service.PlatformOpenAI {
+	if apiKey.Group.Platform != service.PlatformAdaptive && effectiveAPIKeyPlatform(c, apiKey) != service.PlatformOpenAI {
 		return "", nil, false
 	}
 	return apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings, true

@@ -205,6 +205,8 @@ const upstreamSyncPlatforms = new Set([
   'gemini',
   'antigravity',
   'grok',
+  'cn',
+  'video',
   'kimi',
   'zhipu',
   'deepseek'

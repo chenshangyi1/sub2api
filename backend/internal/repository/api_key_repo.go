@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -70,6 +71,9 @@ func (r *apiKeyRepository) Create(ctx context.Context, key *service.APIKey) erro
 		key.LastUsedAt = created.LastUsedAt
 		key.CreatedAt = created.CreatedAt
 		key.UpdatedAt = created.UpdatedAt
+		if persistErr := r.persistAdaptiveKeyFields(ctx, key); persistErr != nil {
+			return persistErr
+		}
 	}
 	return translatePersistenceError(err, nil, service.ErrAPIKeyExists)
 }
@@ -86,7 +90,9 @@ func (r *apiKeyRepository) GetByID(ctx context.Context, id int64) (*service.APIK
 		}
 		return nil, err
 	}
-	return apiKeyEntityToService(m), nil
+	key := apiKeyEntityToService(m)
+	r.hydrateAdaptiveKeyFields(ctx, []*service.APIKey{key})
+	return key, nil
 }
 
 // GetKeyAndOwnerID 根据 API Key ID 获取其 key 与所有者（用户）ID。
@@ -124,7 +130,9 @@ func (r *apiKeyRepository) GetByKey(ctx context.Context, key string) (*service.A
 		}
 		return nil, err
 	}
-	return apiKeyEntityToService(m), nil
+	out := apiKeyEntityToService(m)
+	r.hydrateAdaptiveKeyFields(ctx, []*service.APIKey{out})
+	return out, nil
 }
 
 func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*service.APIKey, error) {
@@ -235,7 +243,9 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 		}
 		return nil, err
 	}
-	return apiKeyEntityToService(m), nil
+	out := apiKeyEntityToService(m)
+	r.hydrateAdaptiveKeyFields(ctx, []*service.APIKey{out})
+	return out, nil
 }
 
 func (r *apiKeyRepository) Update(ctx context.Context, key *service.APIKey, fields service.APIKeyUpdateFields) error {
@@ -337,6 +347,11 @@ func (r *apiKeyRepository) Update(ctx context.Context, key *service.APIKey, fiel
 
 	// 使用同一时间戳回填，避免并发删除导致二次查询失败。
 	key.UpdatedAt = now
+	if fields.AdaptiveRouting {
+		if persistErr := r.persistAdaptiveKeyFields(ctx, key); persistErr != nil {
+			return persistErr
+		}
+	}
 	return nil
 }
 
@@ -476,6 +491,7 @@ func (r *apiKeyRepository) ListByUserID(ctx context.Context, userID int64, param
 	for i := range keys {
 		outKeys = append(outKeys, *apiKeyEntityToService(keys[i]))
 	}
+	r.hydrateAdaptiveKeySlice(ctx, outKeys)
 	if err := r.attachLastUsedIPs(ctx, outKeys); err != nil {
 		return nil, nil, err
 	}
@@ -496,6 +512,7 @@ func (r *apiKeyRepository) ListAllByUserID(ctx context.Context, userID int64, fi
 	for i := range keys {
 		outKeys = append(outKeys, *apiKeyEntityToService(keys[i]))
 	}
+	r.hydrateAdaptiveKeySlice(ctx, outKeys)
 	if err := r.attachLastUsedIPs(ctx, outKeys); err != nil {
 		return nil, err
 	}
@@ -640,6 +657,7 @@ func (r *apiKeyRepository) ListByGroupID(ctx context.Context, groupID int64, par
 	for i := range keys {
 		outKeys = append(outKeys, *apiKeyEntityToService(keys[i]))
 	}
+	r.hydrateAdaptiveKeySlice(ctx, outKeys)
 
 	return outKeys, paginationResultFromTotal(int64(total), params), nil
 }
@@ -700,6 +718,7 @@ func (r *apiKeyRepository) SearchAPIKeys(ctx context.Context, userID int64, keyw
 	for i := range keys {
 		outKeys = append(outKeys, *apiKeyEntityToService(keys[i]))
 	}
+	r.hydrateAdaptiveKeySlice(ctx, outKeys)
 	return outKeys, nil
 }
 
@@ -804,6 +823,39 @@ func (r *apiKeyRepository) UpdateLastUsed(ctx context.Context, id int64, usedAt 
 		return service.ErrAPIKeyNotFound
 	}
 	return nil
+}
+
+// BatchUpdateLastUsed persists activity timestamps for multiple API keys in a
+// single statement. Authentication treats last_used_at as advisory metadata,
+// so the production request path queues these updates in DeferredService
+// rather than waiting on one UPDATE per key.
+func (r *apiKeyRepository) BatchUpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
+	if r == nil || r.sql == nil || len(updates) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(updates))
+	for id := range updates {
+		if id > 0 {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	times := make([]time.Time, len(ids))
+	for i, id := range ids {
+		times[i] = updates[id]
+	}
+	_, err := r.sql.ExecContext(ctx, `
+		UPDATE api_keys AS k
+		SET last_used_at = GREATEST(COALESCE(k.last_used_at, '-infinity'::timestamptz), v.last_used_at),
+		    updated_at = GREATEST(COALESCE(k.updated_at, '-infinity'::timestamptz), v.last_used_at)
+		FROM unnest($1::bigint[], $2::timestamptz[]) AS v(id, last_used_at)
+		WHERE k.id = v.id AND k.deleted_at IS NULL
+		  AND (k.last_used_at IS NULL OR k.last_used_at < v.last_used_at)
+	`, pq.Array(ids), pq.Array(times))
+	return err
 }
 
 // IncrementRateLimitUsage atomically increments all rate limit usage counters and initializes
@@ -967,6 +1019,8 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		Platform:                        g.Platform,
 		RateMultiplier:                  g.RateMultiplier,
 		IsExclusive:                     g.IsExclusive,
+		UserVisible:                     g.UserVisible,
+		UserVisibleSet:                  true,
 		Status:                          g.Status,
 		Hydrated:                        true,
 		DuplicateOperationID:            derefString(g.DuplicateOperationID),

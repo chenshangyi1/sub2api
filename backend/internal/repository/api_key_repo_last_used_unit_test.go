@@ -3,10 +3,12 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/enttest"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -17,6 +19,22 @@ import (
 	entsql "entgo.io/ent/dialect/sql"
 	_ "modernc.org/sqlite"
 )
+
+func TestAPIKeyRepository_BatchUpdateLastUsedUsesOnePostgresStatement(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	repo := &apiKeyRepository{sql: db}
+	updates := map[int64]time.Time{
+		22: time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC),
+		11: time.Date(2026, 9, 3, 12, 0, 1, 0, time.UTC),
+	}
+	expectation := mock.ExpectExec(regexp.QuoteMeta("UPDATE api_keys AS k"))
+	expectation.WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg())
+	expectation.WillReturnResult(sqlmock.NewResult(0, 2))
+	require.NoError(t, repo.BatchUpdateLastUsed(context.Background(), updates))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
 
 func newAPIKeyRepoSQLite(t *testing.T) (*apiKeyRepository, *dbent.Client) {
 	t.Helper()

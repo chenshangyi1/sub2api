@@ -54,6 +54,74 @@ func adaptGrokResponsesClientTools(body []byte) ([]byte, apicompat.ResponsesClie
 	return adaptResponsesClientToolsForFunctionUpstream(body, "Grok")
 }
 
+func simplifyGrokRootObjectUnion(schema map[string]any) bool {
+	branches, ok := schema["oneOf"].([]any)
+	if !ok || len(branches) == 0 {
+		return false
+	}
+	var objectBranch map[string]any
+	for _, raw := range branches {
+		branch, ok := raw.(map[string]any)
+		if !ok {
+			return false
+		}
+		if strings.TrimSpace(stringValue(branch["type"])) == "null" {
+			continue
+		}
+		branchType := strings.TrimSpace(stringValue(branch["type"]))
+		if branchType != "object" && strings.TrimSpace(stringValue(branch["$ref"])) == "" {
+			return false
+		}
+		if objectBranch != nil {
+			return false
+		}
+		objectBranch = branch
+	}
+	if objectBranch == nil {
+		return false
+	}
+	if ref := strings.TrimSpace(stringValue(objectBranch["$ref"])); ref != "" {
+		if !strings.HasPrefix(ref, "#/$defs/") {
+			return false
+		}
+		defs, ok := schema["$defs"].(map[string]any)
+		if !ok {
+			return false
+		}
+		name := ref
+		if slash := strings.LastIndex(name, "/"); slash >= 0 {
+			name = name[slash+1:]
+		}
+		resolved, ok := defs[name].(map[string]any)
+		if !ok {
+			// Keep unresolved local and external refs intact. Flattening them into
+			// an empty object silently changes the tool contract and leaves no
+			// usable schema for the upstream to validate.
+			return false
+		}
+		delete(objectBranch, "$ref")
+		for key, value := range resolved {
+			if _, exists := objectBranch[key]; !exists {
+				objectBranch[key] = value
+			}
+		}
+	}
+	for key, value := range objectBranch {
+		schema[key] = value
+	}
+	delete(schema, "oneOf")
+	if _, exists := schema["type"]; !exists {
+		schema["type"] = "object"
+	}
+	if _, exists := schema["properties"]; !exists {
+		schema["properties"] = map[string]any{}
+	}
+	if _, exists := schema["additionalProperties"]; !exists {
+		schema["additionalProperties"] = true
+	}
+	return true
+}
+
 func hasResponsesClientToolMapping(mapping apicompat.ResponsesClientToolMapping) bool {
 	return len(mapping.CustomTools) > 0 || mapping.ToolSearch || len(mapping.NamespaceTools) > 0
 }
@@ -144,14 +212,11 @@ func transformResponsesClientToolStream(
 	maxLineSize int,
 ) {
 	defer func() { _ = source.Close() }()
-	if maxLineSize <= 0 {
-		maxLineSize = defaultMaxLineSize
-	}
 
 	scanner := bufio.NewScanner(source)
 	scanBuf := getSSEScannerBuf64K()
 	defer putSSEScannerBuf64K(scanBuf)
-	scanner.Buffer(scanBuf[:0], maxLineSize)
+	attachSSEScannerBuffer(scanner, scanBuf[:], maxLineSize)
 	documents := newOpenAISSEJSONDocumentScanner(scanner)
 	restorer := apicompat.NewResponsesClientToolStreamRestorer(mapping)
 	buffered := bufio.NewWriterSize(destination, 4*1024)

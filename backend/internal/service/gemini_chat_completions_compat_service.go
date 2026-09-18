@@ -58,8 +58,51 @@ func (s *GeminiMessagesCompatService) ForwardAsChatCompletions(
 		return nil, fmt.Errorf("marshal chat completions compat request: %w", err)
 	}
 
-	return s.forwardClaudeBodyAsChatCompletions(ctx, c, account, claudeBody, originalModel, clientStream, includeUsage, startTime, body)
+	return s.forwardClaudeBodyAsChatCompletions(ctx, c, account, claudeBody, originalModel, clientStream, includeUsage, startTime, body, geminiCompatFormatChat)
 }
+
+// ForwardAsResponses serves OpenAI Responses clients through Gemini accounts.
+// The inbound body stays Responses; upstream is Gemini native; the client
+// response is converted back to Responses.
+func (s *GeminiMessagesCompatService) ForwardAsResponses(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+) (*ForwardResult, error) {
+	startTime := time.Now()
+
+	var responsesReq apicompat.ResponsesRequest
+	if err := json.Unmarshal(body, &responsesReq); err != nil {
+		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return nil, err
+	}
+	if strings.TrimSpace(responsesReq.Model) == "" {
+		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return nil, errors.New("model is required")
+	}
+
+	originalModel := responsesReq.Model
+	clientStream := responsesReq.Stream
+	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
+	if err != nil {
+		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	anthropicReq.Stream = clientStream
+	claudeBody, err := json.Marshal(anthropicReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal responses compat request: %w", err)
+	}
+	return s.forwardClaudeBodyAsChatCompletions(ctx, c, account, claudeBody, originalModel, clientStream, false, startTime, body, geminiCompatFormatResponses)
+}
+
+type geminiCompatClientFormat int
+
+const (
+	geminiCompatFormatChat geminiCompatClientFormat = iota
+	geminiCompatFormatResponses
+)
 
 func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	ctx context.Context,
@@ -71,26 +114,30 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	includeUsage bool,
 	startTime time.Time,
 	originalChatBody []byte,
+	clientFormat geminiCompatClientFormat,
 ) (*ForwardResult, error) {
 	var req struct {
 		Model  string `json:"model"`
 		Stream bool   `json:"stream"`
 	}
 	if err := json.Unmarshal(claudeBody, &req); err != nil {
-		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return nil, s.writeGeminiCompatClientError(c, clientFormat, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 	}
 	if strings.TrimSpace(req.Model) == "" {
-		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return nil, s.writeGeminiCompatClientError(c, clientFormat, http.StatusBadRequest, "invalid_request_error", "model is required")
+	}
+
+	geminiReq, convErr := convertClaudeMessagesToGeminiGenerateContent(claudeBody)
+	if convErr != nil {
+		return nil, s.writeGeminiCompatClientError(c, clientFormat, http.StatusBadRequest, "invalid_request_error", convErr.Error())
+	}
+	if account.IsGeminiOpenAIProtocol() {
+		return s.forwardChatCompletionsViaOpenAICompat(ctx, c, account, originalModel, clientStream, geminiReq, clientFormat, startTime)
 	}
 
 	mappedModel := req.Model
 	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
 		mappedModel = account.GetMappedModel(req.Model)
-	}
-
-	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(claudeBody)
-	if err != nil {
-		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
 	geminiReq = ensureGeminiFunctionCallThoughtSignatures(geminiReq)
 
@@ -119,11 +166,11 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
 			}
-			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", err.Error())
+			return nil, s.writeGeminiCompatClientError(c, clientFormat, http.StatusBadGateway, "upstream_error", err.Error())
 		}
 		requestIDHeader = idHeader
 
-		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		resp, err = s.httpUpstream.Do(WithAccountTrafficRequest(upstreamReq, account), proxyURL, account.ID, account.Concurrency)
 		if err != nil {
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -140,7 +187,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 				continue
 			}
 			setOpsUpstreamError(c, 0, safeErr, "")
-			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed after retries: "+safeErr)
+			return nil, s.writeGeminiCompatClientError(c, clientFormat, http.StatusBadGateway, "upstream_error", "Upstream request failed after retries: "+safeErr)
 		}
 
 		if matched, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp, mappedModel); matched {
@@ -162,7 +209,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 				break
 			}
 			if resp.StatusCode == http.StatusTooManyRequests {
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				s.handleGeminiUpstreamErrorForModel(ctx, account, mappedModel, resp.StatusCode, resp.Header, respBody)
 			}
 			if attempt < geminiMaxRetries {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
@@ -211,6 +258,9 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
+		if shouldFallbackGeminiNativeToOpenAI(account, resp.StatusCode, respBody, c) {
+			return s.forwardChatCompletionsViaOpenAICompat(ctx, c, account, originalModel, clientStream, geminiReq, clientFormat, startTime)
+		}
 		policy := ErrorPolicyNone
 		if s.rateLimitService != nil {
 			policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, mappedModel)
@@ -218,7 +268,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		// 与 messages 兼容层一致：只有 None / Matched 才走账号状态处理。
 		// Skipped（池模式、或自定义错误码未命中）与 TempUnscheduled 已由策略层裁决完毕。
 		if policy == ErrorPolicyNone || policy == ErrorPolicyMatched {
-			s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			s.handleGeminiUpstreamErrorForModel(ctx, account, mappedModel, resp.StatusCode, resp.Header, respBody)
 		}
 		evBody := unwrapIfNeeded(account.Type == AccountTypeOAuth, respBody)
 
@@ -242,8 +292,11 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 
 		if policy == ErrorPolicySkipped && account.IsCustomErrorCodesEnabled() {
 			return nil, s.writeGeminiCustomCodeSkippedError(c, account, resp.StatusCode, requestID, evBody, func() {
-				_ = s.writeChatCompletionsError(c, http.StatusInternalServerError, "api_error", geminiCustomCodeSkippedClientMessage)
+				_ = s.writeGeminiCompatClientError(c, clientFormat, http.StatusInternalServerError, "api_error", geminiCustomCodeSkippedClientMessage)
 			})
+		}
+		if clientFormat == geminiCompatFormatResponses {
+			return nil, s.writeGeminiResponsesMappedError(c, account, resp.StatusCode, requestID, evBody)
 		}
 		return nil, s.writeGeminiChatCompletionsMappedError(c, account, resp.StatusCode, requestID, evBody)
 	}
@@ -251,7 +304,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	var usage *ClaudeUsage
 	var firstTokenMs *int
 	if clientStream {
-		streamRes, err := s.handleChatCompletionsStreamingResponseFromGemini(c, resp, startTime, originalModel, account.Type == AccountTypeOAuth, includeUsage)
+		streamRes, err := s.handleChatCompletionsStreamingResponseFromGemini(c, resp, startTime, originalModel, account.Type == AccountTypeOAuth, includeUsage, clientFormat)
 		if err != nil {
 			return nil, err
 		}
@@ -260,17 +313,31 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	} else if useUpstreamStream {
 		collected, usageObj, err := collectGeminiSSE(resp.Body, account.Type == AccountTypeOAuth)
 		if err != nil {
-			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream stream")
+			return nil, s.writeGeminiCompatClientError(c, clientFormat, http.StatusBadGateway, "upstream_error", "Failed to read upstream stream")
 		}
 		collectedBytes, _ := json.Marshal(collected)
-		chatResp, usageObj2, err := geminiResponseToChatCompletions(collected, originalModel, collectedBytes, usageObj)
-		if err != nil {
-			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
+		if isGeminiEmptyResponseBody(collectedBytes) {
+			s.markGeminiEmptyResponse(c, account, false, requestID)
+			return nil, geminiEmptyResponseFailoverError(false, collectedBytes)
 		}
-		c.JSON(http.StatusOK, chatResp)
-		usage = usageObj2
+		if clientFormat == geminiCompatFormatResponses {
+			responsesResp, usageObj2, err := geminiResponseToResponses(collected, originalModel, collectedBytes, usageObj)
+			if err != nil {
+				return nil, s.writeGeminiCompatClientError(c, clientFormat, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
+			}
+			c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+			c.JSON(http.StatusOK, responsesResp)
+			usage = usageObj2
+		} else {
+			chatResp, usageObj2, err := geminiResponseToChatCompletions(collected, originalModel, collectedBytes, usageObj)
+			if err != nil {
+				return nil, s.writeGeminiCompatClientError(c, clientFormat, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
+			}
+			c.JSON(http.StatusOK, chatResp)
+			usage = usageObj2
+		}
 	} else {
-		usageResp, err := s.handleChatCompletionsNonStreamingResponseFromGemini(c, resp, originalModel, account.Type == AccountTypeOAuth)
+		usageResp, err := s.handleChatCompletionsNonStreamingResponseFromGemini(c, resp, originalModel, account, requestID, clientFormat)
 		if err != nil {
 			return nil, err
 		}
@@ -451,31 +518,77 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsNonStreamingResponseF
 	c *gin.Context,
 	resp *http.Response,
 	originalModel string,
-	isOAuth bool,
+	account *Account,
+	upstreamRequestID string,
+	clientFormat geminiCompatClientFormat,
 ) (*ClaudeUsage, error) {
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
 	}
+	isOAuth := account != nil && account.Type == AccountTypeOAuth
 	if isOAuth {
 		if unwrappedBody, uwErr := unwrapGeminiResponse(respBody); uwErr == nil {
 			respBody = unwrappedBody
 		}
 	}
+	if isGeminiEmptyResponseBody(respBody) {
+		s.markGeminiEmptyResponse(c, account, false, upstreamRequestID)
+		return nil, geminiEmptyResponseFailoverError(false, respBody)
+	}
 
 	var geminiResp map[string]any
 	if err := json.Unmarshal(respBody, &geminiResp); err != nil {
-		return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
+		return nil, s.writeGeminiCompatClientError(c, clientFormat, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
+	}
+
+	if clientFormat == geminiCompatFormatResponses {
+		responsesResp, usage, err := geminiResponseToResponses(geminiResp, originalModel, respBody, nil)
+		if err != nil {
+			return nil, s.writeGeminiCompatClientError(c, clientFormat, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
+		}
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		c.JSON(http.StatusOK, responsesResp)
+		return usage, nil
 	}
 
 	chatResp, usage, err := geminiResponseToChatCompletions(geminiResp, originalModel, respBody, nil)
 	if err != nil {
-		return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
+		return nil, s.writeGeminiCompatClientError(c, clientFormat, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
 	}
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	c.JSON(http.StatusOK, chatResp)
 	return usage, nil
+}
+
+func geminiResponseToResponses(
+	geminiResp map[string]any,
+	originalModel string,
+	rawData []byte,
+	usageOverride *ClaudeUsage,
+) (*apicompat.ResponsesResponse, *ClaudeUsage, error) {
+	claudeRespMap, usage := convertGeminiToClaudeMessage(geminiResp, originalModel, rawData, true)
+	if usageOverride != nil && (usageOverride.InputTokens > 0 || usageOverride.OutputTokens > 0 || usageOverride.CacheReadInputTokens > 0) {
+		usage = usageOverride
+		if usageMap, ok := claudeRespMap["usage"].(map[string]any); ok {
+			usageMap["input_tokens"] = usage.InputTokens
+			usageMap["output_tokens"] = usage.OutputTokens
+			usageMap["cache_read_input_tokens"] = usage.CacheReadInputTokens
+		}
+	}
+	claudeBytes, err := json.Marshal(claudeRespMap)
+	if err != nil {
+		return nil, nil, err
+	}
+	var anthropicResp apicompat.AnthropicResponse
+	if err := json.Unmarshal(claudeBytes, &anthropicResp); err != nil {
+		return nil, nil, err
+	}
+	responsesResp := apicompat.AnthropicToResponsesResponse(&anthropicResp)
+	responsesResp.Model = originalModel
+	return responsesResp, usage, nil
 }
 
 func geminiResponseToChatCompletions(
@@ -513,6 +626,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 	originalModel string,
 	isOAuth bool,
 	includeUsage bool,
+	clientFormat geminiCompatClientFormat,
 ) (*geminiStreamResult, error) {
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -552,6 +666,16 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 	emitAnthropicEvent := func(evt *apicompat.AnthropicStreamEvent) bool {
 		responsesEvents := apicompat.AnthropicEventToResponsesEvents(evt, anthState)
 		for _, resEvt := range responsesEvents {
+			if clientFormat == geminiCompatFormatResponses {
+				sse, err := apicompat.ResponsesEventToSSE(resEvt)
+				if err != nil {
+					continue
+				}
+				if _, err := io.WriteString(c.Writer, sse); err != nil {
+					return true
+				}
+				continue
+			}
 			chunks := apicompat.ResponsesEventToChatChunks(&resEvt, ccState)
 			for _, chunk := range chunks {
 				if disconnected := writeChatChunk(chunk); disconnected {
@@ -786,6 +910,16 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 	}
 
 	for _, resEvt := range apicompat.FinalizeAnthropicResponsesStream(anthState) {
+		if clientFormat == geminiCompatFormatResponses {
+			sse, err := apicompat.ResponsesEventToSSE(resEvt)
+			if err != nil {
+				continue
+			}
+			if _, err := io.WriteString(c.Writer, sse); err != nil {
+				return &geminiStreamResult{usage: &usage, firstTokenMs: firstTokenMs}, nil
+			}
+			continue
+		}
 		chunks := apicompat.ResponsesEventToChatChunks(&resEvt, ccState)
 		for _, chunk := range chunks {
 			if disconnected := writeChatChunk(chunk); disconnected {
@@ -793,13 +927,14 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 			}
 		}
 	}
-	for _, chunk := range apicompat.FinalizeResponsesChatStream(ccState) {
-		if disconnected := writeChatChunk(chunk); disconnected {
-			return &geminiStreamResult{usage: &usage, firstTokenMs: firstTokenMs}, nil
+	if clientFormat != geminiCompatFormatResponses {
+		for _, chunk := range apicompat.FinalizeResponsesChatStream(ccState) {
+			if disconnected := writeChatChunk(chunk); disconnected {
+				return &geminiStreamResult{usage: &usage, firstTokenMs: firstTokenMs}, nil
+			}
 		}
+		_, _ = io.WriteString(c.Writer, "data: [DONE]\n\n")
 	}
-
-	_, _ = io.WriteString(c.Writer, "data: [DONE]\n\n")
 	flusher.Flush()
 
 	return &geminiStreamResult{usage: &usage, firstTokenMs: firstTokenMs}, nil
@@ -909,4 +1044,65 @@ func (s *GeminiMessagesCompatService) writeChatCompletionsError(c *gin.Context, 
 		},
 	})
 	return fmt.Errorf("%s", message)
+}
+
+func (s *GeminiMessagesCompatService) writeGeminiCompatClientError(c *gin.Context, clientFormat geminiCompatClientFormat, status int, errType, message string) error {
+	if clientFormat == geminiCompatFormatResponses {
+		writeResponsesError(c, status, errType, message)
+		return fmt.Errorf("%s", message)
+	}
+	return s.writeChatCompletionsError(c, status, errType, message)
+}
+
+func (s *GeminiMessagesCompatService) writeGeminiResponsesMappedError(
+	c *gin.Context,
+	account *Account,
+	upstreamStatus int,
+	upstreamRequestID string,
+	body []byte,
+) error {
+	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	setOpsUpstreamError(c, upstreamStatus, upstreamMsg, "")
+	if account != nil {
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: upstreamStatus,
+			UpstreamRequestID:  upstreamRequestID,
+			Kind:               "http_error",
+			Message:            upstreamMsg,
+		})
+	}
+	if status, errType, errMsg, matched := applyErrorPassthroughRule(
+		c,
+		PlatformGemini,
+		upstreamStatus,
+		body,
+		http.StatusBadGateway,
+		"upstream_error",
+		"Upstream request failed",
+	); matched {
+		writeResponsesError(c, status, errType, errMsg)
+		return fmt.Errorf("%s", errMsg)
+	}
+	statusCode := mapUpstreamStatusCode(upstreamStatus)
+	errType := "server_error"
+	errMsg := "Upstream request failed"
+	if upstreamMsg != "" {
+		errMsg = upstreamMsg
+	}
+	switch upstreamStatus {
+	case http.StatusBadRequest:
+		statusCode = http.StatusBadRequest
+		errType = "invalid_request_error"
+	case http.StatusNotFound:
+		statusCode = http.StatusNotFound
+		errType = "not_found_error"
+	case http.StatusTooManyRequests:
+		statusCode = http.StatusTooManyRequests
+		errType = "rate_limit_error"
+	}
+	writeResponsesError(c, statusCode, errType, errMsg)
+	return fmt.Errorf("%s", errMsg)
 }

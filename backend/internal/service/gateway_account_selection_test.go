@@ -114,7 +114,7 @@ func TestSortAccountsByPriorityAndLastUsed_MixedPriorityAndTime(t *testing.T) {
 // --- filterByMinPriority ---
 
 func TestFilterByMinPriority_Empty(t *testing.T) {
-	result := filterByMinPriority(nil)
+	result := filterByMinPriority(nil, nil)
 	require.Nil(t, result)
 }
 
@@ -125,7 +125,7 @@ func TestFilterByMinPriority_SelectsMinPriority(t *testing.T) {
 		makeAccWithLoad(3, 1, 20, nil, AccountTypeAPIKey),
 		makeAccWithLoad(4, 2, 10, nil, AccountTypeAPIKey),
 	}
-	result := filterByMinPriority(accounts)
+	result := filterByMinPriority(accounts, nil)
 	require.Len(t, result, 2)
 	require.Equal(t, int64(2), result[0].account.ID)
 	require.Equal(t, int64(3), result[1].account.ID)

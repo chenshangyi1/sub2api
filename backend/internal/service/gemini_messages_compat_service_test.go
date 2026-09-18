@@ -564,7 +564,7 @@ func TestGeminiHandleNativeNonStreamingResponse_DebugDisabledDoesNotEmitHeaderLo
 		Body: io.NopCloser(strings.NewReader(`{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2}}`)),
 	}
 
-	usage, err := svc.handleNativeNonStreamingResponse(c, resp, false)
+	usage, err := svc.handleNativeNonStreamingResponse(c, resp, false, nil, "")
 	require.NoError(t, err)
 	require.NotNil(t, usage)
 	require.False(t, logSink.ContainsMessage("[GeminiAPI]"), "debug 关闭时不应输出 Gemini 响应头日志")
@@ -898,6 +898,11 @@ func TestExtractGeminiUsage(t *testing.T) {
 			if got.CacheReadInputTokens != tt.wantUsage.CacheReadInputTokens {
 				t.Errorf("CacheReadInputTokens: 期望 %d，实际 %d", tt.wantUsage.CacheReadInputTokens, got.CacheReadInputTokens)
 			}
+			// Gemini usageMetadata 只有 cachedContentTokenCount（缓存命中），没有缓存写入
+			// 的 token 类别：cache_creation_input_tokens 恒为 0，计费侧不会产生缓存创建分项。
+			if got.CacheCreationInputTokens != 0 {
+				t.Errorf("CacheCreationInputTokens: 期望 0，实际 %d", got.CacheCreationInputTokens)
+			}
 		})
 	}
 }
@@ -1000,6 +1005,12 @@ func TestParseGeminiRateLimitResetTime(t *testing.T) {
 			input:       `Please retry in 30s`,
 			wantNil:     false,
 			approxDelta: 30,
+		},
+		{
+			name:        "reset after compact duration",
+			input:       `{"error":{"code":429,"message":"You have exhausted your capacity on this model. Your quota will reset after 6h53m10s."}}`,
+			wantNil:     false,
+			approxDelta: int64(time.Hour / time.Second),
 		},
 		{
 			name:    "完全无匹配",
@@ -1129,7 +1140,7 @@ func TestGeminiMessagesHandleStreamingResponse_TopUpAbortSurfacesSentinel(t *tes
 	// 上游持续下发可见文本增量，跨预留窗口后触发补扣 → 失败中止。
 	var b strings.Builder
 	for i := 0; i < 40; i++ {
-		b.WriteString(`data: {"candidates":[{"content":{"parts":[{"text":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}]}` + "\n\n")
+		_, _ = b.WriteString(`data: {"candidates":[{"content":{"parts":[{"text":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}]}` + "\n\n")
 	}
 	resp := &http.Response{
 		StatusCode: http.StatusOK,

@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -166,6 +167,125 @@ func TestListPlazaGroups_CompositeAndOrdinaryGroupsDoNotLeakPlatforms(t *testing
 		byName["composite"].Models[0].Platform,
 		byName["composite"].Models[1].Platform,
 	})
+}
+
+func TestListPlazaGroups_DoesNotFallbackToPlatformDefaultCatalog(t *testing.T) {
+	groups := []Group{{ID: 10, Name: "openai-empty", Platform: PlatformOpenAI, RateMultiplier: 1}}
+	svc := newPlazaService(nil, groups, nil)
+	svc.SetAccountRepo(&modelsListAccountRepoStub{byGroup: map[int64][]Account{
+		10: {{ID: 1, Platform: PlatformOpenAI}},
+	}})
+
+	out, err := svc.ListGroups(context.Background())
+
+	require.NoError(t, err)
+	require.Empty(t, out, "empty mapping must not advertise the platform default catalog")
+}
+
+func TestListPlazaGroups_UsesAccountMappingNotPlatformDefaults(t *testing.T) {
+	groups := []Group{{ID: 10, Name: "openai-mapped", Platform: PlatformOpenAI, RateMultiplier: 1}}
+	svc := newPlazaService(nil, groups, nil)
+	svc.SetAccountRepo(&modelsListAccountRepoStub{byGroup: map[int64][]Account{
+		10: {{
+			ID:       1,
+			Platform: PlatformOpenAI,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{"gpt-5.4": "gpt-5.4", "GPT-5.4": "gpt-5.4"},
+			},
+		}},
+	}})
+
+	out, err := svc.ListGroups(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	require.Len(t, out[0].Models, 1)
+	require.Equal(t, "gpt-5.4", out[0].Models[0].Name)
+}
+
+func TestListPlazaGroups_FallsBackToAccountMappingWithoutChannels(t *testing.T) {
+	groups := []Group{{ID: 10, Name: "openai-mapped", Platform: PlatformOpenAI, RateMultiplier: 1, UserVisible: true, UserVisibleSet: true}}
+	svc := newPlazaService(nil, groups, nil)
+	svc.SetAccountRepo(&modelsListAccountRepoStub{byGroup: map[int64][]Account{
+		10: {{
+			ID:       1,
+			Platform: PlatformOpenAI,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{"gpt-5.4": "gpt-5.4"},
+			},
+		}},
+	}})
+
+	out, err := svc.ListGroups(context.Background())
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	require.Equal(t, int64(10), out[0].ID)
+	require.Len(t, out[0].Models, 1)
+	require.Equal(t, "gpt-5.4", out[0].Models[0].Name)
+}
+
+func TestListPlazaGroups_AdaptiveParentMergesHiddenLeafMappings(t *testing.T) {
+	parent := Group{ID: 108, Name: "adaptive-parent", Platform: PlatformOpenAI, RateMultiplier: 1, UserVisible: true, UserVisibleSet: true}
+	leaf := Group{ID: 14, Name: "gpt-leaf", Platform: PlatformOpenAI, RateMultiplier: 1, UserVisible: false, UserVisibleSet: true}
+	svc := newPlazaService(nil, []Group{parent, leaf}, nil)
+	svc.SetAdaptivePool(stubAdaptivePoolRepo{snapshot: &AdaptivePoolSnapshot{
+		ParentGroupID: 108,
+		Platform:      PlatformOpenAI,
+		Enabled:       true,
+		AllowHybrid:   true,
+		Members:       []AdaptiveLeafRef{{LeafGroupID: 14, Enabled: true}},
+	}})
+	svc.SetAccountRepo(&modelsListAccountRepoStub{byGroup: map[int64][]Account{
+		14: {{
+			ID:       1,
+			Platform: PlatformOpenAI,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{"gpt-5.4": "gpt-5.4"},
+			},
+		}},
+	}})
+
+	out, err := svc.ListGroups(context.Background())
+	require.NoError(t, err)
+	require.Len(t, out, 1, "hidden leaf must not appear; parent should show leaf models")
+	require.Equal(t, int64(108), out[0].ID)
+	require.Len(t, out[0].Models, 1)
+	require.Equal(t, "gpt-5.4", out[0].Models[0].Name)
+}
+
+func TestListPlazaGroups_UsesGroupModelsListWhenAccountsHaveNoMapping(t *testing.T) {
+	groups := []Group{{
+		ID:             10,
+		Name:           "openai-list",
+		Platform:       PlatformOpenAI,
+		RateMultiplier: 1,
+		UserVisible:    true,
+		UserVisibleSet: true,
+		ModelsListConfig: GroupModelsListConfig{
+			Enabled: true,
+			Models:  []string{"gpt-5.4", "gpt-5.4-mini"},
+		},
+	}}
+	svc := newPlazaService(nil, groups, nil)
+	svc.SetAccountRepo(&modelsListAccountRepoStub{byGroup: map[int64][]Account{
+		10: {{ID: 1, Platform: PlatformOpenAI}},
+	}})
+
+	out, err := svc.ListGroups(context.Background())
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	require.Len(t, out[0].Models, 2)
+}
+
+func TestProviderSetWiresModelPlazaAccountAndAdaptiveFallbacks(t *testing.T) {
+	source, err := os.ReadFile("wire.go")
+	require.NoError(t, err)
+	require.Contains(t, string(source), "ProvideModelPlazaService,")
+	require.Contains(t, string(source), "svc.SetAdaptivePool(pool)")
+	require.Contains(t, string(source), "svc.SetAccountRepo(accountRepo)")
+	require.Contains(t, string(source), "ProvideAPIKeyService(")
+	require.Contains(t, string(source), "pool AdaptivePoolSnapshotRepository")
+	require.Contains(t, string(source), "svc.SetAdaptivePool(pool)")
 }
 
 func TestListPlazaGroups_InactiveChannelSkipped(t *testing.T) {
@@ -417,8 +537,38 @@ func TestListGroups_GeminiLegacyRuleShownAsMarginal(t *testing.T) {
 	require.Empty(t, m.OfficialPricing.Intervals)
 }
 
-func TestListGroups_GroupTokenCardOverridesChannelPricing(t *testing.T) {
-	channels := []Channel{plazaPricedChannel(1, "ch", []int64{10}, PlatformAnthropic, "claude-sonnet-4")}
+func TestListGroups_ChannelTokenPriceBeatsGroupCard(t *testing.T) {
+	channels := []Channel{{
+		ID: 1, Name: "国模", Status: StatusActive, GroupIDs: []int64{10},
+		ModelPricing: []ChannelModelPricing{{
+			Platform: PlatformOpenAI, Models: []string{"kimi-k3", "deepseek-v4-flash-vision-exp"},
+			BillingMode: BillingModeToken,
+			InputPrice:  testPtrFloat64(3e-6),
+			OutputPrice: testPtrFloat64(9e-6),
+		}},
+	}}
+	groups := []Group{{
+		ID: 10, Name: "国模", Platform: PlatformOpenAI, RateMultiplier: 0.15, LongContextPricingEnabled: true,
+		ModelPricing: []ChannelModelPricing{{
+			Models: []string{"kimi-k3"}, BillingMode: BillingModeToken,
+			InputPrice: testPtrFloat64(20e-6), OutputPrice: testPtrFloat64(100e-6),
+		}},
+	}}
+	svc := newPlazaServiceWithBilling(channels, groups, map[int64]string{10: PlatformOpenAI}, nil)
+	out, err := svc.ListGroups(context.Background())
+	require.NoError(t, err)
+	byName := plazaModelsByName(out[0].Models)
+	m := byName["kimi-k3"]
+	require.InDelta(t, 3e-6, *m.Pricing.InputPrice, 1e-15, "渠道填价覆盖分组价卡")
+	require.InDelta(t, 9e-6, *m.Pricing.OutputPrice, 1e-15)
+	require.Equal(t, 0.15, out[0].RateMultiplier)
+}
+
+func TestListGroups_GroupTokenCardUsedWhenChannelMissing(t *testing.T) {
+	channels := []Channel{{
+		ID: 1, Name: "ch", Status: StatusActive, GroupIDs: []int64{10},
+		ModelMapping: map[string]map[string]string{PlatformAnthropic: {"claude-sonnet-4": "claude-sonnet-4"}},
+	}}
 	groups := []Group{{
 		ID: 10, Name: "g", Platform: PlatformAnthropic, RateMultiplier: 1, LongContextPricingEnabled: true,
 		ModelPricing: []ChannelModelPricing{{Models: []string{"claude-sonnet-*"}, BillingMode: BillingModeToken, InputPrice: testPtrFloat64(1e-6)}},
@@ -427,7 +577,7 @@ func TestListGroups_GroupTokenCardOverridesChannelPricing(t *testing.T) {
 	out, err := svc.ListGroups(context.Background())
 	require.NoError(t, err)
 	m := out[0].Models[0]
-	require.InDelta(t, 1e-6, *m.Pricing.InputPrice, 1e-15, "分组价卡优先于渠道平价")
+	require.InDelta(t, 1e-6, *m.Pricing.InputPrice, 1e-15, "无渠道定价时分组价卡生效")
 	require.InDelta(t, 15e-6, *m.Pricing.OutputPrice, 1e-15, "卡未配置的项回落目录价")
 	require.Empty(t, m.Pricing.Intervals)
 }

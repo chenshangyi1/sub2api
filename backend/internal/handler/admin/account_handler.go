@@ -64,6 +64,7 @@ type AccountHandler struct {
 	grokImportProber        grokImportProber
 	upstreamBillingProbe    *service.UpstreamBillingProbeService
 	ollamaCloudUsage        *service.OllamaCloudUsageService
+	accountTraffic          *AccountTrafficHandler
 }
 
 // SetUpstreamBillingProbeService attaches the optional remote billing probe service.
@@ -73,6 +74,10 @@ func (h *AccountHandler) SetUpstreamBillingProbeService(probe *service.UpstreamB
 
 func (h *AccountHandler) SetOllamaCloudUsageService(usage *service.OllamaCloudUsageService) {
 	h.ollamaCloudUsage = usage
+}
+
+func (h *AccountHandler) SetAccountTrafficHandler(traffic *AccountTrafficHandler) {
+	h.accountTraffic = traffic
 }
 
 // NewAccountHandler creates a new admin account handler
@@ -124,6 +129,7 @@ type CreateAccountRequest struct {
 	RateMultiplier          *float64       `json:"rate_multiplier"`
 	LoadFactor              *int           `json:"load_factor"`
 	GroupIDs                []int64        `json:"group_ids"`
+	AccountGroups           []service.AccountGroup `json:"account_groups"`
 	ExpiresAt               *int64         `json:"expires_at"`
 	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
 	ProbeEnabled            *bool          `json:"upstream_billing_probe_enabled"`
@@ -145,6 +151,7 @@ type UpdateAccountRequest struct {
 	LoadFactor              *int           `json:"load_factor"`
 	Status                  string         `json:"status" binding:"omitempty,oneof=active inactive error"`
 	GroupIDs                *[]int64       `json:"group_ids"`
+	AccountGroups           []service.AccountGroup `json:"account_groups"`
 	ExpiresAt               *int64         `json:"expires_at"`
 	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
 	ProbeEnabled            *bool          `json:"upstream_billing_probe_enabled"`
@@ -165,6 +172,7 @@ type BulkUpdateAccountsRequest struct {
 	Status                  string                    `json:"status" binding:"omitempty,oneof=active inactive error"`
 	Schedulable             *bool                     `json:"schedulable"`
 	GroupIDs                *[]int64                  `json:"group_ids"`
+	AccountGroups           []service.AccountGroup    `json:"account_groups"`
 	Credentials             map[string]any            `json:"credentials"`
 	Extra                   map[string]any            `json:"extra"`
 	ProbeEnabled            *bool                     `json:"upstream_billing_probe_enabled"`
@@ -859,6 +867,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 			RateMultiplier:        req.RateMultiplier,
 			LoadFactor:            req.LoadFactor,
 			GroupIDs:              req.GroupIDs,
+			AccountGroups:         req.AccountGroups,
 			ExpiresAt:             req.ExpiresAt,
 			AutoPauseOnExpired:    req.AutoPauseOnExpired,
 			ProbeEnabled:          req.ProbeEnabled,
@@ -987,6 +996,7 @@ func (h *AccountHandler) Update(c *gin.Context) {
 		LoadFactor:            req.LoadFactor,
 		Status:                req.Status,
 		GroupIDs:              req.GroupIDs,
+		AccountGroups:         req.AccountGroups,
 		ExpiresAt:             req.ExpiresAt,
 		AutoPauseOnExpired:    req.AutoPauseOnExpired,
 		ProbeEnabled:          req.ProbeEnabled,
@@ -1010,6 +1020,12 @@ func (h *AccountHandler) Update(c *gin.Context) {
 	}
 
 	// OpenAI APIKey: credentials 修改后重新探测上游能力（base_url/api_key 可能变更）。
+	if h.accountTraffic != nil && account.Extra[service.AccountTrafficPolicyKey] != nil {
+		if err := h.accountTraffic.traffic.Sync(c.Request.Context(), account); err != nil {
+			slog.Warn("account_traffic_sync_after_edit_failed", "account_id", account.ID, "error", err)
+			c.Header("X-Account-Traffic-State", "unavailable")
+		}
+	}
 	// 异步执行，探测失败不影响账号更新响应。
 	if len(req.Credentials) > 0 {
 		h.scheduleOpenAIResponsesProbe(account)
@@ -2111,6 +2127,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		req.Status != "" ||
 		req.Schedulable != nil ||
 		req.GroupIDs != nil ||
+		req.AccountGroups != nil ||
 		len(req.Credentials) > 0 ||
 		len(req.Extra) > 0 ||
 		req.ProbeEnabled != nil
@@ -2132,6 +2149,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		Status:                req.Status,
 		Schedulable:           req.Schedulable,
 		GroupIDs:              req.GroupIDs,
+		AccountGroups:         req.AccountGroups,
 		Credentials:           req.Credentials,
 		Extra:                 req.Extra,
 		ProbeEnabled:          req.ProbeEnabled,
@@ -2782,6 +2800,24 @@ func (h *AccountHandler) SyncUpstreamModels(c *gin.Context) {
 	}
 
 	models, err := h.accountTestService.FetchUpstreamSupportedModels(c.Request.Context(), account)
+	status := service.UpstreamModelSyncStatusFresh
+	updates := map[string]any{}
+	if err == nil {
+		updates[service.UpstreamModelsExtraKey] = models
+		updates[service.UpstreamModelsSyncedAtExtraKey] = time.Now().UTC().Format(time.RFC3339)
+		updates[service.UpstreamModelsSourceExtraKey] = "models_api"
+		updates[service.UpstreamModelsIdentityExtraKey] = account.UpstreamModelsIdentity()
+	} else if account.UpstreamModelCapability().Status != service.UpstreamModelSyncStatusUnknown {
+		status = service.UpstreamModelSyncStatusStale
+	} else {
+		status = service.UpstreamModelSyncStatusUnknown
+	}
+	updates[service.UpstreamModelsSyncStatusExtraKey] = string(status)
+	if persistErr := h.adminService.UpdateAccountExtra(c.Request.Context(), accountID, updates); persistErr != nil {
+		slog.Warn("sync_upstream_models_persist_failed", "account_id", accountID)
+		response.InternalError(c, "Failed to persist upstream model snapshot")
+		return
+	}
 	if err != nil {
 		var syncErr *service.UpstreamModelSyncError
 		if errors.As(err, &syncErr) {
@@ -2807,23 +2843,44 @@ func (h *AccountHandler) SyncUpstreamModels(c *gin.Context) {
 // POST /api/v1/admin/accounts/models/sync-upstream-preview
 func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 	var req struct {
-		Platform string `json:"platform" binding:"required"`
-		Type     string `json:"type" binding:"required"`
-		BaseURL  string `json:"base_url"`
-		APIKey   string `json:"api_key" binding:"required"`
+		Platform     string            `json:"platform" binding:"required"`
+		Type         string            `json:"type" binding:"required"`
+		BaseURL      string            `json:"base_url"`
+		APIKey       string            `json:"api_key" binding:"required"`
+		APIProtocol  string            `json:"api_protocol"`
+		APIBaseURLs  map[string]string `json:"api_base_urls"`
+		ModelMapping map[string]string `json:"model_mapping"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 
+	modelMapping := make(map[string]any, len(req.ModelMapping))
+	for sourceModel, upstreamModel := range req.ModelMapping {
+		modelMapping[sourceModel] = upstreamModel
+	}
+	apiBaseURLs := make(map[string]any, len(req.APIBaseURLs))
+	for protocol, baseURL := range req.APIBaseURLs {
+		apiBaseURLs[protocol] = baseURL
+	}
+
+	credentials := map[string]any{
+		"api_key":       req.APIKey,
+		"base_url":      req.BaseURL,
+		"model_mapping": modelMapping,
+	}
+	if protocol := strings.TrimSpace(req.APIProtocol); protocol != "" {
+		credentials["api_protocol"] = protocol
+	}
+	if len(apiBaseURLs) > 0 {
+		credentials["api_base_urls"] = apiBaseURLs
+	}
+
 	tempAccount := &service.Account{
-		Platform: req.Platform,
-		Type:     req.Type,
-		Credentials: map[string]any{
-			"api_key":  req.APIKey,
-			"base_url": req.BaseURL,
-		},
+		Platform:    req.Platform,
+		Type:        req.Type,
+		Credentials: credentials,
 	}
 
 	if h.accountTestService == nil {

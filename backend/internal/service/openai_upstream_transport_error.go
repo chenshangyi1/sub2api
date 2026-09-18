@@ -65,6 +65,10 @@ var openAIPersistentTransportErrorMarkers = []string{
 //     The network-layer string markers ("connection refused", "no route to host",
 //     "network is unreachable", "no such host") are kept as a cross-platform safety
 //     net even though the typed checks should cover them on modern Go+Linux.
+func classifyUpstreamTransportError(err error) openAITransportErrorClass {
+	return classifyOpenAITransportError(err)
+}
+
 func classifyOpenAITransportError(err error) openAITransportErrorClass {
 	if err == nil {
 		return openAITransportErrorClass{}

@@ -161,46 +161,65 @@
             Grok
           </button>
         </div>
-        <!-- CN providers row: Kimi / Zhipu GLM / DeepSeek -->
+        <!-- Unified CN / video identity row -->
         <div class="mt-2 flex flex-wrap rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
           <button
             type="button"
-            @click="selectCNPlatform('kimi')"
+            @click="selectUnifiedPlatform('cn')"
             :class="[
               'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
-              form.platform === 'kimi'
-                ? 'bg-white text-pink-600 shadow-sm dark:bg-dark-600 dark:text-pink-400'
+              form.platform === 'cn'
+                ? 'bg-white text-rose-600 shadow-sm dark:bg-dark-600 dark:text-rose-400'
                 : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
             ]"
           >
-            <PlatformIcon platform="kimi" size="sm" />
-            Kimi
+            <PlatformIcon platform="cn" size="sm" />
+            {{ t('admin.accounts.platforms.cn') }}
           </button>
           <button
             type="button"
-            @click="selectCNPlatform('zhipu')"
+            @click="selectUnifiedPlatform('video')"
             :class="[
               'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
-              form.platform === 'zhipu'
-                ? 'bg-white text-indigo-600 shadow-sm dark:bg-dark-600 dark:text-indigo-400'
+              form.platform === 'video'
+                ? 'bg-white text-fuchsia-600 shadow-sm dark:bg-dark-600 dark:text-fuchsia-400'
                 : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
             ]"
           >
-            <PlatformIcon platform="zhipu" size="sm" />
-            Zhipu GLM
+            <PlatformIcon platform="video" size="sm" />
+            {{ t('admin.accounts.platforms.video') }}
           </button>
+        </div>
+        <div v-if="form.platform === 'cn'" class="mt-2 flex flex-wrap gap-2">
           <button
+            v-for="vendor in cnVendorOptions"
+            :key="vendor.value"
             type="button"
-            @click="selectCNPlatform('deepseek')"
+            @click="selectCNVendor(vendor.value)"
             :class="[
-              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
-              form.platform === 'deepseek'
-                ? 'bg-white text-teal-600 shadow-sm dark:bg-dark-600 dark:text-teal-400'
-                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+              'rounded-md px-3 py-1.5 text-xs font-medium transition-all',
+              cnVendor === vendor.value
+                ? 'bg-rose-600 text-white'
+                : 'bg-gray-100 text-gray-700 hover:bg-rose-50 dark:bg-dark-700 dark:text-gray-300'
             ]"
           >
-            <PlatformIcon platform="deepseek" size="sm" />
-            DeepSeek
+            {{ vendor.label }}
+          </button>
+        </div>
+        <div v-else-if="form.platform === 'video'" class="mt-2 flex flex-wrap gap-2">
+          <button
+            v-for="vendor in videoVendorOptions"
+            :key="vendor.value"
+            type="button"
+            @click="selectVideoVendor(vendor.value)"
+            :class="[
+              'rounded-md px-3 py-1.5 text-xs font-medium transition-all',
+              videoVendor === vendor.value
+                ? 'bg-fuchsia-600 text-white'
+                : 'bg-gray-100 text-gray-700 hover:bg-fuchsia-50 dark:bg-dark-700 dark:text-gray-300'
+            ]"
+          >
+            {{ vendor.label }}
           </button>
         </div>
       </div>
@@ -485,7 +504,7 @@
           </button>
           <!-- Coding Plan (kimi / zhipu only — DeepSeek has no coding plan) -->
           <button
-            v-if="form.platform !== 'deepseek'"
+            v-if="form.platform !== 'video' && cnVendor !== 'deepseek'"
             type="button"
             @click="accountMode = 'coding'"
             :class="[
@@ -562,7 +581,7 @@
             {{ t('admin.accounts.gemini.helpButton') }}
           </button>
         </div>
-        <div class="mt-2 grid grid-cols-3 gap-3" data-tour="account-form-type">
+        <div class="mt-2 grid grid-cols-2 gap-3 lg:grid-cols-4" data-tour="account-form-type">
           <button
             type="button"
             @click="accountCategory = 'oauth-based'"
@@ -637,6 +656,37 @@
 
           <button
             type="button"
+            @click="accountCategory = 'openai-responses'"
+            data-testid="gemini-account-type-openai-responses"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              accountCategory === 'openai-responses'
+                ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20'
+                : 'border-gray-200 hover:border-emerald-300 dark:border-dark-600 dark:hover:border-emerald-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                accountCategory === 'openai-responses'
+                  ? 'bg-emerald-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="terminal" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">
+                {{ t('admin.accounts.gemini.accountType.responsesTitle') }}
+              </span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.gemini.accountType.responsesDesc') }}
+              </span>
+            </div>
+          </button>
+
+          <button
+            type="button"
             @click="accountCategory = 'service_account'"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
@@ -664,6 +714,13 @@
               </span>
             </div>
           </button>
+        </div>
+
+        <div
+          v-if="accountCategory === 'openai-responses'"
+          class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-800/40 dark:bg-emerald-900/20 dark:text-emerald-200"
+        >
+          <p>{{ t('admin.accounts.gemini.accountType.responsesNote') }}</p>
         </div>
 
         <div
@@ -1249,7 +1306,7 @@
       </div>
 
       <!-- API Key input (only for apikey type, excluding Antigravity which has its own fields) -->
-      <div v-if="form.type === 'apikey' && form.platform !== 'antigravity'" class="space-y-4">
+      <div v-if="(form.type === 'apikey' || isGeminiOpenAIResponses) && form.platform !== 'antigravity'" class="space-y-4">
         <div v-if="!isCNPlatform || apiProtocol !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -1275,9 +1332,25 @@
           />
         </div>
         <div v-else>
-          <label class="input-label">{{ t('admin.accounts.cnProviders.apiProtocol.endpoints') }}</label>
-          <div class="mt-2 space-y-3">
-            <div v-for="item in cnAdaptiveProtocolOptions" :key="item.value">
+          <label class="input-label">{{ t('admin.accounts.cnProviders.apiProtocol.primary') }}</label>
+          <input
+            v-model="adaptiveBaseUrls.chat_completions"
+            type="text"
+            class="input"
+            data-testid="cn-adaptive-base-url-chat_completions"
+            @input="syncAdaptiveUrlsFromPrimary"
+          />
+          <p class="input-hint">{{ t('admin.accounts.cnProviders.apiProtocol.primaryHint') }}</p>
+          <CnBaseUrlPresets
+            class="mt-2"
+            :platform="cnPresetPlatform"
+            :mode="accountMode"
+            protocol="chat_completions"
+            :current-url="adaptiveBaseUrls.chat_completions"
+            @select="onCnPresetSelect"
+          />
+          <div class="mt-3 space-y-3">
+            <div v-for="item in cnAdaptiveOverrideOptions" :key="item.value">
               <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
                 {{ t(`admin.accounts.cnProviders.apiProtocol.${item.labelKey}`) }}
               </label>
@@ -1289,7 +1362,7 @@
               />
             </div>
           </div>
-          <p v-if="form.platform !== 'deepseek'" class="input-hint">
+          <p v-if="cnPresetPlatform !== 'deepseek' && cnPresetPlatform !== 'minimax'" class="input-hint">
             {{ t('admin.accounts.cnProviders.apiProtocol.responsesFallbackDesc') }}
           </p>
         </div>
@@ -1323,7 +1396,7 @@
         </div>
 
         <!-- Gemini API Key tier selection -->
-        <div v-if="form.platform === 'gemini'">
+        <div v-if="form.platform === 'gemini' && !isGeminiOpenAIResponses">
           <label class="input-label">{{ t('admin.accounts.gemini.tier.label') }}</label>
           <select v-model="geminiTierAIStudio" class="input">
             <option value="aistudio_free">{{ t('admin.accounts.gemini.tier.aiStudio.free') }}</option>
@@ -2880,8 +2953,9 @@
       <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <div>
           <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
-          <input v-model.number="form.concurrency" type="number" min="1" class="input"
-            @input="form.concurrency = Math.max(1, form.concurrency || 1)" />
+          <input v-model.number="form.concurrency" type="number" min="0" class="input"
+            @input="form.concurrency = Math.max(0, Number.isFinite(form.concurrency) ? form.concurrency : 0)" />
+          <p class="input-hint">{{ t('admin.accounts.concurrencyHint') }}</p>
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.loadFactor') }}</label>
@@ -2889,17 +2963,6 @@
             class="input" :placeholder="String(form.concurrency || 1)"
             @input="form.load_factor = (form.load_factor &amp;&amp; form.load_factor >= 1) ? form.load_factor : null" />
           <p class="input-hint">{{ t('admin.accounts.loadFactorHint') }}</p>
-        </div>
-        <div>
-          <label class="input-label">{{ t('admin.accounts.priority') }}</label>
-          <input
-            v-model.number="form.priority"
-            type="number"
-            min="1"
-            class="input"
-            data-tour="account-form-priority"
-          />
-          <p class="input-hint">{{ t('admin.accounts.priorityHint') }}</p>
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
@@ -3211,7 +3274,7 @@
 
       <!-- OpenAI APIKey Responses API support mode -->
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'apikey'"
+        v-if="(form.platform === 'openai' && accountCategory === 'apikey') || isGeminiOpenAIResponses"
         class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between gap-4">
@@ -3349,9 +3412,11 @@
         <GroupSelector
           v-if="!authStore.isSimpleMode"
           v-model="form.group_ids"
+          v-model:priorities="membershipPriorityByGroup"
           :groups="groups"
-          :platform="form.platform"
+          :platform="effectiveAccountPlatform"
           :mixed-scheduling="mixedScheduling"
+          show-priority
           data-tour="account-form-groups"
         />
       </div>
@@ -3744,7 +3809,8 @@ import type {
   CodexSessionImportMessage,
   OpenAICompactMode,
   OpenAIResponsesMode,
-  OpenAIEndpointCapability
+  OpenAIEndpointCapability,
+  AccountGroupMembership
 } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -3765,9 +3831,15 @@ import {
   applyAntigravityProjectID,
   applyHeaderOverride,
   applyInterceptWarmup,
-  defaultCNAdaptiveBaseUrls,
+  cnSupportsNativeResponses,
   defaultCNBaseUrl,
+  deriveCNAdaptiveBaseUrlsFromPrimary,
+  resolveCNAdaptiveBaseUrls,
+  isCNPlatform as isCNPlatformFn,
   isHeaderOverrideCapable,
+  isVideoPlatform,
+  type CnVendor,
+  type VideoVendor,
   validateHeaderOverrideRows,
   type CnAccountMode,
   type CnApiProtocol,
@@ -3817,6 +3889,7 @@ const oauthStepTitle = computed(() => {
 
 // Platform-specific hints for API Key type
 const baseUrlHint = computed(() => {
+  if (isGeminiOpenAIResponses.value) return t('admin.accounts.gemini.accountType.responsesNote')
   if (form.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
   if (form.platform === 'grok') return ''
@@ -3824,6 +3897,7 @@ const baseUrlHint = computed(() => {
 })
 
 const apiKeyHint = computed(() => {
+  if (isGeminiOpenAIResponses.value) return t('admin.accounts.openai.apiKeyHint')
   if (form.platform === 'openai') return t('admin.accounts.openai.apiKeyHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.apiKeyHint')
   if (form.platform === 'grok') return ''
@@ -3832,8 +3906,11 @@ const apiKeyHint = computed(() => {
 
 // Base URL / API Key 占位符：国产供应商随账号类型变化。
 const apiKeyBaseUrlPlaceholder = computed(() => {
+  if (isGeminiOpenAIResponses.value) {
+    return 'https://your-upstream/v1'
+  }
   if (isCNPlatform.value) {
-    return defaultCNBaseUrl(form.platform, accountMode.value, apiProtocol.value) || 'https://api.example.com'
+    return defaultCNBaseUrl(cnPresetPlatform.value, accountMode.value, apiProtocol.value) || 'https://api.example.com'
   }
   switch (form.platform) {
     case 'openai':
@@ -3848,6 +3925,9 @@ const apiKeyBaseUrlPlaceholder = computed(() => {
 })
 
 const apiKeyValuePlaceholder = computed(() => {
+  if (isGeminiOpenAIResponses.value) {
+    return 'sk-...'
+  }
   switch (form.platform) {
     case 'openai':
       return 'sk-proj-...'
@@ -3855,12 +3935,13 @@ const apiKeyValuePlaceholder = computed(() => {
       return 'AIza...'
     case 'grok':
       return 'xai-...'
+    case 'cn':
+    case 'video':
     case 'kimi':
+    case 'deepseek':
       return 'sk-...'
     case 'zhipu':
       return '<api-key>.<secret>'
-    case 'deepseek':
-      return 'sk-...'
     default:
       return 'sk-ant-...'
   }
@@ -3943,7 +4024,7 @@ interface TempUnschedRuleForm {
 // State
 const step = ref(1)
 const submitting = ref(false)
-const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
+const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account' | 'openai-responses'>('oauth-based') // UI selection for account category
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
@@ -3952,119 +4033,152 @@ const upstreamBillingAutoProbeEnabled = ref(true)
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）账号类型、API 协议与端点 ──
 const accountMode = ref<CnAccountMode>('payg')
 // API 协议决定转发端点与格式：cc=现有转换链，anthropic=原生直通（Claude Code），
-// responses=deepseek 原生 Responses 端点（Codex）。与账号类型正交。
+// responses=deepseek / kimi 原生 Responses 端点（Codex）。与账号类型正交。
 const apiProtocol = ref<CnApiProtocol>('adaptive')
 const adaptiveBaseUrls = ref<Record<CnNativeApiProtocol, string>>({
   chat_completions: '',
   anthropic: '',
   responses: ''
 })
-const isCNPlatform = computed(
-  () => form.platform === 'kimi' || form.platform === 'zhipu' || form.platform === 'deepseek'
-)
-// CnBaseUrlPresets 的 platform prop 是平台字面量联合类型，模板里不能写
-// `as` 断言（其中的 `|` 会被 eslint 误判为 Vue2 filter 语法），经此 computed 传递。
-const cnPresetPlatform = computed<'kimi' | 'zhipu' | 'deepseek'>(() => {
-  if (form.platform === 'kimi' || form.platform === 'zhipu' || form.platform === 'deepseek') {
-    return form.platform
-  }
-  return 'kimi'
-})
-// 当前平台可选的协议档（responses 仅 deepseek）。
+const isCNPlatform = computed(() => isCNPlatformFn(form.platform) || isVideoPlatform(form.platform))
+const cnVendor = ref<CnVendor>('kimi')
+const videoVendor = ref<VideoVendor>('sora')
+const cnVendorOptions = [
+  { value: 'kimi' as const, label: 'Kimi' },
+  { value: 'zhipu' as const, label: '智谱 GLM' },
+  { value: 'deepseek' as const, label: 'DeepSeek' },
+  { value: 'minimax' as const, label: 'MiniMax' },
+  { value: 'custom' as const, label: '自定义' }
+]
+const videoVendorOptions = [
+  { value: 'sora' as const, label: 'Sora' },
+  { value: 'kling' as const, label: 'Kling' },
+  { value: 'jimeng' as const, label: '即梦' },
+  { value: 'custom' as const, label: '自定义' }
+]
+const cnPresetPlatform = computed(() => (form.platform === 'cn' ? cnVendor.value : form.platform))
+// 当前平台可选的协议档（responses：deepseek / kimi）。
 const cnProtocolOptions = computed<Array<{ value: CnApiProtocol; labelKey: string }>>(() => {
   const opts: Array<{ value: CnApiProtocol; labelKey: string }> = [
     { value: 'adaptive', labelKey: 'adaptive' },
     { value: 'chat_completions', labelKey: 'chatCompletions' },
     { value: 'anthropic', labelKey: 'anthropic' }
   ]
-  if (form.platform === 'deepseek') {
+  if (cnSupportsNativeResponses(form.platform, cnVendor.value)) {
     opts.push({ value: 'responses', labelKey: 'responses' })
   }
   return opts
 })
-const cnAdaptiveProtocolOptions = computed<Array<{ value: CnNativeApiProtocol; labelKey: string }>>(() => {
+const cnAdaptiveOverrideOptions = computed<Array<{ value: CnNativeApiProtocol; labelKey: string }>>(() => {
   const opts: Array<{ value: CnNativeApiProtocol; labelKey: string }> = [
-    { value: 'chat_completions', labelKey: 'chatCompletions' },
     { value: 'anthropic', labelKey: 'anthropic' }
   ]
-  if (form.platform === 'deepseek') opts.push({ value: 'responses', labelKey: 'responses' })
+  if (cnSupportsNativeResponses(form.platform, cnVendor.value)) opts.push({ value: 'responses', labelKey: 'responses' })
   return opts
 })
 
-function resetAdaptiveBaseUrls(platform: 'kimi' | 'zhipu' | 'deepseek', mode: CnAccountMode) {
-  adaptiveBaseUrls.value = defaultCNAdaptiveBaseUrls(platform, mode)
+function syncAdaptiveUrlsFromPrimary() {
+  adaptiveBaseUrls.value = deriveCNAdaptiveBaseUrlsFromPrimary(
+    cnPresetPlatform.value,
+    accountMode.value,
+    adaptiveBaseUrls.value.chat_completions || apiKeyBaseUrl.value
+  )
+  apiKeyBaseUrl.value = adaptiveBaseUrls.value.chat_completions
+}
+
+function resetAdaptiveBaseUrls(platform: string, mode: CnAccountMode) {
+  adaptiveBaseUrls.value = deriveCNAdaptiveBaseUrlsFromPrimary(platform, mode, apiKeyBaseUrl.value)
 }
 // 当前选中平台的品牌色（选中卡片描边 / 图标底色），与 platformColors 取色一致。
 const cnAccentActiveClass = computed(() => {
-  switch (form.platform) {
+  if (form.platform === 'video') return 'border-fuchsia-500 bg-fuchsia-50 dark:bg-fuchsia-900/20'
+  switch (cnVendor.value) {
     case 'kimi':
       return 'border-pink-500 bg-pink-50 dark:bg-pink-900/20'
     case 'zhipu':
       return 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20'
     case 'deepseek':
       return 'border-teal-500 bg-teal-50 dark:bg-teal-900/20'
+    case 'minimax':
+      return 'border-amber-500 bg-amber-50 dark:bg-amber-900/20'
     default:
-      return 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
+      return 'border-rose-500 bg-rose-50 dark:bg-rose-900/20'
   }
 })
 const cnAccentIconClass = computed(() => {
-  switch (form.platform) {
+  if (form.platform === 'video') return 'bg-fuchsia-500 text-white'
+  switch (cnVendor.value) {
     case 'kimi':
       return 'bg-pink-500 text-white'
     case 'zhipu':
       return 'bg-indigo-500 text-white'
     case 'deepseek':
       return 'bg-teal-500 text-white'
+    case 'minimax':
+      return 'bg-amber-500 text-white'
     default:
-      return 'bg-primary-500 text-white'
+      return 'bg-rose-500 text-white'
   }
 })
-// 切换国产供应商平台：强制 apikey 类型，deepseek 无 coding 套餐故锁定 payg，
-// 协议回落 adaptive，并把 base url 重置为该平台默认端点。
-function selectCNPlatform(platform: 'kimi' | 'zhipu' | 'deepseek') {
+function selectUnifiedPlatform(platform: 'cn' | 'video') {
   form.platform = platform
   form.type = 'apikey'
   accountCategory.value = 'apikey'
   apiProtocol.value = 'adaptive'
-  if (platform === 'deepseek') {
+  if (platform === 'cn' && cnVendor.value === 'deepseek') {
     accountMode.value = 'payg'
   }
-  apiKeyBaseUrl.value = defaultCNBaseUrl(platform, accountMode.value, apiProtocol.value)
-  resetAdaptiveBaseUrls(platform, accountMode.value)
+  const preset = platform === 'cn' ? cnVendor.value : 'custom'
+  apiKeyBaseUrl.value = defaultCNBaseUrl(preset, accountMode.value, apiProtocol.value)
+  resetAdaptiveBaseUrls(preset, accountMode.value)
+}
+function selectCNVendor(vendor: CnVendor) {
+  cnVendor.value = vendor
+  if (vendor === 'deepseek') accountMode.value = 'payg'
+  apiProtocol.value = 'adaptive'
+  apiKeyBaseUrl.value = defaultCNBaseUrl(vendor, accountMode.value, apiProtocol.value)
+  resetAdaptiveBaseUrls(vendor, accountMode.value)
+}
+function selectVideoVendor(vendor: VideoVendor) {
+  videoVendor.value = vendor
 }
 // 账号类型 / 协议变更时同步默认 base url。
-watch(accountMode, (mode, previousMode) => {
+watch(accountMode, (mode) => {
   if (!isCNPlatform.value) return
   if (apiProtocol.value === 'adaptive') {
-    const previousDefaults = defaultCNAdaptiveBaseUrls(cnPresetPlatform.value, previousMode)
-    const nextDefaults = defaultCNAdaptiveBaseUrls(cnPresetPlatform.value, mode)
-    for (const item of cnAdaptiveProtocolOptions.value) {
-      if (!adaptiveBaseUrls.value[item.value] || adaptiveBaseUrls.value[item.value] === previousDefaults[item.value]) {
-        adaptiveBaseUrls.value[item.value] = nextDefaults[item.value]
-      }
-    }
+    adaptiveBaseUrls.value = resolveCNAdaptiveBaseUrls(
+      cnPresetPlatform.value,
+      mode,
+      adaptiveBaseUrls.value,
+      adaptiveBaseUrls.value.chat_completions || apiKeyBaseUrl.value
+    )
     apiKeyBaseUrl.value = adaptiveBaseUrls.value.chat_completions
     return
   }
-  apiKeyBaseUrl.value = defaultCNBaseUrl(form.platform, mode, apiProtocol.value)
+  apiKeyBaseUrl.value = defaultCNBaseUrl(cnPresetPlatform.value, mode, apiProtocol.value)
 })
 watch(apiProtocol, (protocol) => {
   if (!isCNPlatform.value) return
   if (protocol === 'adaptive') {
-    const defaults = defaultCNAdaptiveBaseUrls(cnPresetPlatform.value, accountMode.value)
-    for (const item of cnAdaptiveProtocolOptions.value) {
-      if (!adaptiveBaseUrls.value[item.value]) adaptiveBaseUrls.value[item.value] = defaults[item.value]
-    }
+    adaptiveBaseUrls.value = resolveCNAdaptiveBaseUrls(
+      cnPresetPlatform.value,
+      accountMode.value,
+      adaptiveBaseUrls.value,
+      adaptiveBaseUrls.value.chat_completions || apiKeyBaseUrl.value
+    )
     apiKeyBaseUrl.value = adaptiveBaseUrls.value.chat_completions
     return
   }
-  apiKeyBaseUrl.value = defaultCNBaseUrl(form.platform, accountMode.value, protocol)
+  apiKeyBaseUrl.value = defaultCNBaseUrl(cnPresetPlatform.value, accountMode.value, protocol)
 })
 // 点击预设端点：同时回填 base url、账号类型与协议。
 function onCnPresetSelect(preset: { mode: CnAccountMode; protocol: CnApiProtocol; url: string }) {
   accountMode.value = preset.mode
   apiProtocol.value = preset.protocol
   apiKeyBaseUrl.value = preset.url
+  if (preset.protocol === 'adaptive' || apiProtocol.value === 'adaptive') {
+    adaptiveBaseUrls.value = deriveCNAdaptiveBaseUrlsFromPrimary(cnPresetPlatform.value, preset.mode, preset.url)
+  }
 }
 
 const syncPreviewCredentials = computed(() => {
@@ -4072,12 +4186,35 @@ const syncPreviewCredentials = computed(() => {
   const baseUrl = isCNPlatform.value && apiProtocol.value === 'adaptive'
     ? adaptiveBaseUrls.value.chat_completions.trim() || apiKeyBaseUrl.value.trim()
     : apiKeyBaseUrl.value.trim()
-  return {
+  const preview: {
+    platform: string
+    type: string
+    base_url?: string
+    api_key: string
+    api_protocol?: string
+    api_base_urls?: Record<string, string>
+    model_mapping?: Record<string, string>
+  } = {
     platform: form.platform,
     type: form.type,
     base_url: baseUrl || undefined,
     api_key: apiKeyValue.value
   }
+  if (form.platform === 'gemini' && accountCategory.value === 'apikey') {
+    const customBase = (baseUrl || '').toLowerCase()
+    const isOfficialGoogle = customBase.includes('generativelanguage.googleapis.com')
+    if (isGeminiOpenAIResponses.value || (customBase && !isOfficialGoogle)) {
+      preview.api_protocol = isGeminiOpenAIResponses.value ? 'responses' : (apiProtocol.value || 'chat_completions')
+      if (isCNPlatform.value && apiProtocol.value === 'adaptive') {
+        preview.api_base_urls = {
+          chat_completions: adaptiveBaseUrls.value.chat_completions.trim() || baseUrl,
+          anthropic: adaptiveBaseUrls.value.anthropic.trim(),
+          responses: adaptiveBaseUrls.value.responses.trim()
+        }
+      }
+    }
+  }
+  return preview
 })
 
 const editQuotaLimit = ref<number | null>(null)
@@ -4391,7 +4528,7 @@ const openAIWSModeConcurrencyHintKey = computed(() =>
 )
 
 const isOpenAIModelRestrictionDisabled = computed(() =>
-  form.platform === 'openai' && openaiPassthroughEnabled.value
+  (form.platform === 'openai' || isGeminiOpenAIResponses.value) && openaiPassthroughEnabled.value
 )
 
 const mixedChannelWarningMessageText = computed(() => {
@@ -4448,6 +4585,23 @@ const tempUnschedPresets = computed(() => [
   }
 ])
 
+const membershipPriorityByGroup = ref<Record<number, number>>({})
+
+const normalizeMembershipPriority = (value: unknown): number => {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return 1
+  }
+  return Math.trunc(parsed)
+}
+
+const buildAccountGroupsPayload = (groupIds: number[]): AccountGroupMembership[] =>
+  groupIds.map((groupId) => ({
+    account_id: 0,
+    group_id: groupId,
+    priority: normalizeMembershipPriority(membershipPriorityByGroup.value[groupId])
+  }))
+
 const form = reactive({
   name: '',
   notes: '',
@@ -4457,11 +4611,15 @@ const form = reactive({
   proxy_id: null as number | null,
   concurrency: 10,
   load_factor: null as number | null,
-  priority: 1,
   rate_multiplier: 1,
   group_ids: [] as number[],
   expires_at: null as number | null
 })
+
+const isGeminiOpenAIResponses = computed(
+  () => form.platform === 'gemini' && accountCategory.value === 'openai-responses'
+)
+const effectiveAccountPlatform = computed(() => (isGeminiOpenAIResponses.value ? 'openai' : form.platform))
 
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
@@ -4565,8 +4723,9 @@ watch(
   () => form.platform,
   (newPlatform) => {
     // Reset base URL based on platform
-    if (newPlatform === 'kimi' || newPlatform === 'zhipu' || newPlatform === 'deepseek') {
-      apiKeyBaseUrl.value = defaultCNBaseUrl(newPlatform, accountMode.value, apiProtocol.value)
+    if (isCNPlatformFn(newPlatform) || isVideoPlatform(newPlatform)) {
+      const preset = newPlatform === 'cn' ? cnVendor.value : 'custom'
+      apiKeyBaseUrl.value = defaultCNBaseUrl(preset, accountMode.value, apiProtocol.value)
     } else {
       apiKeyBaseUrl.value =
         (newPlatform === 'openai')
@@ -4607,6 +4766,9 @@ watch(
       accountCategory.value = 'oauth-based'
     }
     if (newPlatform !== 'anthropic' && accountCategory.value === 'bedrock') {
+      accountCategory.value = 'oauth-based'
+    }
+    if (newPlatform !== 'gemini' && accountCategory.value === 'openai-responses') {
       accountCategory.value = 'oauth-based'
     }
     // Reset Bedrock fields when switching platforms
@@ -4654,6 +4816,20 @@ watch(
     grokOAuth.resetState()
   }
 )
+
+watch(accountCategory, (category) => {
+  if (form.platform !== 'gemini' || category !== 'openai-responses') {
+    return
+  }
+  if (!apiKeyBaseUrl.value.trim() || apiKeyBaseUrl.value.includes('generativelanguage.googleapis.com')) {
+    apiKeyBaseUrl.value = 'https://api.openai.com'
+  }
+  openAIResponsesMode.value = 'force_responses'
+  const geminiGroupIds = props.groups.filter((group) => group.platform === 'gemini').map((group) => group.id)
+  if (geminiGroupIds.length > 0 && form.group_ids.length === 0) {
+    form.group_ids = geminiGroupIds
+  }
+})
 
 // Gemini AI Studio OAuth availability (requires operator-configured OAuth client)
 watch(
@@ -5011,9 +5187,9 @@ const resetForm = () => {
   form.proxy_id = null
   form.concurrency = 10
   form.load_factor = null
-  form.priority = 1
   form.rate_multiplier = 1
   form.group_ids = []
+  membershipPriorityByGroup.value = {}
   form.expires_at = null
   accountCategory.value = 'oauth-based'
   addMethod.value = 'oauth'
@@ -5120,7 +5296,7 @@ const handleClose = () => {
 }
 
 const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknown> | undefined => {
-  if (form.platform !== 'openai') {
+  if (form.platform !== 'openai' && !isGeminiOpenAIResponses.value) {
     return base
   }
 
@@ -5128,7 +5304,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   if (accountCategory.value === 'oauth-based') {
     extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
     extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
-  } else if (accountCategory.value === 'apikey') {
+  } else if (accountCategory.value === 'apikey' || isGeminiOpenAIResponses.value) {
     extra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
     extra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
   }
@@ -5178,7 +5354,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   }
 
   if (
-    accountCategory.value === 'apikey' &&
+    (accountCategory.value === 'apikey' || isGeminiOpenAIResponses.value) &&
     openAITextGenerationCapabilityEnabled.value &&
     openAIResponsesMode.value !== 'auto'
   ) {
@@ -5464,8 +5640,9 @@ const handleSubmit = async () => {
   }
 
   // Determine default base URL based on platform
-  const defaultBaseUrl =
-    form.platform === 'openai'
+  const defaultBaseUrl = isGeminiOpenAIResponses.value
+    ? 'https://api.openai.com'
+    : form.platform === 'openai'
       ? 'https://api.openai.com'
       : form.platform === 'gemini'
         ? 'https://generativelanguage.googleapis.com'
@@ -5478,27 +5655,31 @@ const handleSubmit = async () => {
     base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
     api_key: apiKeyValue.value.trim()
   }
-  if (form.platform === 'gemini') {
+  if (form.platform === 'gemini' && !isGeminiOpenAIResponses.value) {
     credentials.tier_id = geminiTierAIStudio.value
   }
 
   // 国产供应商：账号模式 + 协议 + 对应端点写入凭据；后端按 account_mode 路由
   // 额度/余额探测，按 api_protocol 路由转发端点与格式。注意 CN apikey 走本函数
   // 的通用路径（直接 doCreateAccount），不经过 createAccountAndFinish。
-  if (form.platform === 'kimi' || form.platform === 'zhipu' || form.platform === 'deepseek') {
+  if (isCNPlatformFn(form.platform) || isVideoPlatform(form.platform)) {
     credentials.account_mode = accountMode.value
     credentials.api_protocol = apiProtocol.value
+    if (form.platform === 'cn') credentials.cn_vendor = cnVendor.value
+    if (form.platform === 'video') credentials.video_vendor = videoVendor.value
+    const preset = form.platform === 'cn' ? cnVendor.value : 'custom'
     if (apiProtocol.value === 'adaptive') {
-      const defaults = defaultCNAdaptiveBaseUrls(form.platform, accountMode.value)
-      const protocolBaseUrls: Record<string, string> = {}
-      for (const item of cnAdaptiveProtocolOptions.value) {
-        protocolBaseUrls[item.value] = (adaptiveBaseUrls.value[item.value] || defaults[item.value]).trim()
-      }
+      const protocolBaseUrls = resolveCNAdaptiveBaseUrls(
+        preset,
+        accountMode.value,
+        adaptiveBaseUrls.value,
+        apiKeyBaseUrl.value
+      )
       credentials.api_base_urls = protocolBaseUrls
       credentials.base_url = protocolBaseUrls.chat_completions
     }
     const resolvedCNBase = (
-      apiKeyBaseUrl.value.trim() || defaultCNBaseUrl(form.platform, accountMode.value, apiProtocol.value)
+      apiKeyBaseUrl.value.trim() || defaultCNBaseUrl(preset, accountMode.value, apiProtocol.value)
     ).trim()
     if (apiProtocol.value !== 'adaptive' && resolvedCNBase) {
       credentials.base_url = resolvedCNBase
@@ -5512,7 +5693,7 @@ const handleSubmit = async () => {
       credentials.model_mapping = modelMapping
     }
   }
-  if (form.platform === 'openai') {
+  if (form.platform === 'openai' || isGeminiOpenAIResponses.value) {
     applyOpenAIEndpointCapabilities(credentials)
     const compactModelMapping = buildOpenAICompactModelMapping()
     if (compactModelMapping) {
@@ -5537,7 +5718,7 @@ const handleSubmit = async () => {
   }
 
   // Add header override if enabled for this API-key platform
-  if (isHeaderOverrideCapable(form.platform, 'apikey')) {
+  if (isHeaderOverrideCapable(isGeminiOpenAIResponses.value ? 'openai' : form.platform, 'apikey')) {
     if (headerOverrideEnabled.value) {
       const headerError = validateHeaderOverrideRows(headerOverrideRows.value)
       if (headerError) {
@@ -5558,6 +5739,9 @@ const handleSubmit = async () => {
 
   await doCreateAccount({
     ...form,
+    platform: isGeminiOpenAIResponses.value ? 'openai' : form.platform,
+    type: isGeminiOpenAIResponses.value ? 'apikey' : form.type,
+    account_groups: buildAccountGroupsPayload(form.group_ids),
     group_ids: form.group_ids,
     extra,
     upstream_billing_probe_enabled: upstreamBillingAutoProbeEnabled.value,
@@ -5685,7 +5869,7 @@ const createAccountAndFinish = async (
     proxy_id: form.proxy_id,
     concurrency: form.concurrency,
     load_factor: form.load_factor ?? undefined,
-    priority: form.priority,
+    account_groups: buildAccountGroupsPayload(form.group_ids),
     rate_multiplier: form.rate_multiplier,
     group_ids: form.group_ids,
     expires_at: form.expires_at,
@@ -5752,7 +5936,7 @@ const handleGrokValidateRT = async (refreshTokenInput: string) => {
           proxy_id: form.proxy_id,
           concurrency: form.concurrency,
           load_factor: form.load_factor ?? undefined,
-          priority: form.priority,
+          account_groups: buildAccountGroupsPayload(form.group_ids),
           rate_multiplier: form.rate_multiplier,
           group_ids: form.group_ids,
           expires_at: form.expires_at,
@@ -5820,7 +6004,7 @@ const handleGrokImportSSO = async (ssoInput: string) => {
       credentials,
       concurrency: form.concurrency,
       load_factor: form.load_factor ?? undefined,
-      priority: form.priority,
+      account_groups: buildAccountGroupsPayload(form.group_ids),
       rate_multiplier: form.rate_multiplier,
       expires_at: form.expires_at,
       auto_pause_on_expired: autoPauseOnExpired.value
@@ -5929,7 +6113,7 @@ const handleGrokAuthorizePassword = async (emailPasswordInput: string) => {
           proxy_id: form.proxy_id,
           concurrency: form.concurrency,
           load_factor: form.load_factor ?? undefined,
-          priority: form.priority,
+          account_groups: buildAccountGroupsPayload(form.group_ids),
           rate_multiplier: form.rate_multiplier,
           group_ids: form.group_ids,
           expires_at: form.expires_at,
@@ -6028,7 +6212,7 @@ const handleOpenAIExchange = async (authCode: string) => {
         proxy_id: form.proxy_id,
         concurrency: form.concurrency,
         load_factor: form.load_factor ?? undefined,
-        priority: form.priority,
+        account_groups: buildAccountGroupsPayload(form.group_ids),
         rate_multiplier: form.rate_multiplier,
         group_ids: form.group_ids,
         expires_at: form.expires_at,
@@ -6133,7 +6317,7 @@ const handleOpenAIImportCodexSession = async (content: string) => {
       proxy_id: form.proxy_id,
       concurrency: form.concurrency,
       load_factor: form.load_factor ?? undefined,
-      priority: form.priority,
+      account_groups: buildAccountGroupsPayload(form.group_ids),
       rate_multiplier: form.rate_multiplier,
       group_ids: form.group_ids,
       expires_at: form.expires_at,
@@ -6211,7 +6395,7 @@ const handleOpenAIImportCodexPAT = async (accessToken: string) => {
       proxy_id: form.proxy_id,
       concurrency: form.concurrency,
       load_factor: form.load_factor ?? undefined,
-      priority: form.priority,
+      account_groups: buildAccountGroupsPayload(form.group_ids),
       rate_multiplier: form.rate_multiplier,
       group_ids: form.group_ids,
       expires_at: form.expires_at,
@@ -6309,7 +6493,7 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
             proxy_id: form.proxy_id,
             concurrency: form.concurrency,
             load_factor: form.load_factor ?? undefined,
-            priority: form.priority,
+            account_groups: buildAccountGroupsPayload(form.group_ids),
             rate_multiplier: form.rate_multiplier,
             group_ids: form.group_ids,
             expires_at: form.expires_at,
@@ -6408,7 +6592,7 @@ const handleAntigravityValidateRT = async (refreshTokenInput: string) => {
           proxy_id: form.proxy_id,
           concurrency: form.concurrency,
           load_factor: form.load_factor ?? undefined,
-          priority: form.priority,
+          account_groups: buildAccountGroupsPayload(form.group_ids),
           rate_multiplier: form.rate_multiplier,
           group_ids: form.group_ids,
           expires_at: form.expires_at,
@@ -6789,7 +6973,7 @@ const handleCookieAuth = async (sessionKey: string) => {
           proxy_id: form.proxy_id,
           concurrency: form.concurrency,
           load_factor: form.load_factor ?? undefined,
-          priority: form.priority,
+          account_groups: buildAccountGroupsPayload(form.group_ids),
           rate_multiplier: form.rate_multiplier,
           group_ids: form.group_ids,
           expires_at: form.expires_at,

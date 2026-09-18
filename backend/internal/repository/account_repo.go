@@ -15,8 +15,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -29,6 +31,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
+	"golang.org/x/sync/singleflight"
 
 	entsql "entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqljson"
@@ -54,6 +57,21 @@ type accountRepository struct {
 	// only for 404-vs-503 model-miss diagnosis. It is short-lived and does not
 	// participate in normal scheduling or billing decisions.
 	modelAvailabilityCache *modelAvailabilityCandidateCache
+
+	// freshnessCache keeps the small durable scheduler projection out of the
+	// per-request PostgreSQL hot path. Entries are intentionally short-lived;
+	// account mutations still invalidate the scheduler snapshot immediately.
+	freshnessMu    sync.Mutex
+	freshnessCache map[int64]schedulerFreshnessCacheEntry
+	freshnessSF    singleflight.Group
+}
+
+const schedulerFreshnessCacheTTL = time.Second
+
+type schedulerFreshnessCacheEntry struct {
+	value     service.SchedulerFreshness
+	found     bool
+	expiresAt time.Time
 }
 
 var schedulerNeutralExtraKeyPrefixes = []string{
@@ -130,6 +148,7 @@ func newAccountRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor, schedul
 		sql:                    sqlq,
 		schedulerCache:         schedulerCache,
 		modelAvailabilityCache: newModelAvailabilityCandidateCache(),
+		freshnessCache:         make(map[int64]schedulerFreshnessCacheEntry),
 	}
 }
 
@@ -155,6 +174,7 @@ func createAccountRecord(ctx context.Context, client *dbent.Client, account *ser
 	if account == nil {
 		return service.ErrAccountNilInput
 	}
+	service.PrepareNewAccountProtection(account)
 
 	builder := client.Account.Create().
 		SetName(account.Name).
@@ -296,6 +316,17 @@ func (r *accountRepository) GetByID(ctx context.Context, id int64) (*service.Acc
 // model mappings and ranking data; the request continues to use those from the
 // snapshot after this projection has confirmed the account remains eligible.
 func (r *accountRepository) ReadSchedulerFreshness(ctx context.Context, ids []int64) (map[int64]service.SchedulerFreshness, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if r == nil || r.sql == nil {
+		return nil, errors.New("account freshness database is unavailable")
+	}
+	r.freshnessMu.Lock()
+	if r.freshnessCache == nil {
+		r.freshnessCache = make(map[int64]schedulerFreshnessCacheEntry)
+	}
+	r.freshnessMu.Unlock()
 	uniqueIDs := make([]int64, 0, len(ids))
 	seen := make(map[int64]struct{}, len(ids))
 	for _, id := range ids {
@@ -308,6 +339,75 @@ func (r *accountRepository) ReadSchedulerFreshness(ctx context.Context, ids []in
 		seen[id] = struct{}{}
 		uniqueIDs = append(uniqueIDs, id)
 	}
+	if len(uniqueIDs) == 0 {
+		return map[int64]service.SchedulerFreshness{}, nil
+	}
+
+	result := make(map[int64]service.SchedulerFreshness, len(uniqueIDs))
+	missing := make([]int64, 0, len(uniqueIDs))
+	now := time.Now()
+	r.freshnessMu.Lock()
+	for _, id := range uniqueIDs {
+		entry, ok := r.freshnessCache[id]
+		if ok && now.Before(entry.expiresAt) {
+			if entry.found {
+				result[id] = entry.value
+			}
+			continue
+		}
+		delete(r.freshnessCache, id)
+		missing = append(missing, id)
+	}
+	r.freshnessMu.Unlock()
+	if len(missing) == 0 {
+		return result, nil
+	}
+	sort.Slice(missing, func(i, j int) bool { return missing[i] < missing[j] })
+
+	keyParts := make([]string, len(missing))
+	for i, id := range missing {
+		keyParts[i] = strconv.FormatInt(id, 10)
+	}
+	flightKey := strings.Join(keyParts, ",")
+	resultCh := r.freshnessSF.DoChan(flightKey, func() (any, error) {
+		queryCtx := context.Background()
+		if ctx != nil {
+			queryCtx = context.WithoutCancel(ctx)
+		}
+		queryCtx, cancel := context.WithTimeout(queryCtx, 2*time.Second)
+		defer cancel()
+		loaded, err := r.readSchedulerFreshnessDB(queryCtx, missing)
+		if err != nil {
+			return nil, err
+		}
+		expiresAt := time.Now().Add(schedulerFreshnessCacheTTL)
+		r.freshnessMu.Lock()
+		for _, id := range missing {
+			value, found := loaded[id]
+			r.freshnessCache[id] = schedulerFreshnessCacheEntry{value: value, found: found, expiresAt: expiresAt}
+		}
+		r.freshnessMu.Unlock()
+		return loaded, nil
+	})
+	select {
+	case flight := <-resultCh:
+		if flight.Err != nil {
+			return nil, flight.Err
+		}
+		loaded, ok := flight.Val.(map[int64]service.SchedulerFreshness)
+		if !ok {
+			return nil, errors.New("invalid scheduler freshness result")
+		}
+		for id, value := range loaded {
+			result[id] = value
+		}
+		return result, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (r *accountRepository) readSchedulerFreshnessDB(ctx context.Context, uniqueIDs []int64) (map[int64]service.SchedulerFreshness, error) {
 	if len(uniqueIDs) == 0 {
 		return map[int64]service.SchedulerFreshness{}, nil
 	}
@@ -609,6 +709,10 @@ func (r *accountRepository) updateLockedAccount(
 		return nil, err
 	}
 	account.Extra = extra
+	if err := preserveLockedAccountProtection(ctx, client, account); err != nil {
+		return nil, err
+	}
+	extra = normalizeJSONMap(account.Extra)
 
 	schedulable := account.Schedulable
 	if account.Status == service.StatusError {
@@ -1927,10 +2031,52 @@ func (r *accountRepository) GetGroups(ctx context.Context, accountID int64) ([]s
 	return outGroups, nil
 }
 
+func (r *accountRepository) UpdateAccountGroupPriorities(ctx context.Context, accountID int64, groups []service.AccountGroup) error {
+	if accountID <= 0 || len(groups) == 0 {
+		return nil
+	}
+	groupIDs := make([]int64, 0, len(groups))
+	for _, group := range groups {
+		if group.GroupID <= 0 || group.Priority <= 0 {
+			continue
+		}
+		if _, err := r.client.AccountGroup.Update().
+			Where(dbaccountgroup.AccountIDEQ(accountID), dbaccountgroup.GroupIDEQ(group.GroupID)).
+			SetPriority(group.Priority).
+			Save(ctx); err != nil {
+			return err
+		}
+		groupIDs = append(groupIDs, group.GroupID)
+	}
+	if len(groupIDs) == 0 {
+		return nil
+	}
+	payload := buildSchedulerGroupPayload(groupIDs)
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue update group priorities failed: account=%d err=%v", accountID, err)
+	}
+	r.invalidateModelAvailabilityCacheAfterCommit(ctx)
+	return nil
+}
+
 func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, groupIDs []int64) error {
+	groups := make([]service.AccountGroup, 0, len(groupIDs))
+	for i, groupID := range groupIDs {
+		groups = append(groups, service.AccountGroup{GroupID: groupID, Priority: i + 1})
+	}
+	return r.BindAccountGroups(ctx, accountID, groups)
+}
+
+func (r *accountRepository) BindAccountGroups(ctx context.Context, accountID int64, groups []service.AccountGroup) error {
 	existingGroupIDs, err := r.loadAccountGroupIDs(ctx, accountID)
 	if err != nil {
 		return err
+	}
+	existingPriorities := make(map[int64]int, len(existingGroupIDs))
+	if _, _, existing, loadErr := r.loadAccountGroups(ctx, []int64{accountID}); loadErr == nil {
+		for _, ag := range existing[accountID] {
+			existingPriorities[ag.GroupID] = ag.Priority
+		}
 	}
 	// 使用事务保证删除旧绑定与创建新绑定的原子性
 	tx, err := r.client.Tx(ctx)
@@ -1951,27 +2097,51 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 		return err
 	}
 
-	if len(groupIDs) == 0 {
+	if len(groups) == 0 {
 		if tx != nil {
 			if err := tx.Commit(); err != nil {
 				return err
 			}
 		}
+		payload := buildSchedulerGroupPayload(existingGroupIDs)
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue bind groups failed: account=%d err=%v", accountID, err)
+		}
 		r.invalidateModelAvailabilityCacheAfterCommit(ctx)
 		return nil
 	}
 
-	builders := make([]*dbent.AccountGroupCreate, 0, len(groupIDs))
-	for i, groupID := range groupIDs {
+	seen := make(map[int64]struct{}, len(groups))
+	builders := make([]*dbent.AccountGroupCreate, 0, len(groups))
+	groupIDs := make([]int64, 0, len(groups))
+	for i, group := range groups {
+		if group.GroupID <= 0 {
+			continue
+		}
+		if _, ok := seen[group.GroupID]; ok {
+			continue
+		}
+		seen[group.GroupID] = struct{}{}
+		priority := group.Priority
+		if priority <= 0 {
+			if existing, ok := existingPriorities[group.GroupID]; ok && existing > 0 {
+				priority = existing
+			} else {
+				priority = i + 1
+			}
+		}
+		groupIDs = append(groupIDs, group.GroupID)
 		builders = append(builders, txClient.AccountGroup.Create().
 			SetAccountID(accountID).
-			SetGroupID(groupID).
-			SetPriority(i+1),
+			SetGroupID(group.GroupID).
+			SetPriority(priority),
 		)
 	}
 
-	if _, err := txClient.AccountGroup.CreateBulk(builders...).Save(ctx); err != nil {
-		return err
+	if len(builders) > 0 {
+		if _, err := txClient.AccountGroup.CreateBulk(builders...).Save(ctx); err != nil {
+			return err
+		}
 	}
 
 	if tx != nil {
@@ -2127,6 +2297,9 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 }
 
 func (r *accountRepository) ListSchedulableByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
+	if platforms := service.ExpandSchedulablePlatforms(platform); len(platforms) > 1 {
+		return r.ListSchedulableByPlatforms(ctx, platforms)
+	}
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
@@ -2148,14 +2321,19 @@ func (r *accountRepository) ListSchedulableByPlatform(ctx context.Context, platf
 
 func (r *accountRepository) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]service.Account, error) {
 	// 单平台查询复用多平台逻辑，保持过滤条件与排序策略一致。
+	platforms := service.ExpandSchedulablePlatforms(platform)
+	if len(platforms) == 0 {
+		platforms = []string{platform}
+	}
 	return r.queryAccountsByGroup(ctx, groupID, accountGroupQueryOptions{
 		status:      service.StatusActive,
 		schedulable: true,
-		platforms:   []string{platform},
+		platforms:   platforms,
 	})
 }
 
 func (r *accountRepository) ListSchedulableByPlatforms(ctx context.Context, platforms []string) ([]service.Account, error) {
+	platforms = service.ExpandSchedulablePlatformList(platforms)
 	if len(platforms) == 0 {
 		return nil, nil
 	}
@@ -2181,6 +2359,9 @@ func (r *accountRepository) ListSchedulableByPlatforms(ctx context.Context, plat
 }
 
 func (r *accountRepository) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
+	if platforms := service.ExpandSchedulablePlatforms(platform); len(platforms) > 1 {
+		return r.ListSchedulableUngroupedByPlatforms(ctx, platforms)
+	}
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
@@ -2202,6 +2383,7 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatform(ctx context.Conte
 }
 
 func (r *accountRepository) ListSchedulableUngroupedByPlatforms(ctx context.Context, platforms []string) ([]service.Account, error) {
+	platforms = service.ExpandSchedulablePlatformList(platforms)
 	if len(platforms) == 0 {
 		return nil, nil
 	}
@@ -2226,6 +2408,7 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatforms(ctx context.Cont
 }
 
 func (r *accountRepository) ListSchedulableByGroupIDAndPlatforms(ctx context.Context, groupID int64, platforms []string) ([]service.Account, error) {
+	platforms = service.ExpandSchedulablePlatformList(platforms)
 	if len(platforms) == 0 {
 		return nil, nil
 	}
@@ -2276,6 +2459,11 @@ func (r *accountRepository) loadModelAvailabilityCandidatesCached(
 	includeGrouped bool,
 ) ([]service.Account, error) {
 	resultCh := r.modelAvailabilityCache.sf.DoChan(modelAvailabilityCandidatesSFKey(key), func() (any, error) {
+		// A previous leader may have populated the cache after this caller's
+		// initial miss but before it joined singleflight.
+		if cached, ok := r.modelAvailabilityCache.get(key); ok {
+			return cached, nil
+		}
 		generation := r.modelAvailabilityCache.currentGeneration()
 		// The first caller is only a waiter; its cancellation or short
 		// deadline must not abort the shared refresh for other callers.
@@ -2337,20 +2525,9 @@ func (r *accountRepository) listModelAvailabilityCandidatesEnt(
 }
 
 func (r *accountRepository) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
-	now := time.Now()
-	_, err := r.client.Account.Update().
-		Where(dbaccount.IDEQ(id)).
-		SetRateLimitedAt(now).
-		SetRateLimitResetAt(resetAt).
-		Save(ctx)
-	if err != nil {
-		return err
-	}
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
-		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue rate limit failed: account=%d err=%v", id, err)
-	}
-	r.syncSchedulerAccountSnapshot(ctx, id)
-	return nil
+	// Every upstream observation extends a limit. Only an explicit recovery
+	// operation may clear it; late short responses must not undo a longer wait.
+	return r.SetRateLimitedIfLater(ctx, id, resetAt)
 }
 
 // SetRateLimitedIfLater atomically extends an account-level rate limit. Grok
@@ -2773,6 +2950,7 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	if service.ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates) {
 		extraExpression = ensureCodexFingerprintSeedSQL(extraExpression)
 	}
+	extraExpression = preserveProtectionExtraSQL(ctx, extraExpression)
 	result, err := client.ExecContext(
 		ctx,
 		"UPDATE accounts SET extra = "+extraExpression+", updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL",
@@ -3005,7 +3183,8 @@ func isSchedulerNeutralExtraKey(key string) bool {
 func modelAvailabilityExtraUpdatesRelevant(updates map[string]any) bool {
 	for key := range updates {
 		switch strings.TrimSpace(key) {
-		case "openai_passthrough", "openai_oauth_passthrough", "mixed_scheduling":
+		case "openai_passthrough", "openai_oauth_passthrough", "mixed_scheduling",
+			service.UpstreamModelsExtraKey, service.UpstreamModelsSyncStatusExtraKey, service.UpstreamModelsIdentityExtraKey:
 			return true
 		}
 	}
@@ -3170,6 +3349,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		if updates.EnsureCodexFingerprintSeed {
 			extraExpression = ensureCodexFingerprintSeedSQL(extraExpression)
 		}
+		extraExpression = preserveProtectionExtraSQL(ctx, extraExpression)
 		setClauses = append(setClauses, "extra = "+extraExpression)
 	}
 

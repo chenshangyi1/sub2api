@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -159,6 +160,32 @@ type modelsListAccountRepoStub struct {
 
 	listByGroupCalls atomic.Int64
 	listAllCalls     atomic.Int64
+}
+
+type groupLookupHotpathRepoStub struct {
+	GroupRepository
+	group   *Group
+	err     error
+	calls   atomic.Int64
+	started chan struct{}
+	release chan struct{}
+}
+
+func (s *groupLookupHotpathRepoStub) GetByIDLite(_ context.Context, _ int64) (*Group, error) {
+	s.calls.Add(1)
+	if s.started != nil {
+		select {
+		case s.started <- struct{}{}:
+		default:
+		}
+	}
+	if s.release != nil {
+		<-s.release
+	}
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.group, nil
 }
 
 type stickyGatewayCacheHotpathStub struct {
@@ -445,39 +472,39 @@ func TestWithWindowCostPrefetch_BatchReadAndContextReuse(t *testing.T) {
 }
 
 func TestWithWindowCostPrefetch_CoalescesConcurrentBatchQueries(t *testing.T) {
-	windowStart := time.Now().Add(-30 * time.Minute).Truncate(time.Hour)
-	windowEnd := windowStart.Add(5 * time.Hour)
-	accounts := []Account{
-		{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Extra: map[string]any{"window_cost_limit": 100.0}, SessionWindowStart: &windowStart, SessionWindowEnd: &windowEnd},
-		{ID: 2, Platform: PlatformAnthropic, Type: AccountTypeSetupToken, Extra: map[string]any{"window_cost_limit": 100.0}, SessionWindowStart: &windowStart, SessionWindowEnd: &windowEnd},
-	}
-	release := make(chan struct{})
-	repo := &usageLogWindowCostRepoStub{costs: map[int64]float64{1: 11, 2: 22}, wait: release}
-	svc := &GatewayService{sessionLimitCache: windowCostNoopCache{}, usageLogRepo: repo}
+	synctest.Test(t, func(t *testing.T) {
+		windowStart := time.Now().Add(-30 * time.Minute).Truncate(time.Hour)
+		windowEnd := windowStart.Add(5 * time.Hour)
+		accounts := []Account{
+			{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Extra: map[string]any{"window_cost_limit": 100.0}, SessionWindowStart: &windowStart, SessionWindowEnd: &windowEnd},
+			{ID: 2, Platform: PlatformAnthropic, Type: AccountTypeSetupToken, Extra: map[string]any{"window_cost_limit": 100.0}, SessionWindowStart: &windowStart, SessionWindowEnd: &windowEnd},
+		}
+		release := make(chan struct{})
+		repo := &usageLogWindowCostRepoStub{costs: map[int64]float64{1: 11, 2: 22}, wait: release}
+		svc := &GatewayService{sessionLimitCache: windowCostNoopCache{}, usageLogRepo: repo}
 
-	const callers = 8
-	var wg sync.WaitGroup
-	results := make([]context.Context, callers)
-	wg.Add(callers)
-	for i := 0; i < callers; i++ {
-		go func(index int) {
-			defer wg.Done()
-			results[index] = svc.withWindowCostPrefetch(context.Background(), accounts)
-		}(i)
-	}
-	deadline := time.Now().Add(time.Second)
-	for repo.calls.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	close(release)
-	wg.Wait()
+		const callers = 8
+		var wg sync.WaitGroup
+		results := make([]context.Context, callers)
+		wg.Add(callers)
+		for i := 0; i < callers; i++ {
+			go func(index int) {
+				defer wg.Done()
+				results[index] = svc.withWindowCostPrefetch(context.Background(), accounts)
+			}(i)
+		}
+		// Wait until every caller is blocked on the shared in-flight query.
+		synctest.Wait()
+		close(release)
+		wg.Wait()
 
-	require.Equal(t, int64(1), repo.calls.Load())
-	for _, ctx := range results {
-		cost, ok := windowCostFromPrefetchContext(ctx, 2)
-		require.True(t, ok)
-		require.Equal(t, 22.0, cost)
-	}
+		require.Equal(t, int64(1), repo.calls.Load())
+		for _, ctx := range results {
+			cost, ok := windowCostFromPrefetchContext(ctx, 2)
+			require.True(t, ok)
+			require.Equal(t, 22.0, cost)
+		}
+	})
 }
 
 func TestWithWindowCostPrefetch_AllHitNoSQL(t *testing.T) {
@@ -532,6 +559,35 @@ func TestWithWindowCostPrefetch_AllHitNoSQL(t *testing.T) {
 	require.Equal(t, int64(0), batchSQL)
 	require.Equal(t, int64(0), fallback)
 	require.Equal(t, int64(0), errCount)
+}
+
+func TestWithWindowCostPrefetch_SnapshotOnlyNeverQueriesUsageLogs(t *testing.T) {
+	windowStart := time.Now().Add(-30 * time.Minute).Truncate(time.Hour)
+	windowEnd := windowStart.Add(5 * time.Hour)
+	accounts := []Account{{
+		ID:                 101,
+		Platform:           PlatformAnthropic,
+		Type:               AccountTypeOAuth,
+		Extra:              map[string]any{"window_cost_limit": 100.0},
+		SessionWindowStart: &windowStart,
+		SessionWindowEnd:   &windowEnd,
+	}}
+	repo := &usageLogWindowBatchRepoStub{}
+	svc := &GatewayService{
+		sessionLimitCache: &sessionLimitCacheHotpathStub{},
+		usageLogRepo:      repo,
+	}
+	ctx := withSchedulerSnapshotOnly(context.Background())
+	outCtx := svc.withWindowCostPrefetch(ctx, accounts)
+	if !windowCostPrefetchFailedOpen(outCtx, accounts[0].ID) {
+		t.Fatal("cold window cost should be marked fail-open in snapshot-only mode")
+	}
+	if got := repo.batchCalls.Load() + repo.singleCalls.Load(); got != 0 {
+		t.Fatalf("snapshot-only window cost issued %d usage-log queries", got)
+	}
+	if !svc.isAccountSchedulableForWindowCost(outCtx, &accounts[0], false) {
+		t.Fatal("unknown advisory window cost must not block snapshot-only request")
+	}
 }
 
 func TestWithWindowCostPrefetch_BatchErrorFallbackSingleQuery(t *testing.T) {
@@ -743,6 +799,211 @@ func TestGetAvailableModels_UsesShortCacheAndSupportsInvalidation(t *testing.T) 
 	require.Equal(t, int64(2), hit)
 	require.Equal(t, int64(2), miss)
 	require.Equal(t, int64(2), store)
+}
+
+func TestGetAvailableModels_SchedulerSnapshotHitSkipsAccountRepository(t *testing.T) {
+	groupID := int64(91)
+	repo := &modelsListAccountRepoStub{}
+	cache := &openAISnapshotCacheStub{
+		snapshotAccounts: []*Account{{
+			ID:          1,
+			Platform:    PlatformOpenAI,
+			Status:      StatusActive,
+			Schedulable: true,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-snapshot": "gpt-upstream",
+				},
+			},
+		}},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.RequestFreshnessEnabled = false
+	snapshot := NewSchedulerSnapshotService(cache, nil, repo, nil, cfg)
+	svc := &GatewayService{
+		accountRepo:        repo,
+		schedulerSnapshot:  snapshot,
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+
+	got := svc.GetAvailableModels(context.Background(), &groupID, PlatformOpenAI)
+	require.Equal(t, []string{"gpt-snapshot"}, got)
+	require.Zero(t, repo.listByGroupCalls.Load(), "snapshot hit must not list accounts from PostgreSQL")
+	require.Zero(t, repo.listAllCalls.Load(), "snapshot hit must not list global accounts from PostgreSQL")
+}
+
+func TestGetAvailableModels_SchedulerSnapshotColdDoesNotFallbackToDatabase(t *testing.T) {
+	groupID := int64(92)
+	repo := &modelsListAccountRepoStub{}
+	cache := &openAISnapshotCacheStub{}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.RequestFreshnessEnabled = false
+	snapshot := NewSchedulerSnapshotService(cache, nil, repo, nil, cfg)
+	svc := &GatewayService{
+		accountRepo:        repo,
+		schedulerSnapshot:  snapshot,
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+
+	require.Nil(t, svc.GetAvailableModels(context.Background(), &groupID, PlatformOpenAI))
+	require.Zero(t, repo.listByGroupCalls.Load(), "cold snapshot must not issue a PostgreSQL account scan")
+	require.Zero(t, repo.listAllCalls.Load(), "cold snapshot must not issue a global PostgreSQL account scan")
+}
+
+func TestResolveGroupByID_SnapshotCacheHitSkipsRepository(t *testing.T) {
+	groupID := int64(93)
+	repo := &groupLookupHotpathRepoStub{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive}}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.RequestFreshnessEnabled = false
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, repo, cfg)
+	snapshot.seedCachedGroup(repo.group)
+	svc := &GatewayService{groupRepo: repo, schedulerSnapshot: snapshot}
+
+	ctx := withSchedulerSnapshotOnly(context.Background())
+	got, err := svc.resolveGroupByID(ctx, groupID)
+	require.NoError(t, err)
+	require.Equal(t, groupID, got.ID)
+	require.Zero(t, repo.calls.Load(), "snapshot group hit must not query PostgreSQL")
+}
+
+func TestResolveGroupByID_SnapshotColdReturnsNotReadyWithoutRepository(t *testing.T) {
+	groupID := int64(94)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	repo := &groupLookupHotpathRepoStub{
+		group:   &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive},
+		started: started,
+		release: release,
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.RequestFreshnessEnabled = false
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, repo, cfg)
+	svc := &GatewayService{groupRepo: repo, schedulerSnapshot: snapshot}
+
+	_, err := svc.resolveGroupByID(withSchedulerSnapshotOnly(context.Background()), groupID)
+	require.ErrorIs(t, err, ErrSchedulerCacheNotReady)
+	select {
+	case <-started:
+		// The refresh is deliberately asynchronous; reaching this point after
+		// resolveGroupByID returned proves the request itself did not wait on DB.
+	case <-time.After(time.Second):
+		t.Fatal("expected a background group refresh")
+	}
+	close(release)
+}
+
+func TestResolveGroupByID_SelectionFallbackReadsColdGroupFromRepository(t *testing.T) {
+	groupID := int64(194)
+	repo := &groupLookupHotpathRepoStub{group: &Group{ID: groupID, Platform: PlatformGemini, Status: StatusActive}}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.RequestFreshnessEnabled = false
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, repo, cfg)
+	svc := &GatewayService{groupRepo: repo, schedulerSnapshot: snapshot}
+
+	got, err := svc.resolveGroupByID(withSchedulerSelectionFallback(withSchedulerSnapshotOnly(context.Background())), groupID)
+	require.NoError(t, err)
+	require.Equal(t, groupID, got.ID)
+	require.Equal(t, int64(1), repo.calls.Load(), "user selection may use bounded DB fallback on a cold snapshot")
+}
+
+func TestResolveGroupByID_SnapshotRefreshFailureBacksOff(t *testing.T) {
+	groupID := int64(95)
+	repo := &groupLookupHotpathRepoStub{err: errors.New("database unavailable")}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.RequestFreshnessEnabled = false
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, repo, cfg)
+	svc := &GatewayService{groupRepo: repo, schedulerSnapshot: snapshot}
+
+	_, err := svc.resolveGroupByID(withSchedulerSnapshotOnly(context.Background()), groupID)
+	require.ErrorIs(t, err, ErrSchedulerCacheNotReady)
+	require.Eventually(t, func() bool { return repo.calls.Load() == 1 }, time.Second, time.Millisecond*5)
+
+	// A burst of subsequent cold requests during the database outage must not
+	// launch another refresh immediately after the failed attempt.
+	for i := 0; i < 20; i++ {
+		_, _ = svc.resolveGroupByID(withSchedulerSnapshotOnly(context.Background()), groupID)
+	}
+	time.Sleep(25 * time.Millisecond)
+	require.Equal(t, int64(1), repo.calls.Load(), "failed refresh should be protected by retry backoff")
+}
+
+func TestSchedulingGroupForRequest_SnapshotHitSkipsRepository(t *testing.T) {
+	groupID := int64(96)
+	repo := &groupLookupHotpathRepoStub{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, RequirePrivacySet: true}}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.RequestFreshnessEnabled = false
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, repo, cfg)
+	snapshot.seedCachedGroup(repo.group)
+	svc := &GatewayService{groupRepo: repo, schedulerSnapshot: snapshot}
+
+	got := svc.schedulingGroupForRequest(withSchedulerSnapshotOnly(context.Background()), &groupID)
+	require.NotNil(t, got)
+	require.Equal(t, groupID, got.ID)
+	require.True(t, got.RequirePrivacySet)
+	require.Zero(t, repo.calls.Load(), "warm group projection must not query PostgreSQL")
+}
+
+func TestSchedulingGroupForRequest_SnapshotColdDoesNotQueryRepository(t *testing.T) {
+	groupID := int64(97)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	repo := &groupLookupHotpathRepoStub{
+		group:   &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive},
+		started: started,
+		release: release,
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.RequestFreshnessEnabled = false
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, repo, cfg)
+	svc := &GatewayService{groupRepo: repo, schedulerSnapshot: snapshot}
+
+	got := svc.schedulingGroupForRequest(withSchedulerSnapshotOnly(context.Background()), &groupID)
+	require.Nil(t, got)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("expected a background group refresh")
+	}
+	close(release)
+}
+
+func TestResolveProfitControlGroup_SnapshotHitSkipsRepository(t *testing.T) {
+	groupID := int64(98)
+	repo := &groupLookupHotpathRepoStub{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, ProfitControlEnabled: true}}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.RequestFreshnessEnabled = false
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, repo, cfg)
+	snapshot.seedCachedGroup(repo.group)
+	svc := &GatewayService{groupRepo: repo, schedulerSnapshot: snapshot}
+
+	got, err := svc.resolveProfitControlGroup(withSchedulerSnapshotOnly(context.Background()), groupID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, groupID, got.ID)
+	require.Zero(t, repo.calls.Load(), "profit-control snapshot hit must not query PostgreSQL")
+}
+
+func TestGatewayStickyAccountEligible_RejectsWrongGroupAndNil(t *testing.T) {
+	svc := &GatewayService{}
+	require.False(t, svc.gatewayStickyAccountEligible(context.Background(), nil, nil, ""))
+
+	groupID := int64(11)
+	account := &Account{
+		ID:          21,
+		Platform:    PlatformOpenAI,
+		Status:      StatusActive,
+		Schedulable: true,
+		AccountGroups: []AccountGroup{
+			{AccountID: 21, GroupID: groupID},
+		},
+	}
+	require.True(t, svc.gatewayStickyAccountEligible(context.Background(), account, &groupID, ""))
+	other := int64(12)
+	require.False(t, svc.gatewayStickyAccountEligible(context.Background(), account, &other, ""))
+	require.True(t, gatewayStickyMixedPlatformOK(account, PlatformOpenAI))
+	require.False(t, gatewayStickyMixedPlatformOK(account, PlatformAnthropic))
 }
 
 func TestGetAvailableModels_ErrorAndGlobalListBranches(t *testing.T) {

@@ -390,13 +390,13 @@ const handleQuery = async () => {
   resetWarning.value = null
   showResetCreditDetails.value = false
   try {
-    const result = await refreshOpenAIQuota(props.account.id)
+    const result = await refreshOpenAIQuota(props.account.id) as any
     // The upstream read succeeded even when the snapshot write was rejected, so
     // the live count is always adopted. Only the persisted view is left alone,
     // which keeps the displayed expirations consistent with what is stored.
-    data.value = result
-    if (result.cache_persisted) {
-      cachedData.value = result
+    data.value = result as any
+    if ((result as any).cache_persisted !== false) {
+      cachedData.value = result as any
     } else {
       resetWarning.value = t('admin.accounts.openaiQuotaReset.refreshCachePersistFailed')
     }

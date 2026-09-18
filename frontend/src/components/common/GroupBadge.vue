@@ -162,6 +162,12 @@ const labelClass = computed(() => {
   if (props.platform === 'grok') {
     return `${base} bg-zinc-300/70 text-zinc-800 dark:bg-zinc-700/60 dark:text-zinc-200`
   }
+  if (props.platform === 'cn') {
+    return `${base} bg-rose-200/60 text-rose-800 dark:bg-rose-800/40 dark:text-rose-300`
+  }
+  if (props.platform === 'video') {
+    return `${base} bg-fuchsia-200/60 text-fuchsia-800 dark:bg-fuchsia-800/40 dark:text-fuchsia-300`
+  }
   if (props.platform === 'kimi') {
     return `${base} bg-pink-200/60 text-pink-800 dark:bg-pink-800/40 dark:text-pink-300`
   }
@@ -173,6 +179,9 @@ const labelClass = computed(() => {
   }
   if (props.platform === 'composite') {
     return `${base} bg-cyan-200/70 text-cyan-900 dark:bg-cyan-900/50 dark:text-cyan-300`
+  }
+  if (props.platform === 'adaptive') {
+    return `${base} bg-sky-200/70 text-sky-900 dark:bg-sky-900/50 dark:text-sky-300`
   }
   return `${base} bg-violet-200/60 text-violet-800 dark:bg-violet-800/40 dark:text-violet-300`
 })
@@ -209,6 +218,16 @@ const badgeClass = computed(() => {
       ? 'bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100'
       : 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200'
   }
+  if (props.platform === 'cn') {
+    return isSubscription.value
+      ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400'
+      : 'bg-rose-50 text-rose-700 dark:bg-rose-900/20 dark:text-rose-400'
+  }
+  if (props.platform === 'video') {
+    return isSubscription.value
+      ? 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-400'
+      : 'bg-fuchsia-50 text-fuchsia-700 dark:bg-fuchsia-900/20 dark:text-fuchsia-400'
+  }
   if (props.platform === 'kimi') {
     return isSubscription.value
       ? 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400'
@@ -228,6 +247,11 @@ const badgeClass = computed(() => {
     return isSubscription.value
       ? 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300'
       : 'bg-cyan-50 text-cyan-800 dark:bg-cyan-900/20 dark:text-cyan-300'
+  }
+  if (props.platform === 'adaptive') {
+    return isSubscription.value
+      ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-300'
+      : 'bg-sky-50 text-sky-800 dark:bg-sky-900/20 dark:text-sky-300'
   }
   // Fallback: original colors
   return isSubscription.value

@@ -8,7 +8,7 @@ import (
 )
 
 func TestCodexQuotaOverdraftSettingsMigrationIsAdditive(t *testing.T) {
-	content, err := FS.ReadFile("231_codex_quota_overdraft_settings.sql")
+	content, err := FS.ReadFile("242_codex_quota_overdraft_settings.sql")
 	require.NoError(t, err)
 
 	sql := strings.Join(strings.Fields(string(content)), " ")

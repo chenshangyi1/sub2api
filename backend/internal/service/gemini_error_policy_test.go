@@ -35,7 +35,7 @@ func TestShouldFailoverGeminiUpstreamError(t *testing.T) {
 		{"502_failover", 502, true},
 		{"503_failover", 503, true},
 		{"400_no_failover", 400, false},
-		{"404_no_failover", 404, false},
+		{"404_failover", 404, true},
 		{"422_no_failover", 422, false},
 	}
 
@@ -297,6 +297,19 @@ func TestGeminiErrorPolicyIntegration(t *testing.T) {
 			expectFailover:    false,
 			expectHandleError: true,
 		},
+		{
+			name: "no_policy_404_failover",
+			account: &Account{
+				ID:       206,
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformGemini,
+			},
+			statusCode:           404,
+			respBody:             []byte(`<html>nginx 404</html>`),
+			expectFailover:       true,
+			expectHandleError:    true,
+			expectShouldFailover: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -406,6 +419,7 @@ func TestSkippedErrorPolicyFailoverError(t *testing.T) {
 			"pool_mode_retry_status_codes": []any{float64(500)},
 		}), 500, true, true},
 		{"pool_400_not_failover_worthy", poolAccount(nil), 400, false, false},
+		{"pool_404_failover_no_same_account_retry", poolAccount(nil), 404, true, false},
 		{"custom_codes_miss_500_failover_no_same_account_retry", customCodesAccount, 500, true, false},
 		{"custom_codes_miss_400_not_failover_worthy", customCodesAccount, 400, false, false},
 	}
@@ -463,6 +477,7 @@ func TestGeminiErrorPolicy_NilRateLimitService(t *testing.T) {
 
 	// shouldFailoverGeminiUpstreamError still works
 	require.True(t, svc.shouldFailoverGeminiUpstreamError(429))
+	require.True(t, svc.shouldFailoverGeminiUpstreamError(404))
 	require.False(t, svc.shouldFailoverGeminiUpstreamError(400))
 
 	// handleGeminiUpstreamError should not panic with nil rateLimitService

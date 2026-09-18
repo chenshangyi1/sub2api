@@ -203,11 +203,11 @@ services:
       - GATEWAY_OPENAI_COMPACT_MODEL=${GATEWAY_OPENAI_COMPACT_MODEL:-gpt-5.4}
       # Keep a bounded response-header wait so a stalled upstream cannot consume
       # the entire Cloudflare proxy timeout window. Streaming uses keepalives.
-      - GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT=${GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT:-90}
+      - GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT=${GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT:-0}
       - GATEWAY_OPENAI_WS_FORCE_HTTP=${GATEWAY_OPENAI_WS_FORCE_HTTP:-false}
       - GATEWAY_CODEX_QUOTA_OVERDRAFT_ENABLED=${GATEWAY_CODEX_QUOTA_OVERDRAFT_ENABLED:-true}
       - GATEWAY_CODEX_QUOTA_OVERDRAFT_BUSINESS_INJECTION_ENABLED=${GATEWAY_CODEX_QUOTA_OVERDRAFT_BUSINESS_INJECTION_ENABLED:-false}
-      - GATEWAY_OPENAI_HTTP2_ENABLED=${GATEWAY_OPENAI_HTTP2_ENABLED:-true}
+      - GATEWAY_OPENAI_HTTP2_ENABLED=${GATEWAY_OPENAI_HTTP2_ENABLED:-false}
       - GATEWAY_OPENAI_HTTP2_ALLOW_PROXY_FALLBACK_TO_HTTP1=${GATEWAY_OPENAI_HTTP2_ALLOW_PROXY_FALLBACK_TO_HTTP1:-true}
       - GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD=${GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD:-2}
       - GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS=${GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS:-60}
@@ -370,6 +370,7 @@ services:
       start_period: 5s
     # 注意：不暴露端口到宿主机，应用通过内部网络连接
     # 如需调试，可临时添加：ports: ["127.0.0.1:6379:6379"]
+    # EPUSDT sidecar is an overlay: docker-compose.epusdt.yml (--profile epusdt)
 # =============================================================================
 # Volumes
 # =============================================================================

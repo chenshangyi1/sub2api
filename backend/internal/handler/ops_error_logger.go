@@ -283,7 +283,8 @@ func enqueueOpsErrorLog(ops *service.OpsService, entry *service.OpsInsertErrorLo
 }
 
 func normalizeOpsPersistentUserAgent(value string) string {
-	return truncateString(strings.TrimSpace(strings.ToValidUTF8(value, "")), opsErrorLogMaxUserAgentBytes)
+	// The async queue owns only the bounded value, not the original header.
+	return strings.Clone(truncateString(strings.TrimSpace(strings.ToValidUTF8(value, "")), opsErrorLogMaxUserAgentBytes))
 }
 
 func StopOpsErrorLogWorkers() bool {
@@ -1146,8 +1147,12 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 				// A marked in-band error is a visible request failure even though its
 				// wire status is already 200. Otherwise retain recovered attempts as a
 				// provider-health row whose 2xx status keeps it outside request SLA.
-				if len(service.GetOpsStreamErrors(c)) > 0 {
+				if streamErrs := service.GetOpsStreamErrors(c); len(streamErrs) > 0 {
 					logOpsStreamError(c, ops, status)
+					// 请求级带内结果不承载上游归因，此前尝试的上游错误仍按恢复行记录。
+					if opsStreamErrorsAllRequestScoped(streamErrs) {
+						logOpsRecoveredUpstream(c, ops, status)
+					}
 				} else {
 					logOpsRecoveredUpstream(c, ops, status)
 				}
@@ -1162,6 +1167,9 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 
 		// Skip logging if the error should be filtered based on settings
 		if shouldSkipOpsErrorLog(c.Request.Context(), ops, parsed.Message, string(body), c.Request.URL.Path) {
+			return
+		}
+		if shouldSkipHighChurnOpsError(normalizeOpsErrorType(parsed.ErrorType, parsed.Code), status, parsed.Message) {
 			return
 		}
 
@@ -1268,6 +1276,24 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			}
 		}
 		suppressOpsUpstreamAttributionForLocalModelConfiguration(c, entry)
+		if status == http.StatusBadRequest &&
+			entry.UpstreamStatusCode != nil && *entry.UpstreamStatusCode == http.StatusBadRequest {
+			code := parsed.Code
+			// Protocol conversion can omit the client code; only consult the final upstream attempt.
+			if code == "" && !parsed.StreamFailure && entry.UpstreamErrorDetail != nil {
+				var upstream struct {
+					Error struct {
+						Code string `json:"code"`
+					} `json:"error"`
+				}
+				if json.Unmarshal([]byte(*entry.UpstreamErrorDetail), &upstream) == nil {
+					code = upstream.Error.Code
+				}
+			}
+			if code == "input_too_small" {
+				entry.ErrorMessage = service.OpsMinimumInputPolicyMessagePrefix + entry.ErrorMessage
+			}
+		}
 
 		if apiKey != nil {
 			entry.APIKeyID = &apiKey.ID
@@ -1360,6 +1386,9 @@ func logOpsRecoveredUpstream(c *gin.Context, ops *service.OpsService, finalStatu
 		entry.ErrorMessage += ": " + strings.TrimSpace(*entry.UpstreamErrorMessage)
 	}
 	entry.ErrorMessage = truncateString(entry.ErrorMessage, 2048)
+	if shouldSkipHighChurnOpsRecovered(entry) {
+		return
+	}
 
 	if c.Request != nil {
 		entry.UserAgent = c.GetHeader("User-Agent")
@@ -1427,22 +1456,31 @@ func opsRequestTypeFromContext(c *gin.Context) *int16 {
 	return nil
 }
 
-// logOpsStreamError 记录一次挂在已固化 HTTP 200 SSE 流上的就地错误。
-// 由于 wire 状态码停留在 200，常规的 status>=400 捕获路径永远不会触发；
-// handleStreamingAwareError 通过 service.MarkOpsStreamError 标记这类错误，
-// 此函数据此补记一条错误日志，让并发限流/流内失败在错误看板里可见。
-//
-// 仅在 status<400 且不存在上游错误上下文时调用：上游透传错误已由中间件的
-// upstream-context 分支落库，无需在此重复记录。
+// logOpsStreamError 记录挂在 2xx 响应上的带内错误（就地 SSE error 帧、非流式正文里的
+// 请求级结果等）。由于 wire 状态码停留在 2xx，常规的 status>=400 捕获路径不会触发；
+// 标记方通过 service.MarkOpsStreamError / MarkOpsStreamErrorValue 登记，此函数据此补记
+// 错误日志。上游错误上下文（若有）是否参与分类与归因由标记的 RequestScoped 决定。
 func logOpsStreamError(c *gin.Context, ops *service.OpsService, wireStatus int) {
 	for _, streamErr := range service.GetOpsStreamErrors(c) {
 		logOpsStreamErrorValue(c, ops, wireStatus, streamErr)
 	}
 }
 
+func opsStreamErrorsAllRequestScoped(streamErrs []service.OpsStreamError) bool {
+	if len(streamErrs) == 0 {
+		return false
+	}
+	for _, streamErr := range streamErrs {
+		if !streamErr.RequestScoped {
+			return false
+		}
+	}
+	return true
+}
+
 func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus int, streamErr service.OpsStreamError) {
 	// 命中 skip_monitoring=true 透传规则的请求跳过落库，与其它分支一致。
-	if streamErr.SkipMonitoring || (streamErr.Turn == 0 && shouldSkipFinalOpsFailure(c)) {
+	if streamErr.SkipMonitoring || (streamErr.Turn == 0 && !streamErr.RequestScoped && shouldSkipFinalOpsFailure(c)) {
 		return
 	}
 
@@ -1457,9 +1495,19 @@ func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus 
 		classifyStatus = wireStatus
 	}
 	normalizedType := normalizeOpsErrorType(streamErr.ErrType, streamErr.Code)
-	phase, isBusinessLimited, errorOwner, errorSource := classifyOpsErrorLog(c, normalizedType, streamErr.Message, streamErr.Code, classifyStatus)
+	var phase, errorOwner, errorSource string
+	var isBusinessLimited bool
+	if streamErr.RequestScoped {
+		// 请求级带内结果只按错误类型分类，此前尝试残留的上游错误上下文不参与判定。
+		phase = classifyOpsPhase(normalizedType, streamErr.Message, streamErr.Code)
+		isBusinessLimited = true
+		errorOwner = classifyOpsErrorOwner(phase, streamErr.Message)
+		errorSource = classifyOpsErrorSource(phase, streamErr.Message)
+	} else {
+		phase, isBusinessLimited, errorOwner, errorSource = classifyOpsErrorLog(c, normalizedType, streamErr.Message, streamErr.Code, classifyStatus)
+	}
 	recordedStatus := wireStatus
-	if streamErr.CountTowardsSLA && streamErr.IntendedStatus >= 400 {
+	if streamErr.IntendedStatus >= 400 && (streamErr.CountTowardsSLA || streamErr.RequestScoped) {
 		recordedStatus = streamErr.IntendedStatus
 	}
 	errorBody := ""
@@ -1510,8 +1558,8 @@ func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus 
 			}
 			return ""
 		}(),
-		// 就地 SSE 错误只出现在流式请求上。
-		Stream:           true,
+		// 带内错误默认挂在 SSE 流上；NonStream 标记的来自非流式 2xx 响应体。
+		Stream:           !streamErr.NonStream,
 		InboundEndpoint:  GetInboundEndpoint(c),
 		UpstreamEndpoint: GetUpstreamEndpoint(c, platform),
 		RequestedModel:   modelName,
@@ -1552,8 +1600,10 @@ func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus 
 		CreatedAt: time.Now(),
 	}
 	applyOpsLatencyFieldsFromContext(c, entry)
-	applyOpsUpstreamFieldsFromContext(c, entry)
-	if streamErr.Turn > 0 {
+	if !streamErr.RequestScoped {
+		applyOpsUpstreamFieldsFromContext(c, entry)
+	}
+	if streamErr.Turn > 0 && !streamErr.RequestScoped {
 		applyOpsStreamErrorSnapshot(entry, streamErr)
 	}
 
@@ -2476,6 +2526,30 @@ func shouldSkipOpsErrorLog(ctx context.Context, ops *service.OpsService, message
 		}
 	}
 
+	return false
+}
+
+func shouldSkipHighChurnOpsError(errType string, status int, message string) bool {
+	msg := strings.ToLower(strings.TrimSpace(message))
+	if status == http.StatusTooManyRequests || errType == "rate_limit_error" {
+		if strings.Contains(msg, "too many rate-limited requests from this key") {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldSkipHighChurnOpsRecovered(entry *service.OpsInsertErrorLogInput) bool {
+	if entry == nil {
+		return false
+	}
+	if strings.Contains(strings.ToLower(entry.ErrorMessage), "timeout awaiting response headers") {
+		return true
+	}
+	if entry.UpstreamErrorMessage != nil &&
+		strings.Contains(strings.ToLower(*entry.UpstreamErrorMessage), "timeout awaiting response headers") {
+		return true
+	}
 	return false
 }
 

@@ -175,6 +175,7 @@ func sanitizeAnthropicToolUseInput(name string, raw string) json.RawMessage {
 type ResponsesEventToAnthropicState struct {
 	MessageStartSent bool
 	MessageStopSent  bool
+	SawText          bool
 
 	ContentBlockIndex   int
 	ContentBlockOpen    bool
@@ -242,7 +243,7 @@ func ResponsesEventToAnthropicEvents(
 		return nil
 	// response.done 是 Realtime/WS 与项目透传路径使用的终止别名；
 	// 普通 Responses HTTP SSE 的公开终止事件仍以 response.completed 为主。
-	case "response.completed", "response.done", "response.incomplete", "response.failed":
+	case "response.completed", "response.done", "response.incomplete", "response.failed", "response.cancelled", "response.canceled":
 		return resToAnthHandleCompleted(evt, state)
 	default:
 		return nil
@@ -393,6 +394,7 @@ func resToAnthHandleTextDelta(evt *ResponsesStreamEvent, state *ResponsesEventTo
 	if evt.Delta == "" {
 		return nil
 	}
+	state.SawText = true
 
 	var events []AnthropicStreamEvent
 
@@ -628,6 +630,12 @@ func resToAnthHandleCompleted(evt *ResponsesStreamEvent, state *ResponsesEventTo
 	}
 
 	var events []AnthropicStreamEvent
+	if !state.SawText {
+		if text := responsesTerminalText(evt); text != "" {
+			events = append(events, resToAnthHandleCreated(evt, state)...)
+			events = append(events, resToAnthHandleTextDelta(&ResponsesStreamEvent{Delta: text}, state)...)
+		}
+	}
 	events = append(events, closeCurrentBlock(state)...)
 
 	stopReason := "end_turn"

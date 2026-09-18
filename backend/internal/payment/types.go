@@ -2,7 +2,11 @@
 // registry, load balancing, and shared utilities for the payment subsystem.
 package payment
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"strings"
+)
 
 // PaymentType represents a supported payment method.
 type PaymentType = string
@@ -87,7 +91,7 @@ func GetBasePaymentType(t string) string {
 		return TypeEasyPay
 	case t == TypeAirwallex:
 		return TypeAirwallex
-	case t == TypeEpusdt:
+	case t == TypeEpusdt || IsEPUSDTCheckoutMethod(t):
 		return TypeEpusdt
 	case t == TypeStripe || t == TypeCard || t == TypeLink:
 		return TypeStripe
@@ -98,6 +102,154 @@ func GetBasePaymentType(t string) string {
 	default:
 		return t
 	}
+}
+
+const epusdtCheckoutMethodPrefix = TypeEpusdt + "_"
+
+// IsEPUSDTCheckoutMethod reports whether t is a network-specific EPUSDT checkout key
+// such as "epusdt_bsc" or "epusdt_trc20".
+func IsEPUSDTCheckoutMethod(t string) bool {
+	return strings.HasPrefix(strings.TrimSpace(t), epusdtCheckoutMethodPrefix)
+}
+
+// EPUSDTCheckoutNetwork extracts the configured network from a checkout method.
+func EPUSDTCheckoutNetwork(t string) string {
+	t = strings.TrimSpace(strings.ToLower(t))
+	if !strings.HasPrefix(t, epusdtCheckoutMethodPrefix) {
+		return ""
+	}
+	return strings.TrimSpace(t[len(epusdtCheckoutMethodPrefix):])
+}
+
+// EPUSDTCheckoutMethod builds the user-facing checkout key for an EPUSDT network.
+func EPUSDTCheckoutMethod(network string) string {
+	network = NormalizeEPUSDTNetwork(network)
+	if network == "" {
+		return TypeEpusdt
+	}
+	return TypeEpusdt + "_" + network
+}
+
+// NormalizeEPUSDTNetwork canonicalizes an EPUSDT network id.
+func NormalizeEPUSDTNetwork(network string) string {
+	switch strings.ToLower(strings.TrimSpace(network)) {
+	case "bsc", "bep20", "bnb", "binance":
+		return "bsc"
+	case "trc20", "tron", "trx":
+		return "trc20"
+	case "polygon", "matic", "pos":
+		return "polygon"
+	case "erc20", "eth", "ethereum":
+		return "erc20"
+	case "":
+		return ""
+	default:
+		return strings.ToLower(strings.TrimSpace(network))
+	}
+}
+
+// EPUSDTUpstreamNetwork maps a checkout/admin network id onto the chain id
+// expected by GMPay create-transaction (binance/tron/ethereum/polygon).
+func EPUSDTUpstreamNetwork(network string) string {
+	switch NormalizeEPUSDTNetwork(network) {
+	case "bsc":
+		return "binance"
+	case "trc20":
+		return "tron"
+	case "erc20":
+		return "ethereum"
+	case "polygon":
+		return "polygon"
+	default:
+		return strings.ToLower(strings.TrimSpace(network))
+	}
+}
+
+// EPUSDTNetworkDisplayName is the user-facing chain label shown on checkout.
+func EPUSDTNetworkDisplayName(network string) string {
+	switch NormalizeEPUSDTNetwork(network) {
+	case "bsc":
+		return "BNB Smart Chain / BSC (BEP20)"
+	case "trc20":
+		return "TRON (TRC20)"
+	case "polygon":
+		return "Polygon (PoS)"
+	case "erc20":
+		return "Ethereum (ERC20)"
+	default:
+		return ""
+	}
+}
+
+// EPUSDTNetworkFromMap reads the first configured network from a decrypted provider config.
+func EPUSDTNetworkFromMap(cfg map[string]string) string {
+	networks := EPUSDTNetworksFromMap(cfg)
+	if len(networks) == 0 {
+		return ""
+	}
+	return networks[0]
+}
+
+// EPUSDTNetworksFromMap reads every configured EPUSDT network.
+// It prefers the comma-separated "networks" field and falls back to "network".
+func EPUSDTNetworksFromMap(cfg map[string]string) []string {
+	if cfg == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(cfg["networks"])
+	if raw == "" {
+		raw = strings.TrimSpace(cfg["network"])
+	}
+	if raw == "" {
+		return nil
+	}
+	seen := make(map[string]bool)
+	out := make([]string, 0, 4)
+	for _, part := range strings.Split(raw, ",") {
+		network := NormalizeEPUSDTNetwork(part)
+		if network == "" || seen[network] {
+			continue
+		}
+		seen[network] = true
+		out = append(out, network)
+	}
+	return out
+}
+
+// EPUSDTInstanceSupportsNetwork reports whether cfg can serve the checkout network.
+func EPUSDTInstanceSupportsNetwork(cfg map[string]string, network string) bool {
+	wanted := NormalizeEPUSDTNetwork(network)
+	if wanted == "" {
+		return false
+	}
+	for _, got := range EPUSDTNetworksFromMap(cfg) {
+		if got == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+// EPUSDTNetworkFromConfig reads the first network from a stored provider config blob.
+func EPUSDTNetworkFromConfig(stored string) string {
+	networks := EPUSDTNetworksFromConfig(stored)
+	if len(networks) == 0 {
+		return ""
+	}
+	return networks[0]
+}
+
+// EPUSDTNetworksFromConfig reads every network from a stored provider config blob.
+func EPUSDTNetworksFromConfig(stored string) []string {
+	stored = strings.TrimSpace(stored)
+	if stored == "" {
+		return nil
+	}
+	var cfg map[string]string
+	if err := json.Unmarshal([]byte(stored), &cfg); err != nil || cfg == nil {
+		return nil
+	}
+	return EPUSDTNetworksFromMap(cfg)
 }
 
 // CreatePaymentRequest holds the parameters for creating a new payment.
@@ -210,6 +362,10 @@ type InstanceSelection struct {
 	Config         map[string]string
 	SupportedTypes string // Comma-separated list of supported payment types from the instance
 	PaymentMode    string // Payment display mode: "qrcode", "redirect", "popup"
+	// RechargeFeeRate, when set, overrides the global recharge fee for this instance.
+	RechargeFeeRate *float64
+	// BalanceRechargeMultiplier, when set, overrides the global balance multiplier.
+	BalanceRechargeMultiplier *float64
 }
 
 // Provider defines the interface that all payment providers must implement.

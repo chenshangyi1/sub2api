@@ -24,7 +24,8 @@ backend/main
 coverage.html
 
 # 依赖（使用 go mod）
-vendor/
+/vendor/
+backend/vendor/
 
 # Go 编译缓存
 backend/.gocache/
@@ -35,6 +36,7 @@ backend/.gocache/
 node_modules/
 frontend/node_modules/
 frontend/dist/
+frontend/public/canvas/
 *.local
 *.tsbuildinfo
 vite.config.d.ts
@@ -121,9 +123,12 @@ tests
 !deploy/tests/**
 CLAUDE.md
 .claude
+.grok
 scripts
 !backend/scripts/
 !backend/scripts/resolve-version.sh
+!frontend/scripts/
+!frontend/scripts/**
 .code-review-state
 #openspec/
 code-reviews/
@@ -155,5 +160,39 @@ output/
 
 # Vitest / Vite cache at repo root
 .vite/
-# 本地闭源插件开发目录及构建产物不进入 Sub2API 仓库
-/plugins/
+
+# Additional local secret and credential files
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.crt
+*.cer
+*.sql.gz
+*.dump
+*.sqlite
+*.sqlite3
+*.db
+**/config.local.yaml
+**/config.local.yml
+**/*-secrets.yaml
+**/*-secrets.yml
+# 本地工作产物与交付快照不属于源码基线
+/work/
+/outputs/
+
+# 生产同步时带入的备份/打包工件
+Dockerfile.bak-*
+*.tgz
+*.tar
+
+# 本项目的持久规格与实施计划
+!docs/superpowers/
+!docs/superpowers/**
+
+# kedaya local planning files must never ship
+plan.md
+task_plan.md

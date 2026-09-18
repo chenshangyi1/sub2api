@@ -66,6 +66,12 @@ const usageLogsGroupRollupCoveringIndexMigration = "236_usage_logs_group_rollup_
 const usageLogsGroupRollupCoveringIndexRepairMigration = "237_repair_usage_logs_group_rollup_covering_index_notx.sql"
 const usageLogsGroupRollupCoveringIndex = "idx_usage_logs_rollup_created_group_cost"
 
+func normalizeMigrationSQL(contentBytes []byte) string {
+	content := string(contentBytes)
+	content = strings.TrimPrefix(content, "\uFEFF")
+	return strings.TrimSpace(content)
+}
+
 type migrationChecksumCompatibilityRule struct {
 	fileChecksum       string
 	acceptedDBChecksum map[string]struct{}
@@ -164,7 +170,7 @@ func checkMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
-		content := strings.TrimSpace(string(contentBytes))
+		content := normalizeMigrationSQL(contentBytes)
 		if content == "" {
 			continue
 		}
@@ -255,7 +261,7 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
 
-		content := strings.TrimSpace(string(contentBytes))
+		content := normalizeMigrationSQL(contentBytes)
 		if content == "" {
 			continue // 跳过空文件
 		}
@@ -529,7 +535,7 @@ func latestMigrationBaseline(fsys fs.FS) (string, string, string, error) {
 	if err != nil {
 		return "", "", "", err
 	}
-	content := strings.TrimSpace(string(contentBytes))
+	content := normalizeMigrationSQL(contentBytes)
 	sum := sha256.Sum256([]byte(content))
 	hash := hex.EncodeToString(sum[:])
 	version := strings.TrimSuffix(name, ".sql")

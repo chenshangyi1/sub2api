@@ -412,11 +412,12 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 		}
 	}
 
+	req = WithAccountTrafficRequest(req, account)
 	req.Header.Del("authorization")
 	req.Header.Del("x-api-key")
 	req.Header.Del("x-goog-api-key")
 	req.Header.Del("cookie")
-	setAnthropicAPIKeyAuthHeader(req.Header, account, token)
+	setAnthropicAPIKeyAuthHeader(req.Header, account, token, account.GetBaseURL())
 
 	if req.Header.Get("content-type") == "" {
 		req.Header.Set("content-type", "application/json")
@@ -520,7 +521,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	if tokenType == "oauth" {
 		setHeaderRaw(req.Header, "authorization", "Bearer "+token)
 	} else {
-		setAnthropicAPIKeyAuthHeader(req.Header, account, token)
+		setAnthropicAPIKeyAuthHeader(req.Header, account, token, account.GetBaseURL())
 	}
 
 	// 白名单透传 headers（恢复真实 wire casing）
@@ -580,7 +581,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		logClaudeMimicDebug(req, body, account, tokenType, mimicClaudeCode)
 	}
 
-	return req, body, nil
+	return WithAccountTrafficRequest(req, account), body, nil
 }
 
 func sanitizeCountTokensRequestBody(body []byte) []byte {

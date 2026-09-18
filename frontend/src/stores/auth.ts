@@ -19,7 +19,7 @@ const AUTH_USER_KEY = 'auth_user'
 const REFRESH_TOKEN_KEY = 'refresh_token'
 const TOKEN_EXPIRES_AT_KEY = 'token_expires_at' // 存储过期时间戳而非有效期
 const PENDING_AUTH_SESSION_KEY = 'pending_auth_session'
-const AUTO_REFRESH_INTERVAL = 60 * 1000 // 60 seconds for user data refresh
+const AUTO_REFRESH_INTERVAL = 5 * 60 * 1000 // 5 minutes; JWT refresh is separate
 const TOKEN_REFRESH_BUFFER = 120 * 1000 // 120 seconds before expiry to refresh token
 
 type PendingAuthTokenField = 'pending_auth_token' | 'pending_oauth_token'
@@ -142,18 +142,22 @@ export const useAuthStore = defineStore('auth', () => {
 
   /**
    * Start auto-refresh interval for user data
-   * Refreshes user data every 60 seconds
+   * Balance/concurrency polling; JWT expiry uses scheduleTokenRefreshAt.
    */
   function startAutoRefresh(): void {
     // Clear existing interval if any
     stopAutoRefresh()
 
     refreshIntervalId = setInterval(() => {
-      if (token.value) {
-        refreshUser().catch((error) => {
-          console.error('Auto-refresh user failed:', error)
-        })
+      if (!token.value) {
+        return
       }
+      if (typeof document !== 'undefined' && document.hidden) {
+        return
+      }
+      refreshUser().catch((error) => {
+        console.error('Auto-refresh user failed:', error)
+      })
     }, AUTO_REFRESH_INTERVAL)
   }
 

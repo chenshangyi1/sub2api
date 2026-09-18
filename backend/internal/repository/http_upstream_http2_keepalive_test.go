@@ -57,12 +57,21 @@ func TestEnableOpenAIHTTP2KeepAlive_EnablesPingHealthCheck(t *testing.T) {
 	requireHTTP2Configured(t, tr, "http2 必须已挂到底层 http.Transport 上")
 }
 
-// openai_h2 模式构建的 Transport 必须带上 H2 PING 健康探测，从源头剔除死连接。
-func TestBuildUpstreamTransport_OpenAIH2_EnablesPingHealthCheck(t *testing.T) {
+func TestConfigureOpenAIHTTP2_DoesNotIdlePing(t *testing.T) {
+	tr := &http.Transport{}
+	h2, err := configureOpenAIHTTP2(tr)
+	require.NoError(t, err)
+	require.NotNil(t, h2)
+	require.Equal(t, time.Duration(0), h2.ReadIdleTimeout, "official OpenAI HTTP/2 must not idle-PING while waiting for first HEADERS")
+	requireHTTP2Configured(t, tr, "openai_h2 必须显式配置 http2")
+}
+
+// openai_h2 模式构建的 Transport 必须启用 HTTP/2，但不得 idle-PING。
+func TestBuildUpstreamTransport_OpenAIH2_EnablesHTTP2WithoutIdlePing(t *testing.T) {
 	tr, err := buildUpstreamTransport(http2KeepAliveTestPoolSettings(), nil, upstreamProtocolModeOpenAIH2)
 	require.NoError(t, err)
 	require.True(t, tr.ForceAttemptHTTP2, "openai_h2 必须启用 HTTP/2")
-	requireHTTP2Configured(t, tr, "openai_h2 必须显式配置 http2 以启用 ReadIdleTimeout")
+	requireHTTP2Configured(t, tr, "openai_h2 必须显式配置 http2")
 }
 
 // 非 H2 模式（default/h1）不应因本次改动被误配置：default 走 Go 自动 H2（惰性配置，

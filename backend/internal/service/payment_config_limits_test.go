@@ -147,6 +147,41 @@ func TestPcAggregateMethodLimits(t *testing.T) {
 			t.Fatalf("DailyLimit = %v, want 1000 (highest cap)", ml.DailyLimit)
 		}
 	})
+
+	t.Run("same instance recharge overrides are kept", func(t *testing.T) {
+		t.Parallel()
+		fee := 2.0
+		mult := 1.02
+		inst := makeInstance(1, "easypay", "alipay", `{"alipay":{"singleMin":1,"singleMax":100}}`)
+		inst.RechargeFeeRate = &fee
+		inst.BalanceRechargeMultiplier = &mult
+		ml := pcAggregateMethodLimits("alipay", []*dbent.PaymentProviderInstance{inst})
+		require.NotNil(t, ml.RechargeFeeRate)
+		require.Equal(t, 2.0, *ml.RechargeFeeRate)
+		require.NotNil(t, ml.BalanceRechargeMultiplier)
+		require.Equal(t, 1.02, *ml.BalanceRechargeMultiplier)
+	})
+
+	t.Run("mixed instance recharge overrides inherit global", func(t *testing.T) {
+		t.Parallel()
+		fee := 2.0
+		inst1 := makeInstance(1, "easypay", "alipay", `{"alipay":{"singleMin":1,"singleMax":100}}`)
+		inst1.RechargeFeeRate = &fee
+		inst2 := makeInstance(2, "easypay", "alipay", `{"alipay":{"singleMin":1,"singleMax":100}}`)
+		ml := pcAggregateMethodLimits("alipay", []*dbent.PaymentProviderInstance{inst1, inst2})
+		require.Nil(t, ml.RechargeFeeRate)
+		require.Nil(t, ml.BalanceRechargeMultiplier)
+	})
+
+	t.Run("unlimited instance still keeps matching recharge overrides", func(t *testing.T) {
+		t.Parallel()
+		fee := 2.0
+		inst := makeInstance(1, "easypay", "alipay", "")
+		inst.RechargeFeeRate = &fee
+		ml := pcAggregateMethodLimits("alipay", []*dbent.PaymentProviderInstance{inst})
+		require.NotNil(t, ml.RechargeFeeRate)
+		require.Equal(t, 2.0, *ml.RechargeFeeRate)
+	})
 }
 
 func TestPcGroupByPaymentType(t *testing.T) {
@@ -157,7 +192,7 @@ func TestPcGroupByPaymentType(t *testing.T) {
 		stripe := makeInstance(1, payment.TypeStripe, "card,alipay,link,wxpay", "")
 		easypay := makeInstance(2, payment.TypeEasyPay, "alipay,wxpay", "")
 
-		groups := pcGroupByPaymentType([]*dbent.PaymentProviderInstance{stripe, easypay})
+		groups := (&PaymentConfigService{}).pcGroupByPaymentType([]*dbent.PaymentProviderInstance{stripe, easypay})
 
 		// Stripe instance should only be in "stripe" group
 		if len(groups[payment.TypeStripe]) != 1 || groups[payment.TypeStripe][0].ID != 1 {
@@ -178,7 +213,7 @@ func TestPcGroupByPaymentType(t *testing.T) {
 		ep1 := makeInstance(1, payment.TypeEasyPay, "alipay,wxpay", "")
 		ep2 := makeInstance(2, payment.TypeEasyPay, "alipay,wxpay", "")
 
-		groups := pcGroupByPaymentType([]*dbent.PaymentProviderInstance{ep1, ep2})
+		groups := (&PaymentConfigService{}).pcGroupByPaymentType([]*dbent.PaymentProviderInstance{ep1, ep2})
 
 		if len(groups[payment.TypeAlipay]) != 2 {
 			t.Fatalf("alipay group should have 2 instances, got %d", len(groups[payment.TypeAlipay]))
@@ -192,10 +227,81 @@ func TestPcGroupByPaymentType(t *testing.T) {
 		t.Parallel()
 		stripe := makeInstance(1, payment.TypeStripe, "", "")
 
-		groups := pcGroupByPaymentType([]*dbent.PaymentProviderInstance{stripe})
+		groups := (&PaymentConfigService{}).pcGroupByPaymentType([]*dbent.PaymentProviderInstance{stripe})
 
 		if len(groups[payment.TypeStripe]) != 1 {
 			t.Fatalf("stripe with empty types should still be in stripe group, got %v", groups)
+		}
+	})
+
+	t.Run("epusdt instances split by configured network", func(t *testing.T) {
+		t.Parallel()
+		bsc := makeInstance(1, payment.TypeEpusdt, "epusdt", "")
+		bsc.Config = `{"network":"bsc","token":"USDT"}`
+		trc := makeInstance(2, payment.TypeEpusdt, "epusdt", "")
+		trc.Config = `{"network":"trc20","token":"USDT"}`
+		polygon := makeInstance(3, payment.TypeEpusdt, "epusdt", "")
+		polygon.Config = `{"network":"polygon","token":"USDT"}`
+		erc20 := makeInstance(4, payment.TypeEpusdt, "epusdt", "")
+		erc20.Config = `{"network":"erc20","token":"USDT"}`
+
+		groups := (&PaymentConfigService{}).pcGroupByPaymentType([]*dbent.PaymentProviderInstance{bsc, trc, polygon, erc20})
+
+		if _, ok := groups[payment.TypeEpusdt]; ok {
+			t.Fatalf("enabled EPUSDT networks must not collapse into a single epusdt method, got %v", groups)
+		}
+		if len(groups["epusdt_bsc"]) != 1 || groups["epusdt_bsc"][0].ID != 1 {
+			t.Fatalf("bsc group = %v, want instance 1", groups["epusdt_bsc"])
+		}
+		if len(groups["epusdt_trc20"]) != 1 || groups["epusdt_trc20"][0].ID != 2 {
+			t.Fatalf("trc20 group = %v, want instance 2", groups["epusdt_trc20"])
+		}
+		if len(groups["epusdt_polygon"]) != 1 || groups["epusdt_polygon"][0].ID != 3 {
+			t.Fatalf("polygon group = %v, want instance 3", groups["epusdt_polygon"])
+		}
+		if len(groups["epusdt_erc20"]) != 1 || groups["epusdt_erc20"][0].ID != 4 {
+			t.Fatalf("erc20 group = %v, want instance 4", groups["epusdt_erc20"])
+		}
+	})
+
+	t.Run("epusdt GMPay chain ids still split onto checkout buttons", func(t *testing.T) {
+		t.Parallel()
+		bsc := makeInstance(1, payment.TypeEpusdt, "epusdt", "")
+		bsc.Config = `{"network":"binance","token":"USDT"}`
+		trc := makeInstance(2, payment.TypeEpusdt, "epusdt", "")
+		trc.Config = `{"network":"tron","token":"USDT"}`
+		eth := makeInstance(3, payment.TypeEpusdt, "epusdt", "")
+		eth.Config = `{"network":"ethereum","token":"USDT"}`
+
+		groups := (&PaymentConfigService{}).pcGroupByPaymentType([]*dbent.PaymentProviderInstance{bsc, trc, eth})
+		if len(groups["epusdt_bsc"]) != 1 || groups["epusdt_bsc"][0].ID != 1 {
+			t.Fatalf("binance group = %v, want epusdt_bsc instance 1", groups["epusdt_bsc"])
+		}
+		if len(groups["epusdt_trc20"]) != 1 || groups["epusdt_trc20"][0].ID != 2 {
+			t.Fatalf("tron group = %v, want epusdt_trc20 instance 2", groups["epusdt_trc20"])
+		}
+		if len(groups["epusdt_erc20"]) != 1 || groups["epusdt_erc20"][0].ID != 3 {
+			t.Fatalf("ethereum group = %v, want epusdt_erc20 instance 3", groups["epusdt_erc20"])
+		}
+	})
+
+	t.Run("one epusdt instance with multiple networks appears on each checkout button", func(t *testing.T) {
+		t.Parallel()
+		inst := makeInstance(9, payment.TypeEpusdt, "epusdt", "")
+		inst.Config = `{"networks":"bsc,trc20,erc20","token":"USDT"}`
+
+		groups := (&PaymentConfigService{}).pcGroupByPaymentType([]*dbent.PaymentProviderInstance{inst})
+		if len(groups["epusdt_bsc"]) != 1 || groups["epusdt_bsc"][0].ID != 9 {
+			t.Fatalf("bsc group = %v, want instance 9", groups["epusdt_bsc"])
+		}
+		if len(groups["epusdt_trc20"]) != 1 || groups["epusdt_trc20"][0].ID != 9 {
+			t.Fatalf("trc20 group = %v, want instance 9", groups["epusdt_trc20"])
+		}
+		if len(groups["epusdt_erc20"]) != 1 || groups["epusdt_erc20"][0].ID != 9 {
+			t.Fatalf("erc20 group = %v, want instance 9", groups["epusdt_erc20"])
+		}
+		if _, ok := groups["epusdt_polygon"]; ok {
+			t.Fatalf("polygon must stay hidden when not configured, got %v", groups)
 		}
 	})
 }
@@ -275,6 +381,42 @@ func TestGetAvailableMethodLimitsIncludesEasyPayCustomMethodDisplayName(t *testi
 	limits, ok := resp.Methods["ldc"]
 	require.True(t, ok, "expected custom EasyPay method limits to be visible")
 	require.Equal(t, "LDC Pay", limits.DisplayName)
+}
+
+func TestGetAvailableMethodLimitsSplitsEPUSDTByNetwork(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+
+	_, err := client.PaymentProviderInstance.Create().
+		SetProviderKey(payment.TypeEpusdt).
+		SetName("USDT BSC").
+		SetConfig(`{"pid":"1","secretKey":"s","apiBase":"https://ep.example.test","notifyUrl":"https://shop.example.test/api/v1/payments/callback","returnUrl":"https://shop.example.test/payment/result","token":"USDT","network":"bsc","currency":"CNY"}`).
+		SetSupportedTypes("epusdt").
+		SetEnabled(true).
+		Save(ctx)
+	require.NoError(t, err)
+
+	_, err = client.PaymentProviderInstance.Create().
+		SetProviderKey(payment.TypeEpusdt).
+		SetName("USDT TRC20").
+		SetConfig(`{"pid":"1","secretKey":"s","apiBase":"https://ep.example.test","notifyUrl":"https://shop.example.test/api/v1/payments/callback","returnUrl":"https://shop.example.test/payment/result","token":"USDT","network":"trc20","currency":"CNY"}`).
+		SetSupportedTypes("epusdt").
+		SetEnabled(true).
+		Save(ctx)
+	require.NoError(t, err)
+
+	svc := &PaymentConfigService{entClient: client}
+	resp, err := svc.GetAvailableMethodLimits(ctx)
+	require.NoError(t, err)
+	require.NotContains(t, resp.Methods, payment.TypeEpusdt)
+
+	bsc, ok := resp.Methods["epusdt_bsc"]
+	require.True(t, ok, "expected BSC EPUSDT method")
+	require.Equal(t, "BNB Smart Chain / BSC (BEP20)", bsc.DisplayName)
+
+	trc, ok := resp.Methods["epusdt_trc20"]
+	require.True(t, ok, "expected TRC20 EPUSDT method")
+	require.Equal(t, "TRON (TRC20)", trc.DisplayName)
 }
 
 func TestPcComputeGlobalRange(t *testing.T) {

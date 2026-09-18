@@ -24,10 +24,36 @@ const (
 	PlatformAntigravity = "antigravity"
 	PlatformGrok        = "grok"
 	// 国产 OpenAI 兼容供应商（经 OpenAI 网关转发，按 Chat Completions 协议）。
-	PlatformKimi      = "kimi"     // Kimi (月之暗面 / Moonshot)
-	PlatformZhipu     = "zhipu"    // 智谱 GLM (bigmodel)
-	PlatformDeepseek  = "deepseek" // DeepSeek
+	// PlatformCN 是统一国模平台；kimi/zhipu/deepseek 仅作历史账号兼容。
+	PlatformCN        = "cn"
+	PlatformKimi      = "kimi"     // legacy: Kimi (月之暗面 / Moonshot)
+	PlatformZhipu     = "zhipu"    // legacy: 智谱 GLM (bigmodel)
+	PlatformDeepseek  = "deepseek" // legacy: DeepSeek
+	PlatformVideo     = "video"
 	PlatformComposite = "composite"
+	// PlatformAdaptive is a group-only inbound identity. It is not an
+	// AccountPlatform: the parent has no accounts. Clients still hit the
+	// OpenAI-compat inbound routes (Claude Code /v1/messages, Codex
+	// /responses, Chat Completions, images, video); forwarding follows the
+	// selected leaf's protocol (anthropic / gemini / openai / grok / cn / video).
+	PlatformAdaptive = "adaptive"
+)
+
+// CN vendor presets stored in credentials["cn_vendor"].
+const (
+	CNVendorKimi     = "kimi"
+	CNVendorZhipu    = "zhipu"
+	CNVendorDeepseek = "deepseek"
+	CNVendorMiniMax  = "minimax"
+	CNVendorCustom   = "custom"
+)
+
+// Video vendor presets stored in credentials["video_vendor"].
+const (
+	VideoVendorSora   = "sora"
+	VideoVendorKling  = "kling"
+	VideoVendorJimeng = "jimeng"
+	VideoVendorCustom = "custom"
 )
 
 // Account mode constants 区分国产供应商的「按量付费（余额）」与「Coding Plan」两种接入方式。
@@ -43,7 +69,7 @@ const (
 const (
 	APIProtocolChatCompletions = "chat_completions" // OpenAI Chat Completions（默认）
 	APIProtocolAnthropic       = "anthropic"        // 原生 Anthropic /v1/messages（适配 Claude Code）
-	APIProtocolResponses       = "responses"        // OpenAI Responses（仅 deepseek，适配 Codex）
+	APIProtocolResponses       = "responses"        // OpenAI Responses（deepseek / kimi 原生端点，适配 Codex）
 	APIProtocolAdaptive        = "adaptive"         // 按入站协议优先选择供应商原生端点
 )
 
@@ -144,6 +170,18 @@ var DefaultAntigravityModelMapping = map[string]string{
 	"gemini-3.6-flash-low":    "gemini-3.6-flash-low",
 	"gemini-3.6-flash-medium": "gemini-3.6-flash-medium",
 	"gemini-3.6-flash-tiered": "gemini-3.6-flash-tiered",
+	// Gemini 3.7 Flash tiered models
+	"gemini-3.7-flash":        "gemini-3.7-flash",
+	"gemini-3.7-flash-high":   "gemini-3.7-flash-high",
+	"gemini-3.7-flash-low":    "gemini-3.7-flash-low",
+	"gemini-3.7-flash-medium": "gemini-3.7-flash-medium",
+	"gemini-3.7-flash-tiered": "gemini-3.7-flash-tiered",
+	// Gemini 3.8 Flash tiered models
+	"gemini-3.8-flash":        "gemini-3.8-flash",
+	"gemini-3.8-flash-high":   "gemini-3.8-flash-high",
+	"gemini-3.8-flash-low":    "gemini-3.8-flash-low",
+	"gemini-3.8-flash-medium": "gemini-3.8-flash-medium",
+	"gemini-3.8-flash-tiered": "gemini-3.8-flash-tiered",
 	// Gemini 3 image 兼容映射（向 3.1 image 迁移）
 	"gemini-3-pro-image":         "gemini-3.1-flash-image",
 	"gemini-3-pro-image-preview": "gemini-3.1-flash-image",

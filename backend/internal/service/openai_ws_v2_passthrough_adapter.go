@@ -944,6 +944,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if !ok {
 		return errors.New("openai ws passthrough upstream connection does not support frame relay")
 	}
+	upstreamFrameConn, trafficWrapErr := wrapAccountTrafficFrameConn(ctx, s.httpUpstream, account, upstreamFrameConn)
+	if trafficWrapErr != nil {
+		return trafficWrapErr
+	}
+	if controlled, ok := upstreamFrameConn.(*accountTrafficFrameConn); ok {
+		defer controlled.finish(0)
+	}
 	relayUpstreamFrameConn := &openAIWSPassthroughFirstOutputFrameConn{
 		inner:             upstreamFrameConn,
 		activeReadTimeout: s.openAIWSPassthroughIdleTimeout(),
@@ -1534,10 +1541,11 @@ func buildOpenAIWSPassthroughFailureEvent(responseID, model string) []byte {
 		responseID = "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	}
 	response := map[string]any{
-		"id":     responseID,
-		"object": "response",
-		"status": "failed",
-		"output": []any{},
+		"id":         responseID,
+		"object":     "response",
+		"created_at": time.Now().Unix(),
+		"status":     "failed",
+		"output":     []any{},
 		"error": map[string]string{
 			"code":    "upstream_error",
 			"message": "upstream websocket disconnected before response.completed",
@@ -1547,8 +1555,9 @@ func buildOpenAIWSPassthroughFailureEvent(responseID, model string) []byte {
 		response["model"] = model
 	}
 	payload, err := json.Marshal(map[string]any{
-		"type":     "response.failed",
-		"response": response,
+		"type":            "response.failed",
+		"sequence_number": 0,
+		"response":        response,
 	})
 	if err != nil {
 		return nil

@@ -127,22 +127,20 @@ func TestOpenAIStreamingPassthroughFlushesAtCompleteEventBoundaries(t *testing.T
 	require.Equal(t, 2, result.usage.OutputTokens)
 }
 
-func TestOpenAIStreamingPassthroughKeepsPreamblePendingUntilFirstOutputBoundary(t *testing.T) {
+func TestOpenAIStreamingPassthroughFlushesPreambleBeforeFirstOutputBoundary(t *testing.T) {
 	preamble := "event: response.created\n" +
-		`data: {"type":"response.created","response":{"id":"resp_pending"}}` + "\n\n" +
-		": waiting\n\n"
+		`data: {"type":"response.created","response":{"id":"resp_pending"}}` + "\n\n"
+	heartbeat := ": waiting\n\n"
 	firstOutput := `data: {"type":"response.output_text.delta","delta":"ready"}` + "\n\n"
 	terminalEvent := `data: {"type":"response.completed","response":{"id":"resp_pending","usage":{"input_tokens":4,"output_tokens":1,"total_tokens":5}}}` + "\n\n"
-	upstream := preamble + firstOutput + terminalEvent
+	upstream := preamble + heartbeat + firstOutput + terminalEvent
 
 	_, recorder, writer, err := runPassthroughFlushTest(t, io.NopCloser(strings.NewReader(upstream)), -1)
 
 	require.NoError(t, err)
 	require.Equal(t, upstream, recorder.Body.String())
-	require.Equal(t, []int{
-		len(preamble) + len(firstOutput),
-		len(upstream),
-	}, writer.flushBodyLengths)
+	require.GreaterOrEqual(t, writer.flushBodyLengths[0], len(preamble))
+	require.Less(t, writer.flushBodyLengths[0], len(preamble)+len(heartbeat)+len(firstOutput))
 }
 
 func TestOpenAIStreamingPassthroughFlushesTerminalEventAtEOFWithoutBlankLine(t *testing.T) {
@@ -171,8 +169,11 @@ func TestOpenAIStreamingPassthroughFailedBeforeOutputCanStillFailOverWithoutFlus
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
-	require.Empty(t, recorder.Body.String())
-	require.Empty(t, writer.flushBodyLengths)
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.Contains(t, recorder.Body.String(), `"type":"response.created"`)
+	require.Contains(t, recorder.Body.String(), "resp_failover")
+	require.NotContains(t, recorder.Body.String(), "response.failed")
+	require.NotEmpty(t, writer.flushBodyLengths)
 }
 
 func TestOpenAIStreamingPassthroughNonRetryableFailedBeforeOutputFlushesAtBoundary(t *testing.T) {

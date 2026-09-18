@@ -155,7 +155,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
+		if s.shouldFailoverUpstreamResponse(resp.StatusCode, resp.Header, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -239,7 +239,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	attachSSEScannerBuffer(scanner, nil, maxLineSize)
 
 	var finalResp *apicompat.AnthropicResponse
 	var usage ClaudeUsage
@@ -393,7 +393,7 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	attachSSEScannerBuffer(scanner, nil, maxLineSize)
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{

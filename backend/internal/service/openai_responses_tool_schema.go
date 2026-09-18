@@ -30,7 +30,7 @@ var errOpenAIResponsesToolSchemaLimit = errors.New("OpenAI Responses tool schema
 // path requires a concrete object type at a function tool's parameter root.
 // This defect is shared by the OpenAI, Anthropic, and CN-compatible paths.
 func shouldRepairOpenAIResponsesNullToolSchemaType(platform string) bool {
-	return platform == PlatformOpenAI || platform == PlatformAnthropic || IsCNProvider(platform)
+	return platform == PlatformOpenAI || platform == PlatformAnthropic || IsCNProvider(platform) || IsVideoProvider(platform)
 }
 
 // shouldSanitizeOpenAIResponsesToolSchemaPatterns is intentionally narrower:
@@ -40,6 +40,21 @@ func shouldSanitizeOpenAIResponsesToolSchemaPatterns(platform string) bool {
 }
 
 func sanitizeOpenAIResponsesToolSchemasForPlatform(body []byte, platform string) ([]byte, bool, error) {
+	// Stay below the body limit even when root-type repairs grow the document.
+	// Large/ambiguous cases retain the exact ordered-pass behavior below.
+	if platform == PlatformOpenAI && len(body) > 0 && len(body) < openAIResponsesToolSchemaMaxBodySize/2 &&
+		openAIResponsesBodyMayContainRegexLookaround(body) {
+		normalized, changed, err := trySanitizeOpenAIResponsesToolSchemas(body, openAIResponsesToolSchemaOptions{
+			replaceNullParameterTypes:       true,
+			injectObjectUnionRootObjectType: true,
+			removeLookaroundPatterns:        true,
+		})
+		if err == nil {
+			return normalized, changed, nil
+		}
+		// Keep the original ordered passes for parser limits or overlapping
+		// patches, including their error classification and rollback behavior.
+	}
 	normalized := body
 	changed := false
 	if shouldRepairOpenAIResponsesNullToolSchemaType(platform) {
@@ -144,6 +159,16 @@ type openAIResponsesToolSchemaParser struct {
 func sanitizeOpenAIResponsesToolSchemas(
 	body []byte, options openAIResponsesToolSchemaOptions,
 ) ([]byte, bool, error) {
+	normalized, changed, err := trySanitizeOpenAIResponsesToolSchemas(body, options)
+	if errors.Is(err, errOpenAIResponsesToolSchemaLimit) {
+		return body, false, nil
+	}
+	return normalized, changed, err
+}
+
+func trySanitizeOpenAIResponsesToolSchemas(
+	body []byte, options openAIResponsesToolSchemaOptions,
+) ([]byte, bool, error) {
 	if len(body) > openAIResponsesToolSchemaMaxBodySize {
 		return body, false, nil
 	}
@@ -152,9 +177,6 @@ func sanitizeOpenAIResponsesToolSchemas(
 	}
 	p := openAIResponsesToolSchemaParser{body: body, options: options}
 	if err := p.parseValue(openAIResponsesToolSchemaDocument, false, 0); err != nil {
-		if errors.Is(err, errOpenAIResponsesToolSchemaLimit) {
-			return body, false, nil
-		}
 		return nil, false, err
 	}
 	p.skipWhitespace()
@@ -199,7 +221,10 @@ func (p *openAIResponsesToolSchemaParser) parseValue(
 		case "additional_tools":
 			context = openAIResponsesToolSchemaToolCarrier
 		default:
-			context = openAIResponsesToolSchemaSkip
+			// The type probe already parsed this entire non-tool item with the
+			// same syntax and depth checks as Skip. Reuse its end offset.
+			p.pos = probe.pos
+			return nil
 		}
 	}
 	switch p.body[p.pos] {
@@ -630,7 +655,13 @@ func (p *openAIResponsesToolSchemaParser) syntaxError(message string) error {
 func decodeOpenAIResponsesJSONString(raw []byte) (string, error) {
 	decoded, err := strconv.Unquote(string(raw))
 	if err != nil {
-		return "", err
+		// JSON permits escaped slashes and UTF-16 surrogate pairs that Go
+		// string literals do not. Keep the common path, but decode these as JSON.
+		var jsonDecoded string
+		if err := json.Unmarshal(raw, &jsonDecoded); err != nil {
+			return "", err
+		}
+		return jsonDecoded, nil
 	}
 	return decoded, nil
 }

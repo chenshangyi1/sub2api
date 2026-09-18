@@ -97,7 +97,8 @@ func TestOpenAINativeMetadataDoesNotDisarmFirstOutputTimeout(t *testing.T) {
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
 	require.True(t, failoverErr.SafeToFailoverAfterWrite)
-	require.Empty(t, recorder.Body.String())
+	require.Contains(t, recorder.Body.String(), `"type":"response.created"`)
+	require.NotContains(t, recorder.Body.String(), `"delta"`)
 	select {
 	case <-writerDone:
 	case <-time.After(time.Second):

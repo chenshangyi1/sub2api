@@ -31,10 +31,11 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 		return
 	}
-	if apiKey.Group.Platform != service.PlatformOpenAI && apiKey.Group.Platform != service.PlatformComposite {
-		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Codex alpha search is only available for OpenAI and Composite groups")
+	if apiKey.Group.Platform != service.PlatformOpenAI && apiKey.Group.Platform != service.PlatformComposite && apiKey.Group.Platform != service.PlatformAdaptive {
+		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Codex alpha search is only available for OpenAI, Composite, and Adaptive groups")
 		return
 	}
+	apiKey = h.bindAdaptiveParentToMatchingLeaf(c, apiKey, []string{service.PlatformOpenAI}, nil)
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
@@ -136,15 +137,15 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 	if h.handlePreauthorizationError(c, err, false) {
 		return
 	}
+	defer func() { deferBalancePreauthorizationRefund(reqLog, balanceGuard) }()
 	if balanceGuard != nil {
-		defer deferBalancePreauthorizationRefund(reqLog, balanceGuard)
 		c.Request = c.Request.WithContext(service.ContextWithBalancePreauthorizationGuard(c.Request.Context(), balanceGuard))
 	}
 
 	for {
-		selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+		selection, _, routedKey, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityAlongKeyRoutes(
 			c.Request.Context(),
-			apiKey.GroupID,
+			apiKey,
 			"",
 			sessionHash,
 			requestedModel,
@@ -156,6 +157,21 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			false,
 			service.PlatformOpenAI,
 		)
+		if err == nil && routedKey != nil {
+			changed := keyRouteGroupChanged(apiKey, routedKey)
+			if bindErr := h.bindSelectedKeyRoute(c, keyRouteBinding{
+				Previous: apiKey, Selected: routedKey, Subscription: &subscription,
+				Mapping: &channelMapping, Guard: &balanceGuard, Body: body, Model: requestedModel, PricingAt: asPricingAt,
+			}); bindErr != nil {
+				releaseRejectedKeyRouteSelection(selection)
+				h.handlePreauthorizationError(c, bindErr, false)
+				return
+			}
+			apiKey = routedKey
+			if changed {
+				forwardBody = openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
+			}
+		}
 		if err != nil || selection == nil || selection.Account == nil {
 			if failoverClientGone(c) {
 				reqLog.Info("openai_alpha_search.account_select_aborted_client_disconnected", zap.Error(err))
@@ -163,6 +179,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			}
 			if len(failedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, requestedModel, requestedModel, service.PlatformOpenAI)
+				cls = classifySelectionFailureErrorFromGin(c, err, cls)
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				}

@@ -317,20 +317,21 @@ func (h *GrokOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 }
 
 type GrokSSOToOAuthRequest struct {
-	SSOTokens          []string       `json:"sso_tokens"`
-	SSOToken           string         `json:"sso_token"`
-	Name               string         `json:"name"`
-	Notes              *string        `json:"notes"`
-	ProxyID            *int64         `json:"proxy_id"`
-	GroupIDs           []int64        `json:"group_ids"`
-	Credentials        map[string]any `json:"credentials"`
-	Extra              map[string]any `json:"extra"`
-	Concurrency        int            `json:"concurrency"`
-	LoadFactor         *int           `json:"load_factor"`
-	Priority           int            `json:"priority"`
-	RateMultiplier     *float64       `json:"rate_multiplier"`
-	ExpiresAt          *int64         `json:"expires_at"`
-	AutoPauseOnExpired *bool          `json:"auto_pause_on_expired"`
+	SSOTokens          []string              `json:"sso_tokens"`
+	SSOToken           string                `json:"sso_token"`
+	Name               string                `json:"name"`
+	Notes              *string               `json:"notes"`
+	ProxyID            *int64                `json:"proxy_id"`
+	GroupIDs           []int64               `json:"group_ids"`
+	AccountGroups      []service.AccountGroup `json:"account_groups"`
+	Credentials        map[string]any        `json:"credentials"`
+	Extra              map[string]any        `json:"extra"`
+	Concurrency        int                   `json:"concurrency"`
+	LoadFactor         *int                  `json:"load_factor"`
+	Priority           int                   `json:"priority"`
+	RateMultiplier     *float64              `json:"rate_multiplier"`
+	ExpiresAt          *int64                `json:"expires_at"`
+	AutoPauseOnExpired *bool                 `json:"auto_pause_on_expired"`
 }
 
 type GrokSSOToOAuthItemResult struct {
@@ -442,6 +443,7 @@ func (h *GrokOAuthHandler) createAccountFromSSOToken(ctx context.Context, req Gr
 		Priority:           req.Priority,
 		RateMultiplier:     req.RateMultiplier,
 		GroupIDs:           append([]int64(nil), req.GroupIDs...),
+		AccountGroups:      append([]service.AccountGroup(nil), req.AccountGroups...),
 		ExpiresAt:          expiresAt,
 		AutoPauseOnExpired: autoPauseOnExpired,
 	})

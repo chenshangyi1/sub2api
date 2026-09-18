@@ -311,6 +311,10 @@ type ChannelMonitorV2Repository interface {
 	// passive aggregator (and bootstrap progress). Missing row → zero value, nil error.
 	GetAggregationWatermark(ctx context.Context) (*ChannelMonitorV2AggregationWatermark, error)
 	RecomputeRange(ctx context.Context, start, end time.Time) error
+	// RecomputeLiveRange refreshes the trailing overlap without pruning older
+	// facts. Live ticks use a shorter error lookback so the default 90m page
+	// stays cheap under storms.
+	RecomputeLiveRange(ctx context.Context, start, end time.Time) error
 }
 
 // ChannelMonitorV2BootstrapProductWindow is the longest UI range that must be
@@ -407,11 +411,16 @@ func (s *ChannelMonitorV2Service) hideThroughputForViewer(ctx context.Context, a
 }
 
 func (s *ChannelMonitorV2Service) GetConfig(ctx context.Context) (*ChannelMonitorV2Config, error) {
-	return s.repo.GetConfig(ctx)
+	cfg, err := s.repo.GetConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ensureChannelMonitorV2KnownPlatforms(cfg)
+	return cfg, nil
 }
 
 func (s *ChannelMonitorV2Service) getEnabledConfig(ctx context.Context) (*ChannelMonitorV2Config, error) {
-	cfg, err := s.repo.GetConfig(ctx)
+	cfg, err := s.GetConfig(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -422,6 +431,7 @@ func (s *ChannelMonitorV2Service) getEnabledConfig(ctx context.Context) (*Channe
 }
 
 func (s *ChannelMonitorV2Service) UpdateConfig(ctx context.Context, cfg ChannelMonitorV2Config, expectedVersion int, actorID int64) (*ChannelMonitorV2Config, error) {
+	ensureChannelMonitorV2KnownPlatforms(&cfg)
 	if err := normalizeChannelMonitorV2Config(&cfg); err != nil {
 		return nil, err
 	}
@@ -762,6 +772,44 @@ func normalizeChannelMonitorV2Config(cfg *ChannelMonitorV2Config) error {
 	}
 	sort.Slice(cfg.Platforms, func(i, j int) bool { return cfg.Platforms[i].Platform < cfg.Platforms[j].Platform })
 	return nil
+}
+
+// ChannelMonitorV2KnownPlatforms is the complete V2 settings catalog.
+// kiro is a display partition kept from the original factory seed; CN OpenAI-
+// compatible providers were added after the original six-platform default.
+var ChannelMonitorV2KnownPlatforms = []string{
+	"anthropic",
+	"openai",
+	"grok",
+	"kiro",
+	"gemini",
+	"antigravity",
+	"kimi",
+	"zhipu",
+	"deepseek",
+}
+
+func ensureChannelMonitorV2KnownPlatforms(cfg *ChannelMonitorV2Config) {
+	if cfg == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(cfg.Platforms))
+	for _, p := range cfg.Platforms {
+		name := strings.ToLower(strings.TrimSpace(p.Platform))
+		if name != "" {
+			seen[name] = struct{}{}
+		}
+	}
+	for _, name := range ChannelMonitorV2KnownPlatforms {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		cfg.Platforms = append(cfg.Platforms, ChannelMonitorV2PlatformConfig{
+			Platform: name,
+			Enabled:  true,
+			Models:   []string{},
+		})
+	}
 }
 
 // DefaultChannelMonitorV2IgnoredErrorCategories are factory defaults for

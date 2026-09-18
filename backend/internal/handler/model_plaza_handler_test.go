@@ -50,6 +50,18 @@ func TestFilterPlazaVisibleGroups_AuthedEmptySetSeesNoExclusive(t *testing.T) {
 	require.Len(t, visible, 2)
 }
 
+func TestFilterPlazaVisibleGroups_HidesNonUserVisible(t *testing.T) {
+	groups := []service.PlazaGroup{
+		{ID: 1, Name: "visible", UserVisible: true, UserVisibleSet: true},
+		{ID: 2, Name: "hidden-leaf", UserVisible: false, UserVisibleSet: true},
+		{ID: 3, Name: "unset-defaults-visible"},
+	}
+	visible := filterPlazaVisibleGroups(groups, map[int64]struct{}{})
+	require.Len(t, visible, 2)
+	ids := []int64{visible[0].ID, visible[1].ID}
+	require.ElementsMatch(t, []int64{1, 3}, ids)
+}
+
 func TestModelPlazaHandler_NilSettingServiceFailsClosed404(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &ModelPlazaHandler{} // settingService == nil → fail-closed

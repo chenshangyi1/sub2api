@@ -5,7 +5,9 @@ import {
   isBuiltInAlipayMethod,
   isBuiltInWxpayMethod,
   parseEasyPayCustomMethods,
+  parseEpusdtNetworks,
   serializeEasyPayCustomMethods,
+  serializeEpusdtNetworks,
 } from '@/components/payment/providerConfig'
 
 function findField(providerKey: string, key: string) {
@@ -45,6 +47,15 @@ describe('PROVIDER_CONFIG_FIELDS.airwallex', () => {
 
   it('explains that apiBase must match the Airwallex key environment', () => {
     expect(findField('airwallex', 'apiBase')?.hintKey).toBe('admin.settings.payment.field_airwallexApiBaseHint')
+  })
+})
+
+describe('PROVIDER_CONFIG_FIELDS.epusdt', () => {
+  it('lets admins pick multiple checkout networks instead of a single text field', () => {
+    expect(findField('epusdt', 'network')).toBeUndefined()
+    expect(findField('epusdt', 'token')?.defaultValue).toBe('USDT')
+    expect(parseEpusdtNetworks('binance, tron')).toEqual(['bsc', 'trc20'])
+    expect(serializeEpusdtNetworks(['bsc', 'trc20', 'bsc'])).toBe('bsc,trc20')
   })
 })
 

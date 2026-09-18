@@ -406,4 +406,18 @@ describe('admin GroupsView column settings', () => {
     expect(text.indexOf('Today')).toBeLessThan(text.indexOf('Yesterday'))
     expect(text.indexOf('Yesterday')).toBeLessThan(text.indexOf('Total'))
   })
+
+  it('collapses create-group billing, scheduling, and advanced sections by default', async () => {
+    const wrapper = await mountView()
+    await wrapper.get('[data-tour="groups-create-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="create-group-section-basic"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="create-group-section-billing"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="create-group-section-scheduling"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="create-group-section-advanced"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="create-group-billing-body"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="create-group-scheduling-body"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="create-group-advanced-body"]').exists()).toBe(false)
+  })
 })

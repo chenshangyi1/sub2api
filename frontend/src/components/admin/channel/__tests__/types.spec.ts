@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   apiIntervalsToForm,
   apiTimePricingToForm,
+  collectChannelModelPricing,
   createDefaultTimePricingForm,
   formIntervalsToAPI,
   formTimePricingToAPI,
@@ -214,5 +215,104 @@ describe('time pricing', () => {
     expect(validateTimePricing(form, t)).toContain('timezone')
     expect(() => formTimePricingToAPI(form)).not.toThrow()
     expect(formTimePricingToAPI(form)?.timezone).toBe('')
+  })
+})
+
+describe('collectChannelModelPricing', () => {
+  it('keeps a filled openai token card even when that platform tab is disabled', () => {
+    const pricing = collectChannelModelPricing([
+      {
+        platform: 'openai',
+        enabled: false,
+        model_pricing: [{
+          models: ['kimi-k3'],
+          billing_mode: 'token',
+          input_price: 3,
+          output_price: 9,
+          cache_write_price: null,
+          cache_read_price: null,
+          fast_multiplier: null,
+          flex_multiplier: null,
+          image_input_price: null,
+          image_output_price: null,
+          per_request_price: null,
+          intervals: [],
+          time_pricing: createDefaultTimePricingForm(),
+        }],
+      },
+    ])
+
+    expect(pricing).toHaveLength(1)
+    expect(pricing[0]).toMatchObject({
+      platform: 'openai',
+      models: ['kimi-k3'],
+      billing_mode: 'token',
+      input_price: 0.000003,
+      output_price: 0.000009,
+    })
+  })
+
+  it('collects a kimi-k3 card from a disabled kimi tab while openai stays enabled', () => {
+    const pricing = collectChannelModelPricing([
+      {
+        platform: 'openai',
+        enabled: true,
+        model_pricing: [],
+      },
+      {
+        platform: 'kimi',
+        enabled: false,
+        model_pricing: [{
+          models: ['kimi-k3'],
+          billing_mode: 'token',
+          input_price: 3,
+          output_price: 9,
+          cache_write_price: null,
+          cache_read_price: null,
+          fast_multiplier: null,
+          flex_multiplier: null,
+          image_input_price: null,
+          image_output_price: null,
+          per_request_price: null,
+          intervals: [],
+          time_pricing: createDefaultTimePricingForm(),
+        }],
+      },
+    ])
+
+    expect(pricing).toHaveLength(1)
+    expect(pricing[0]).toMatchObject({
+      platform: 'kimi',
+      models: ['kimi-k3'],
+      input_price: 0.000003,
+      output_price: 0.000009,
+    })
+  })
+
+  it('still collects a filled card from an enabled platform', () => {
+    const pricing = collectChannelModelPricing([
+      {
+        platform: 'openai',
+        enabled: true,
+        model_pricing: [{
+          models: ['kimi-k3'],
+          billing_mode: 'token',
+          input_price: 3,
+          output_price: 9,
+          cache_write_price: null,
+          cache_read_price: null,
+          fast_multiplier: null,
+          flex_multiplier: null,
+          image_input_price: null,
+          image_output_price: null,
+          per_request_price: null,
+          intervals: [],
+          time_pricing: createDefaultTimePricingForm(),
+        }],
+      },
+    ])
+
+    expect(pricing).toHaveLength(1)
+    expect(pricing[0].models).toEqual(['kimi-k3'])
   })
 })

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -1384,6 +1385,61 @@ func TestInvalidateCache(t *testing.T) {
 	require.Equal(t, 2, callCount) // rebuilt
 }
 
+func TestLoadCacheSnapshotOnlyColdStartDoesNotBlockOnDatabase(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	repo := &mockChannelRepository{
+		listAllFn: func(context.Context) ([]Channel, error) {
+			close(started)
+			<-release
+			return nil, nil
+		},
+	}
+	svc := newTestChannelService(repo)
+	ctx := withSchedulerSnapshotOnly(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_, _ = svc.GetChannelForGroup(ctx, 99)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("snapshot-only cold lookup blocked on channel database refresh")
+	}
+	close(release)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("expected background channel refresh")
+	}
+}
+
+func TestLoadCacheSnapshotOnlyRefreshFailureBacksOff(t *testing.T) {
+	var calls int
+	repo := &mockChannelRepository{
+		listAllFn: func(context.Context) ([]Channel, error) {
+			calls++
+			return nil, errors.New("database down")
+		},
+	}
+	svc := newTestChannelService(repo)
+	ctx := withSchedulerSnapshotOnly(context.Background())
+
+	// Cold snapshot starts one detached refresh but returns immediately.
+	_, err := svc.GetChannelForGroup(ctx, 99)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return calls == 1 }, time.Second, time.Millisecond*5)
+
+	// Repeated requests while the refresh is failing must not launch another
+	// database query before the retry backoff expires.
+	for i := 0; i < 20; i++ {
+		_, _ = svc.GetChannelForGroup(ctx, 99)
+	}
+	time.Sleep(25 * time.Millisecond)
+	require.Equal(t, 1, calls)
+}
+
 // ===========================================================================
 // 5. CRUD Methods
 // ===========================================================================
@@ -1603,6 +1659,60 @@ func TestUpdate_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result)
+}
+
+func TestUpdate_PersistsChannelModelPricingToRepo(t *testing.T) {
+	existing := &Channel{
+		ID:     6,
+		Name:   "国模",
+		Status: StatusActive,
+	}
+	var got *Channel
+	repo := &mockChannelRepository{
+		getByIDFn: func(_ context.Context, id int64) (*Channel, error) {
+			cloned := existing.Clone()
+			if got != nil {
+				return got.Clone(), nil
+			}
+			return cloned, nil
+		},
+		updateFn: func(_ context.Context, channel *Channel) error {
+			got = channel.Clone()
+			return nil
+		},
+		getGroupIDsFn: func(_ context.Context, _ int64) ([]int64, error) {
+			return []int64{115}, nil
+		},
+		listAllFn: func(_ context.Context) ([]Channel, error) {
+			return nil, nil
+		},
+	}
+	svc := newTestChannelService(repo)
+
+	inPrice := 0.000003
+	outPrice := 0.000009
+	pricing := []ChannelModelPricing{{
+		Platform:    "openai",
+		Models:      []string{"kimi-k3"},
+		BillingMode: BillingModeToken,
+		InputPrice:  &inPrice,
+		OutputPrice: &outPrice,
+	}}
+
+	result, err := svc.Update(context.Background(), 6, &UpdateChannelInput{
+		Name:         "国模",
+		ModelPricing: &pricing,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, got)
+	require.Len(t, got.ModelPricing, 1, "repo.Update must receive the filled channel token card")
+	require.Equal(t, "openai", got.ModelPricing[0].Platform)
+	require.Equal(t, []string{"kimi-k3"}, got.ModelPricing[0].Models)
+	require.NotNil(t, got.ModelPricing[0].InputPrice)
+	require.InDelta(t, 0.000003, *got.ModelPricing[0].InputPrice, 1e-12)
+	require.NotNil(t, got.ModelPricing[0].OutputPrice)
+	require.InDelta(t, 0.000009, *got.ModelPricing[0].OutputPrice, 1e-12)
 }
 
 func TestUpdate_NotFound(t *testing.T) {
@@ -2041,9 +2151,9 @@ func TestIsPlatformPricingMatch(t *testing.T) {
 		{"gemini does NOT match anthropic", PlatformGemini, PlatformAnthropic, false},
 		{"composite matches openai pricing", PlatformComposite, PlatformOpenAI, true},
 		{"composite matches gemini pricing", PlatformComposite, PlatformGemini, true},
-		{"composite matches kimi pricing", PlatformComposite, PlatformKimi, true},
-		{"composite matches zhipu pricing", PlatformComposite, PlatformZhipu, true},
-		{"composite matches deepseek pricing", PlatformComposite, PlatformDeepseek, true},
+		{"composite matches cn pricing", PlatformComposite, PlatformCN, true},
+		{"composite matches video pricing", PlatformComposite, PlatformVideo, true},
+		{"composite matches legacy kimi pricing", PlatformComposite, PlatformKimi, true},
 		{"empty string matches nothing", "", PlatformAnthropic, false},
 		{"empty string matches empty", "", "", true},
 	}
@@ -2069,7 +2179,7 @@ func TestMatchingPlatforms(t *testing.T) {
 		{"anthropic returns itself", PlatformAnthropic, []string{PlatformAnthropic}},
 		{"gemini returns itself", PlatformGemini, []string{PlatformGemini}},
 		{"openai returns itself", PlatformOpenAI, []string{PlatformOpenAI}},
-		{"composite returns concrete platforms", PlatformComposite, []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek}},
+		{"composite returns concrete platforms", PlatformComposite, []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformCN, PlatformVideo}},
 	}
 
 	for _, tt := range tests {

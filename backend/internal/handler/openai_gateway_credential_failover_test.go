@@ -97,10 +97,24 @@ func TestOpenAICoolingGroupForbiddenIsRetryable503(t *testing.T) {
 	}, false)
 
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-	require.Equal(t, "5", recorder.Header().Get("Retry-After"))
+	require.Equal(t, "30", recorder.Header().Get("Retry-After"))
 	require.Equal(t, "overloaded_error", gjson.Get(recorder.Body.String(), "error.type").String())
 	require.Contains(t, recorder.Body.String(), "temporarily cooling down")
 	require.NotContains(t, recorder.Body.String(), "access forbidden")
+}
+
+func TestOpenAIFailoverExhaustionPreservesUpstream503ServerError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	(&OpenAIGatewayHandler{}).handleFailoverExhausted(c, &service.UpstreamFailoverError{
+		StatusCode:   http.StatusServiceUnavailable,
+		ResponseBody: []byte(`{"error":{"type":"server_error","message":"upstream is restarting"}}`),
+	}, false)
+
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Equal(t, "server_error", gjson.Get(recorder.Body.String(), "error.type").String())
 }
 
 func TestOpenAICoolingGroupCredentialReasonStillReturns503(t *testing.T) {
@@ -114,7 +128,7 @@ func TestOpenAICoolingGroupCredentialReasonStillReturns503(t *testing.T) {
 	}, false)
 
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-	require.Equal(t, "5", recorder.Header().Get("Retry-After"))
+	require.Equal(t, "30", recorder.Header().Get("Retry-After"))
 	require.Equal(t, "overloaded_error", gjson.Get(recorder.Body.String(), "error.type").String())
 	require.NotContains(t, recorder.Body.String(), "access forbidden")
 }
@@ -156,7 +170,7 @@ func TestCoolingGroupFailoverMappingsReturnRetryable503AcrossCompatHandlers(t *t
 			c, _ := gin.CreateTestContext(recorder)
 			tt.run(c)
 			require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-			require.Equal(t, "5", recorder.Header().Get("Retry-After"))
+			require.Equal(t, "30", recorder.Header().Get("Retry-After"))
 			require.Equal(t, map[string]string{"chat_completions": "server_error", "responses_compat": "server_error", "anthropic_compat": "api_error"}[tt.name], tt.get(recorder))
 			require.NotContains(t, recorder.Body.String(), "access forbidden")
 		})

@@ -107,6 +107,11 @@ var ProviderSet = wire.NewSet(
 	NewAffiliateRepository,
 	NewUserPlatformQuotaRepository,     // T14: user × platform quota
 	NewUserPlatformQuotaServiceAdapter, // T14: adapter → service.UserPlatformQuotaRepository
+	NewAdaptivePoolSnapshotRepository,
+	NewAdaptivePoolAdminRepository,
+	NewUsageBillingReservationRepository,
+	NewAdaptiveReconciliationEvidenceRepository,
+	NewGroupMonitorRepository,
 
 	// Cache implementations
 	NewGatewayCache,
@@ -160,7 +165,8 @@ var ProviderSet = wire.NewSet(
 	NewProxyExitInfoProber,
 	NewClaudeUsageFetcher,
 	NewClaudeOAuthClient,
-	NewHTTPUpstream,
+	NewControlledHTTPUpstream,
+	NewAccountTrafficCache,
 	NewOpenAIOAuthClient,
 	NewGrokOAuthClient,
 	NewGeminiOAuthClient,

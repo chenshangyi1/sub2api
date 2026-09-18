@@ -77,6 +77,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by this OpenAI-compatible endpoint for composite groups")
 		return
 	}
+	apiKey = h.bindAdaptiveParentToMatchingLeaf(c, apiKey, []string{service.PlatformOpenAI}, reqLog)
 	reqLog = reqLog.With(zap.String("model", reqModel))
 	setOpsRequestContext(c, reqModel, false)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeSync))
@@ -138,15 +139,15 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 	if h.handlePreauthorizationError(c, err, false) {
 		return
 	}
+	defer func() { deferBalancePreauthorizationRefund(reqLog, balanceGuard) }()
 	if balanceGuard != nil {
-		defer deferBalancePreauthorizationRefund(reqLog, balanceGuard)
 		c.Request = c.Request.WithContext(service.ContextWithBalancePreauthorizationGuard(c.Request.Context(), balanceGuard))
 	}
 
 	for {
-		selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+		selection, _, routedKey, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityAlongKeyRoutes(
 			c.Request.Context(),
-			apiKey.GroupID,
+			apiKey,
 			"",
 			"",
 			reqModel,
@@ -157,6 +158,17 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			false,
 			true,
 		)
+		if err == nil && routedKey != nil {
+			if bindErr := h.bindSelectedKeyRoute(c, keyRouteBinding{
+				Previous: apiKey, Selected: routedKey, Subscription: &subscription,
+				Mapping: &channelMapping, Guard: &balanceGuard, Body: body, Model: reqModel, PricingAt: pricingAt,
+			}); bindErr != nil {
+				releaseRejectedKeyRouteSelection(selection)
+				h.handlePreauthorizationError(c, bindErr, false)
+				return
+			}
+			apiKey = routedKey
+		}
 		if err != nil {
 			if failoverClientGone(c) {
 				reqLog.Info("openai_embeddings.account_select_aborted_client_disconnected", zap.Error(err))
@@ -168,6 +180,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			)
 			if len(failedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, service.PlatformOpenAI)
+				cls = classifySelectionFailureErrorFromGin(c, err, cls)
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				}

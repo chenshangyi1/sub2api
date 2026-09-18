@@ -715,12 +715,12 @@
             v-model.number="concurrency"
             id="bulk-edit-concurrency"
             type="number"
-            min="1"
+            min="0"
             :disabled="!enableConcurrency"
             class="input"
             :class="!enableConcurrency && 'cursor-not-allowed opacity-50'"
             aria-labelledby="bulk-edit-concurrency-label"
-            @input="concurrency = Math.max(1, concurrency || 1)"
+            @input="concurrency = Math.max(0, Number.isFinite(concurrency) ? concurrency : 0)"
           />
         </div>
         <div>
@@ -752,34 +752,6 @@
             @input="loadFactor = (loadFactor &amp;&amp; loadFactor >= 1) ? loadFactor : null"
           />
           <p class="input-hint">{{ t('admin.accounts.loadFactorHint') }}</p>
-        </div>
-        <div>
-          <div class="mb-3 flex items-center justify-between">
-            <label
-              id="bulk-edit-priority-label"
-              class="input-label mb-0"
-              for="bulk-edit-priority-enabled"
-            >
-              {{ t('admin.accounts.priority') }}
-            </label>
-            <input
-              v-model="enablePriority"
-              id="bulk-edit-priority-enabled"
-              type="checkbox"
-              aria-controls="bulk-edit-priority"
-              class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-            />
-          </div>
-          <input
-            v-model.number="priority"
-            id="bulk-edit-priority"
-            type="number"
-            min="1"
-            :disabled="!enablePriority"
-            class="input"
-            :class="!enablePriority && 'cursor-not-allowed opacity-50'"
-            aria-labelledby="bulk-edit-priority-label"
-          />
         </div>
         <div>
           <div class="mb-3 flex items-center justify-between">
@@ -1413,9 +1385,12 @@
         <div id="bulk-edit-groups" :class="!enableGroups && 'pointer-events-none opacity-50'">
           <GroupSelector
             v-model="groupIds"
+            v-model:priorities="membershipPriorityByGroup"
             :groups="groups"
+            show-priority
             aria-labelledby="bulk-edit-groups-label"
           />
+          <p class="input-hint">{{ t('admin.accounts.priorityHint') }}</p>
         </div>
       </div>
     </form>
@@ -1483,7 +1458,8 @@ import type {
   AccountType,
   OpenAICompactMode,
   OpenAIEndpointCapability,
-  OpenAIResponsesMode
+  OpenAIResponsesMode,
+  AccountGroupMembership
 } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -1652,7 +1628,6 @@ const enableHeaderOverride = ref(false)
 const enableProxy = ref(false)
 const enableConcurrency = ref(false)
 const enableLoadFactor = ref(false)
-const enablePriority = ref(false)
 const enableRateMultiplier = ref(false)
 const enableStatus = ref(false)
 const enableGroups = ref(false)
@@ -1687,10 +1662,10 @@ const headerOverrideRows = ref<HeaderOverrideRow[]>([])
 const proxyId = ref<number | null>(null)
 const concurrency = ref(1)
 const loadFactor = ref<number | null>(null)
-const priority = ref(1)
 const rateMultiplier = ref(1)
 const status = ref<'active' | 'inactive'>('active')
 const groupIds = ref<number[]>([])
+const membershipPriorityByGroup = ref<Record<number, number>>({})
 const openaiPassthroughEnabled = ref(false)
 // Codex namespace 工具摊平兼容开关（仅 OAuth），缺省关闭即原样保留
 const openaiFlattenNamespacesEnabled = ref(false)
@@ -1950,10 +1925,6 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     updates.load_factor = (lf != null && !Number.isNaN(lf) && lf > 0) ? lf : 0
   }
 
-  if (enablePriority.value) {
-    updates.priority = priority.value
-  }
-
   if (enableRateMultiplier.value) {
     updates.rate_multiplier = rateMultiplier.value
   }
@@ -1963,7 +1934,17 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
   }
 
   if (enableGroups.value) {
-    updates.group_ids = groupIds.value
+    if (groupIds.value.length === 0) {
+      updates.group_ids = []
+    } else {
+      updates.account_groups = groupIds.value.map((groupId): AccountGroupMembership => ({
+        account_id: 0,
+        group_id: groupId,
+        priority: Number.isFinite(membershipPriorityByGroup.value[groupId]) && membershipPriorityByGroup.value[groupId] > 0
+          ? Math.trunc(membershipPriorityByGroup.value[groupId])
+          : 1
+      }))
+    }
   }
 
   if (enableBaseUrl.value) {
@@ -2201,7 +2182,6 @@ const handleSubmit = async () => {
     enableProxy.value ||
     enableConcurrency.value ||
     enableLoadFactor.value ||
-    enablePriority.value ||
     enableRateMultiplier.value ||
     enableStatus.value ||
     enableGroups.value ||
@@ -2347,7 +2327,6 @@ watch(
       enableProxy.value = false
       enableConcurrency.value = false
       enableLoadFactor.value = false
-      enablePriority.value = false
       enableRateMultiplier.value = false
       enableStatus.value = false
       enableGroups.value = false
@@ -2385,10 +2364,10 @@ watch(
       proxyId.value = null
       concurrency.value = 1
       loadFactor.value = null
-      priority.value = 1
       rateMultiplier.value = 1
       status.value = 'active'
       groupIds.value = []
+      membershipPriorityByGroup.value = {}
       openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       upstreamBillingAutoProbeMode.value = 'enabled'

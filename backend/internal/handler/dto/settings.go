@@ -236,6 +236,7 @@ type SystemSettings struct {
 	// OpenAI account scheduling
 	OpenAILowUpstreamRatePriorityEnabled                   bool    `json:"openai_low_upstream_rate_priority_enabled"`
 	OpenAIOAuthSchedulingRateMultiplier                    float64 `json:"openai_oauth_scheduling_rate_multiplier"`
+	AdaptiveServiceFeePercent                              float64 `json:"adaptive_service_fee_percent"`
 	CodexQuotaOverdraftEnabled                             bool    `json:"codex_quota_overdraft_enabled"`
 	CodexQuotaOverdraftBusinessInjectionEnabled            bool    `json:"codex_quota_overdraft_business_injection_enabled"`
 	OpenAIAdvancedSchedulerEnabled                         bool    `json:"openai_advanced_scheduler_enabled"`

@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 import UsageView from '../UsageView.vue'
+import Select, { type SelectOption } from '@/components/common/Select.vue'
+import DateRangePicker from '@/components/common/DateRangePicker.vue'
+import UsageTable from '@/components/admin/usage/UsageTable.vue'
 
 const {
   query,
@@ -47,6 +50,10 @@ const messages: Record<string, string> = {
   'admin.usage.allGroups': 'All groups',
   'admin.usage.allModels': 'All models',
   'usage.allApiKeys': 'All API Keys',
+  'usage.title': 'Usage',
+  'usage.errors.allKeys': 'All API Keys',
+  'usage.tabs.usage': 'Usage records',
+  'usage.tabs.errors': 'Error records',
   'usage.apiKeyFilter': 'API Key',
   'usage.model': 'Model',
   'usage.type': 'Type',
@@ -191,6 +198,23 @@ describe('user UsageView', () => {
     getAvailable.mockResolvedValue([{ id: 1, name: 'default' }])
   })
 
+  it('preserves named toolbar commands and a semantic page heading', async () => {
+    const wrapper = mountUsageView()
+    await flushPromises()
+    expect(wrapper.get('h1').text()).toBe('Usage')
+    const columns = wrapper.get('button[aria-label="Columns"]')
+    expect(columns.attributes('aria-expanded')).toBe('false')
+    await columns.trigger('click')
+    expect(columns.attributes('aria-expanded')).toBe('true')
+    query.mockClear()
+    await wrapper.get('button[aria-label="Refresh"]').trigger('click')
+    await flushPromises()
+    expect(query).toHaveBeenCalled()
+    expect(wrapper.get('button[aria-label="Reset"]').attributes('title')).toBe('Reset')
+    expect(wrapper.findAll('button').some(button => button.text().includes('Export CSV'))).toBe(true)
+    wrapper.unmount()
+  })
+
   it('loads logs, stats, model stats, and snapshot on first render', async () => {
     mountUsageView()
     await flushPromises()
@@ -254,6 +278,68 @@ describe('user UsageView', () => {
     window.URL.revokeObjectURL = originalRevokeObjectURL
     vi.unstubAllGlobals()
     clickSpy.mockRestore()
+  })
+
+  it('keeps the initial filters, sort, and filename while exporting multiple pages', async () => {
+    const pageResponse = { items: [usageLog], total: 101, pages: 2 }
+    query.mockResolvedValue(pageResponse)
+    const wrapper = mountUsageView()
+    await flushPromises()
+
+    const datePicker = wrapper.findComponent(DateRangePicker)
+    datePicker.vm.$emit('change', { startDate: '2026-03-01', endDate: '2026-03-08', preset: null })
+    await flushPromises()
+
+    let resolveFirstPage!: (value: typeof pageResponse) => void
+    const firstPage = new Promise<typeof pageResponse>((resolve) => { resolveFirstPage = resolve })
+    query.mockClear()
+    query.mockImplementation((params, options) =>
+      !options && params.page === 1 ? firstPage : Promise.resolve(pageResponse)
+    )
+    const originalCreateObjectURL = window.URL.createObjectURL
+    const originalRevokeObjectURL = window.URL.revokeObjectURL
+    window.URL.createObjectURL = vi.fn(() => 'blob:usage-export')
+    window.URL.revokeObjectURL = vi.fn()
+    let filename = ''
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function () {
+      filename = this.download
+    })
+
+    try {
+      await wrapper.findAll('button').find((button) => button.text() === 'Export CSV')!.trigger('click')
+      const initialParams = { ...query.mock.calls[0][0] }
+      expect(initialParams).toMatchObject({
+        page: 1, page_size: 100, start_date: '2026-03-01', end_date: '2026-03-08',
+        sort_by: 'created_at', sort_order: 'desc',
+      })
+
+      const keySelect = wrapper.findAllComponents(Select).find((select) =>
+        select.props('options').some((option: SelectOption) => option.label === 'All API Keys')
+      )!
+      keySelect.vm.$emit('update:modelValue', 1)
+      keySelect.vm.$emit('change', 1)
+      datePicker.vm.$emit('change', { startDate: '2026-04-01', endDate: '2026-04-08', preset: null })
+      wrapper.findComponent(UsageTable).vm.$emit('sort', 'actual_cost', 'asc')
+      await flushPromises()
+      expect(query).toHaveBeenCalledWith(expect.objectContaining({
+        api_key_id: 1, start_date: '2026-04-01', end_date: '2026-04-08',
+        sort_by: 'actual_cost', sort_order: 'asc',
+      }), expect.anything())
+
+      resolveFirstPage(pageResponse)
+      await flushPromises()
+
+      const exportCalls = query.mock.calls.filter((call) => call.length === 1)
+      expect.soft(exportCalls).toEqual([[initialParams], [{ ...initialParams, page: 2 }]])
+      expect.soft(filename).toBe('usage_2026-03-01_to_2026-03-08.csv')
+      expect(showSuccess).toHaveBeenCalledWith('Export success')
+      expect(showError).not.toHaveBeenCalled()
+    } finally {
+      window.URL.createObjectURL = originalCreateObjectURL
+      window.URL.revokeObjectURL = originalRevokeObjectURL
+      clickSpy.mockRestore()
+      wrapper.unmount()
+    }
   })
 
   it('exports historical image rows with image billing mode derived from image_count', async () => {

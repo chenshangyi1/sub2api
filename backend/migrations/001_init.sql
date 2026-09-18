@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     extra           JSONB NOT NULL DEFAULT '{}',          -- 扩展信息
     proxy_id        BIGINT REFERENCES proxies(id) ON DELETE SET NULL,
     concurrency     INT NOT NULL DEFAULT 3,               -- 账号并发限制
-    priority        INT NOT NULL DEFAULT 50,              -- 调度优先级(1-100，越小越高)
+    priority        INT NOT NULL DEFAULT 30,              -- 调度优先级(1-30，越小越高，默认垫底)
     status          VARCHAR(20) NOT NULL DEFAULT 'active', -- active/disabled/error
     error_message   TEXT,
     last_used_at    TIMESTAMPTZ,
@@ -106,7 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_deleted_at ON api_keys(deleted_at);
 CREATE TABLE IF NOT EXISTS account_groups (
     account_id      BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     group_id        BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    priority        INT NOT NULL DEFAULT 50,              -- 分组内优先级
+    priority        INT NOT NULL DEFAULT 30,              -- 分组内优先级(1-30，越小越高，默认垫底)
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (account_id, group_id)
 );

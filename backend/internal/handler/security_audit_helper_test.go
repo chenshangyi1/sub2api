@@ -137,7 +137,7 @@ func TestRunSecurityAuditLogsWebSocketChecksAndCacheHits(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := &turnCountingEngine{mode: securityaudit.ModeBlocking}
 	coordinator := securityaudit.NewCoordinator(nil, engine)
-	core, logs := observer.New(zap.InfoLevel)
+	core, logs := observer.New(zap.DebugLevel)
 	reqLog := zap.New(core)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)

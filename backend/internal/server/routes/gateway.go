@@ -13,6 +13,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmodel"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -38,8 +40,13 @@ func RegisterGatewayRoutes(
 	clientRequestID := middleware.ClientRequestID()
 	opsErrorLogger := handler.OpsErrorLoggerMiddleware(opsService)
 	endpointNorm := handler.InboundEndpointMiddleware()
-	compositeTarget := compositeTargetPlatformMiddleware(compositeResolver)
-	compositeGeminiTarget := compositeGeminiTargetPlatformMiddleware(compositeResolver)
+	// Composite routing runs before the concrete gateway handler. Install the
+	// same request mode here so a route/model-list lookup cannot bypass the
+	// scheduler snapshot and synchronously query PostgreSQL on a cold/expired
+	// cache. The variadic service argument keeps lightweight route tests and
+	// alternate embedders source-compatible.
+	compositeTarget := compositeTargetPlatformMiddleware(compositeResolver, true)
+	compositeGeminiTarget := compositeGeminiTargetPlatformMiddleware(compositeResolver, true)
 
 	// 未分组 Key 拦截中间件（按协议格式区分错误响应）
 	requireGroupAnthropic := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
@@ -48,8 +55,12 @@ func RegisterGatewayRoutes(
 	isOpenAIResponsesCompatibleGatewayPlatform := func(c *gin.Context) bool {
 		switch getGroupPlatform(c) {
 		case service.PlatformOpenAI, service.PlatformGrok,
-			service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek:
-			// 国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）与 openai/grok 一样经 OpenAI 网关转发。
+			service.PlatformCN, service.PlatformVideo,
+			service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek,
+			service.PlatformAdaptive:
+			// Adaptive is inbound identity only: Claude Code / Codex / Chat
+			// Completions still enter the OpenAI gateway, then the attempt loop
+			// forwards by the selected leaf protocol.
 			return true
 		default:
 			return false
@@ -57,7 +68,7 @@ func RegisterGatewayRoutes(
 	}
 	countTokensHandler := func(c *gin.Context) {
 		switch getGroupPlatform(c) {
-		case service.PlatformOpenAI, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek:
+		case service.PlatformOpenAI, service.PlatformCN, service.PlatformVideo, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformAdaptive:
 			h.OpenAIGateway.CountTokens(c)
 		case service.PlatformGrok:
 			h.OpenAIGateway.GrokCountTokens(c)
@@ -68,7 +79,7 @@ func RegisterGatewayRoutes(
 	modelsHandler := func(c *gin.Context) {
 		if c.Query("client_version") != "" {
 			switch getGroupPlatform(c) {
-			case service.PlatformOpenAI, service.PlatformComposite:
+			case service.PlatformOpenAI, service.PlatformComposite, service.PlatformAdaptive:
 				h.OpenAIGateway.CodexModels(c)
 				return
 			}
@@ -76,11 +87,16 @@ func RegisterGatewayRoutes(
 		h.Gateway.Models(c)
 	}
 	isOpenAIOnlyEndpointGatewayPlatform := func(c *gin.Context) bool {
-		return getGroupPlatform(c) == service.PlatformOpenAI
+		switch getGroupPlatform(c) {
+		case service.PlatformOpenAI, service.PlatformAdaptive:
+			return true
+		default:
+			return false
+		}
 	}
 	imagesHandler := func(c *gin.Context) {
 		switch getGroupPlatform(c) {
-		case service.PlatformOpenAI:
+		case service.PlatformOpenAI, service.PlatformAdaptive:
 			h.OpenAIGateway.Images(c)
 		case service.PlatformGrok:
 			h.OpenAIGateway.GrokImages(c)
@@ -96,9 +112,9 @@ func RegisterGatewayRoutes(
 	}
 	videoGenerationHandler := func(c *gin.Context) {
 		// Video status/content lookups below already allow Composite groups; keep
-		// task creation aligned so composite keys that route to Grok accounts can
-		// submit video generation jobs.
-		if platform := getGroupPlatform(c); platform == service.PlatformGrok || platform == service.PlatformComposite {
+		// task creation aligned so composite/Adaptive keys that route to Grok
+		// leaves can submit video generation jobs.
+		if grokVideosAPIAllowed(c) {
 			h.OpenAIGateway.GrokVideoGeneration(c)
 			return
 		}
@@ -114,7 +130,7 @@ func RegisterGatewayRoutes(
 		// Video status requests do not carry a model, so composite groups cannot
 		// be resolved by compositeTargetPlatformMiddleware. Route them through
 		// the Grok handler and let scheduler/account selection enforce capacity.
-		if getGroupPlatform(c) == service.PlatformGrok || getGroupPlatform(c) == service.PlatformComposite {
+		if grokVideosAPIAllowed(c) {
 			h.OpenAIGateway.GrokVideoStatus(c)
 			return
 		}
@@ -130,7 +146,7 @@ func RegisterGatewayRoutes(
 		// Video content requests do not carry a model, so composite groups cannot
 		// be resolved by compositeTargetPlatformMiddleware. Route them through
 		// the Grok handler just like video status lookups.
-		if getGroupPlatform(c) == service.PlatformGrok || getGroupPlatform(c) == service.PlatformComposite {
+		if grokVideosAPIAllowed(c) {
 			h.OpenAIGateway.GrokVideoContent(c)
 			return
 		}
@@ -143,7 +159,7 @@ func RegisterGatewayRoutes(
 		})
 	}
 	videoEditHandler := func(c *gin.Context) {
-		if getGroupPlatform(c) == service.PlatformGrok {
+		if grokVideosAPIAllowed(c) {
 			h.OpenAIGateway.GrokVideoEdit(c)
 			return
 		}
@@ -151,7 +167,7 @@ func RegisterGatewayRoutes(
 		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Videos API is not supported for this platform"}})
 	}
 	videoExtensionHandler := func(c *gin.Context) {
-		if getGroupPlatform(c) == service.PlatformGrok {
+		if grokVideosAPIAllowed(c) {
 			h.OpenAIGateway.GrokVideoExtension(c)
 			return
 		}
@@ -518,7 +534,40 @@ func getGroupPlatform(c *gin.Context) string {
 	return apiKey.Group.Platform
 }
 
-func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver) gin.HandlerFunc {
+// grokVideosAPIAllowed reports whether this request may use Grok /v1/videos.
+// Smart-routing keys bind several groups and resolve grok-imagine-video against
+// OpenAI first; the Videos API still has to accept them.
+func grokVideosAPIAllowed(c *gin.Context) bool {
+	platform := getGroupPlatform(c)
+	if platform == service.PlatformGrok || platform == service.PlatformComposite {
+		return true
+	}
+	apiKey, ok := middleware.GetAPIKeyFromContext(c)
+	if !ok || apiKey == nil {
+		return false
+	}
+	if apiKey.Group != nil && (apiKey.Group.Platform == service.PlatformGrok || apiKey.Group.Platform == service.PlatformComposite) {
+		return true
+	}
+	if !apiKey.UsesRequestTargetPlatform() {
+		return false
+	}
+	if c.Request == nil {
+		return false
+	}
+	if c.Request.Method == http.MethodGet {
+		return true
+	}
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	if err != nil {
+		return false
+	}
+	requestmodel.ResetRequestBody(c.Request, body)
+	model := requestmodel.FromBodyForRoute(c.FullPath(), c.GetHeader("Content-Type"), body)
+	return xai.IsGrokImagineVideoModel(model)
+}
+
+func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver, snapshotOnly ...bool) gin.HandlerFunc {
 	if resolver == nil {
 		resolver = service.NewCompositeRouteResolver(nil)
 	}
@@ -531,6 +580,9 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 		if c.Request == nil || c.Request.Method == http.MethodGet {
 			c.Next()
 			return
+		}
+		if len(snapshotOnly) > 0 && snapshotOnly[0] {
+			c.Request = c.Request.WithContext(service.WithSchedulerSnapshotOnly(c.Request.Context()))
 		}
 
 		body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
@@ -551,7 +603,16 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 		if model != "" {
 			decision, err := resolver.Resolve(c.Request.Context(), apiKey.Group.ID, model, compositeRouteEndpointForPath(c.Request.URL.Path))
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"type": "server_error", "message": "Failed to resolve composite model route"}})
+				status := http.StatusInternalServerError
+				if errors.Is(err, service.ErrCompositeRouteCacheNotReady) {
+					// A cold immutable projection is a transient readiness condition.
+					// Returning 503 lets clients retry after the background refresh,
+					// while avoiding accidental detector routing that could bypass an
+					// explicit administrator route.
+					status = http.StatusServiceUnavailable
+					c.Header("Retry-After", "1")
+				}
+				c.JSON(status, gin.H{"error": gin.H{"type": "server_error", "message": "Failed to resolve composite model route"}})
 				c.Abort()
 				return
 			}
@@ -628,18 +689,26 @@ func compositeMultipartModelFromBody(contentType string, body []byte) string {
 	}
 }
 
-func compositeGeminiTargetPlatformMiddleware(resolver *service.CompositeRouteResolver) gin.HandlerFunc {
+func compositeGeminiTargetPlatformMiddleware(resolver *service.CompositeRouteResolver, snapshotOnly ...bool) gin.HandlerFunc {
 	if resolver == nil {
 		resolver = service.NewCompositeRouteResolver(nil)
 	}
 	return func(c *gin.Context) {
+		if len(snapshotOnly) > 0 && snapshotOnly[0] && c.Request != nil {
+			c.Request = c.Request.WithContext(service.WithSchedulerSnapshotOnly(c.Request.Context()))
+		}
 		apiKey, ok := middleware.GetAPIKeyFromContext(c)
 		if ok && apiKey != nil && apiKey.Group != nil && apiKey.Group.Platform == service.PlatformComposite {
 			model := compositeGeminiModelFromParams(c)
 			if model != "" {
 				decision, err := resolver.Resolve(c.Request.Context(), apiKey.Group.ID, model, service.CompositeRouteEndpointGemini)
 				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"type": "server_error", "message": "Failed to resolve composite model route"}})
+					status := http.StatusInternalServerError
+					if errors.Is(err, service.ErrCompositeRouteCacheNotReady) {
+						status = http.StatusServiceUnavailable
+						c.Header("Retry-After", "1")
+					}
+					c.JSON(status, gin.H{"error": gin.H{"type": "server_error", "message": "Failed to resolve composite model route"}})
 					c.Abort()
 					return
 				}

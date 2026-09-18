@@ -19,7 +19,7 @@ const reasoningEffortValuesForPlatform = (
 export function supportsReasoningEffortPolicyPlatform(
   platform: GroupPlatform,
 ): boolean {
-  return platform === "openai" || platform === "composite";
+  return platform === "openai" || platform === "composite" || platform === "adaptive";
 }
 
 export function reasoningEffortOptionsForPlatform(platform: GroupPlatform) {

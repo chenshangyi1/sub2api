@@ -36,17 +36,19 @@ export type SchedulingThresholdPlatformType =
   | "openai"
   | "anthropic"
   | "grok"
+  | "cn"
   | "kimi"
   | "zhipu"
 
 export type AccountSchedulingThresholdsMap = Record<SchedulingThresholdPlatformType, number>
 
 // 与后端 AllowedSchedulingThresholdPlatforms 保持一致（deepseek 为余额型，
-// 走余额检测而非用量阈值）。
+// 走余额检测而非用量阈值）。统一身份是 cn；kimi/zhipu 仅兼容迁移前的历史配置。
 export const SCHEDULING_THRESHOLD_PLATFORMS: SchedulingThresholdPlatformType[] = [
   "openai",
   "anthropic",
   "grok",
+  "cn",
   "kimi",
   "zhipu",
 ]
@@ -679,6 +681,7 @@ export interface SystemSettings {
   payment_visible_method_wxpay_enabled?: boolean;
   openai_low_upstream_rate_priority_enabled?: boolean;
   openai_oauth_scheduling_rate_multiplier?: number;
+  adaptive_service_fee_percent?: number;
   codex_quota_overdraft_enabled?: boolean;
   codex_quota_overdraft_business_injection_enabled?: boolean;
   openai_advanced_scheduler_enabled?: boolean;
@@ -993,6 +996,7 @@ export interface UpdateSettingsRequest {
   payment_visible_method_wxpay_enabled?: boolean;
   openai_low_upstream_rate_priority_enabled?: boolean;
   openai_oauth_scheduling_rate_multiplier?: number;
+  adaptive_service_fee_percent?: number;
   codex_quota_overdraft_enabled?: boolean;
   codex_quota_overdraft_business_injection_enabled?: boolean;
   openai_advanced_scheduler_enabled?: boolean;
@@ -1431,7 +1435,7 @@ export async function updateRectifierSettings(
  * Matches backend dto.OpenAIFastPolicyRule.
  */
 export interface OpenAIFastPolicyRule {
-  service_tier: "all" | "priority" | "flex";
+  service_tier: "all" | "priority" | "flex" | "ultrafast" | "missing";
   action: "pass" | "filter" | "block" | "force_priority";
   scope: "all" | "oauth" | "apikey" | "bedrock";
   user_ids?: number[];

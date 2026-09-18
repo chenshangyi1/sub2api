@@ -4,7 +4,7 @@
  */
 
 import { apiClient } from '../client'
-import type { GrokBillingSummary, GrokQuotaWindow, WindowStats } from '@/types'
+import type { AccountGroupMembership, GrokBillingSummary, GrokQuotaWindow, WindowStats } from '@/types'
 
 export type { GrokBillingSummary, GrokQuotaWindow } from '@/types'
 
@@ -61,6 +61,7 @@ export interface GrokSSOToOAuthRequest {
   notes?: string | null
   proxy_id?: number | null
   group_ids?: number[]
+  account_groups?: AccountGroupMembership[]
   credentials?: Record<string, unknown>
   extra?: Record<string, unknown>
   concurrency?: number

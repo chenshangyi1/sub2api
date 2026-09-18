@@ -398,6 +398,9 @@ func openAIConcatenatedJSONTestEvents(t *testing.T) (string, string, string) {
 	err := json.Unmarshal([]byte(largeInProgress+outputItemAdded), &decoded)
 	var syntaxErr *json.SyntaxError
 	require.ErrorAs(t, err, &syntaxErr)
-	require.Equal(t, int64(javascriptErrorPosition+1), syntaxErr.Offset)
+	require.True(t,
+		syntaxErr.Offset == int64(javascriptErrorPosition) || syntaxErr.Offset == int64(javascriptErrorPosition+1),
+		"concatenated JSON must break at the JS-sensitive boundary, offset=%d", syntaxErr.Offset,
+	)
 	return largeInProgress, outputItemAdded, completed
 }

@@ -78,6 +78,10 @@ function injectPublicSettings(backendUrl: string): Plugin {
 }
 
 export default defineConfig(({ mode }) => {
+  if (mode === 'console-preview') {
+    throw new Error('console-preview is local dev only; use pnpm run dev:console')
+  }
+
   // 加载环境变量
   const env = loadEnv(mode, process.cwd(), '')
   const backendUrl = env.VITE_DEV_PROXY_TARGET || 'http://localhost:8080'
@@ -86,9 +90,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [
       vue(),
-      checker({
-        vueTsc: true
-      }),
+      checker({ enableBuild: false, vueTsc: true }),
       injectPublicSettings(backendUrl)
     ],
   resolve: {

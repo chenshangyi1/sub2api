@@ -56,6 +56,7 @@ type APIKey struct {
 	Key         string     `json:"key"`
 	Name        string     `json:"name"`
 	GroupID     *int64     `json:"group_id"`
+	GroupIDs    []int64    `json:"group_ids,omitempty"`
 	Status      string     `json:"status"`
 	IPWhitelist []string   `json:"ip_whitelist"`
 	IPBlacklist []string   `json:"ip_blacklist"`
@@ -85,6 +86,10 @@ type APIKey struct {
 
 	User  *User  `json:"user,omitempty"`
 	Group *Group `json:"group,omitempty"`
+
+	AdaptiveRoutingPreference string   `json:"adaptive_routing_preference,omitempty"`
+	AdaptiveMaxRateMultiplier *float64 `json:"adaptive_max_rate_multiplier,omitempty"`
+	AdaptiveLeafGroupIDs      []int64  `json:"adaptive_leaf_group_ids,omitempty"`
 }
 
 type Group struct {
@@ -94,6 +99,7 @@ type Group struct {
 	Platform       string  `json:"platform"`
 	RateMultiplier float64 `json:"rate_multiplier"`
 	IsExclusive    bool    `json:"is_exclusive"`
+	UserVisible    bool    `json:"user_visible"`
 	Status         string  `json:"status"`
 
 	SubscriptionType          string   `json:"subscription_type"`
@@ -155,6 +161,15 @@ type Group struct {
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	AdaptiveLeaves []AdaptiveLeafOption `json:"adaptive_leaves,omitempty"`
+}
+
+type AdaptiveLeafOption struct {
+	ID             int64   `json:"id"`
+	Name           string  `json:"name"`
+	Platform       string  `json:"platform"`
+	RateMultiplier float64 `json:"rate_multiplier"`
 }
 
 // AdminGroup 是管理员接口使用的 group DTO（包含敏感/内部字段）。
@@ -194,7 +209,10 @@ type AdminGroup struct {
 }
 
 type Account struct {
-	ID       int64   `json:"id"`
+	AntiDegradation bool    `json:"anti_degradation"`
+	ProtectionScope string  `json:"protection_scope"`
+	ProtectionMode  string  `json:"protection_mode"`
+	ID              int64   `json:"id"`
 	Name     string  `json:"name"`
 	Notes    *string `json:"notes"`
 	Platform string  `json:"platform"`

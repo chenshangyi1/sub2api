@@ -70,6 +70,28 @@ func TestSanitizeGroupMessagesDispatchFields_ClearsNonOpenAIPlatform(t *testing.
 	require.Equal(t, OpenAIMessagesDispatchModelConfig{}, group.MessagesDispatchModelConfig)
 }
 
+func TestSanitizeGroupMessagesDispatchFields_AdaptiveClearsOpenAIClaudeMapping(t *testing.T) {
+	t.Parallel()
+
+	group := &Group{
+		Platform:              PlatformAdaptive,
+		AllowMessagesDispatch: true,
+		DefaultMappedModel:    "gpt-5.6-sol",
+		MessagesDispatchModelConfig: OpenAIMessagesDispatchModelConfig{
+			SonnetMappedModel: "gpt-5.3-codex",
+			ExactModelMappings: map[string]string{
+				"claude-fable-5": "gpt-5.6-sol",
+			},
+		},
+	}
+
+	sanitizeGroupMessagesDispatchFields(group)
+
+	require.False(t, group.AllowMessagesDispatch)
+	require.Empty(t, group.DefaultMappedModel)
+	require.Equal(t, OpenAIMessagesDispatchModelConfig{}, group.MessagesDispatchModelConfig)
+}
+
 func TestSanitizeGroupMessagesDispatchFields_PreservesCompositeDispatchToggle(t *testing.T) {
 	t.Parallel()
 
