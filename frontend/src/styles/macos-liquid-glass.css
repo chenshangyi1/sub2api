@@ -1,0 +1,91 @@
+/* ============================================================================
+   sub2api v2 — flat surfaces layer (replaces macOS liquid-glass)
+   ----------------------------------------------------------------------------
+   The previous glass/translucent material is removed in favor of flat, opaque
+   surfaces with 1px borders and restrained shadows (see design-system.css).
+   This file only styles surfaces NOT already covered by console-redesign.css:
+   auth pages, sidebar brand, and the KPI warning icon.
+   ========================================================================== */
+
+/* ---- Auth pages: single centered card, no marketing split-screen ---- */
+.auth-shell,
+.brand-page-shell {
+  background: var(--ds-bg) !important;
+}
+
+.auth-topbar {
+  position: relative;
+  min-height: 58px;
+  padding: 8px 12px;
+  border-radius: var(--ds-radius-lg);
+}
+
+.auth-form-panel {
+  position: relative;
+  border: 1px solid var(--ds-border) !important;
+  border-radius: var(--ds-radius-lg) !important;
+  background: var(--ds-surface) !important;
+  background-image: none !important;
+  box-shadow: var(--ds-shadow-md) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  padding: 28px !important;
+}
+
+.auth-brand-link,
+.auth-runtime {
+  color: var(--ds-ink) !important;
+}
+
+.auth-status-dot {
+  background: var(--ds-ok) !important;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ds-ok) 14%, transparent) !important;
+}
+
+.auth-footer-link {
+  color: var(--ds-ink-muted) !important;
+}
+
+.auth-copyright {
+  color: var(--ds-ink-faint) !important;
+}
+
+/* ---- Sidebar brand ---- */
+.sidebar-brand > div {
+  gap: 10px;
+}
+.sidebar-brand > div > button {
+  border-radius: var(--ds-radius-sm);
+}
+.sidebar-brand > div > button > span:first-child {
+  display: inline-flex;
+}
+
+/* ---- KPI warning icon ---- */
+.dashboard-kpi-icon-warning,
+.dashboard-kpi:nth-child(4) .dashboard-kpi-icon {
+  color: var(--ds-warn) !important;
+  background: var(--ds-warn-soft) !important;
+}
+
+/* ---- Focus visibility for keyboard users ---- */
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ds-primary) 55%, transparent);
+  outline-offset: 2px;
+}
+
+/* ---- Fallback when backdrop-filter is unsupported (already flat) ---- */
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .sidebar,
+  .app-header,
+  .auth-topbar,
+  .auth-form-panel,
+  .select-dropdown-portal,
+  .ui-popover,
+  .dropdown,
+  .header-popover,
+  .modal-content,
+  .dialog-container {
+    background-color: var(--ds-surface) !important;
+  }
+}

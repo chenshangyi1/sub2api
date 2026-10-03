@@ -1,0 +1,64 @@
+# =============================================================================
+# EPUSDT sidecar — independent project, does not compose-up the Sub2API stack.
+# =============================================================================
+# Usage (production):
+#   docker compose -p sub2api-epusdt -f /opt/sub2api/docker-compose.epusdt.yml up -d
+#
+# Image is gmwallet/epusdt because Sub2API talks to
+#   POST /payments/gmpay/v1/order/create-transaction
+# Official assimon/epusdt is not pullable here and does not expose that path.
+# After it is healthy, set 服务商管理 > EPUSDT > apiBase to the public HTTPS
+# origin that reverse-proxies this container (Go requires HTTPS), e.g.
+# https://ep.baiyuan.cc.cd
+#
+# Do not bind-mount a file onto /app/.env. GMPay install replaces that file
+# via rename and fails with "device or resource busy" on a Docker file bind.
+# Seed /opt/sub2api/epusdt-config/.env on the host, then copy it into the
+# writable container filesystem at start. Point sqlite_database_filename at
+# /app/runtime/epusdt.db so the admin/store database survives recreates.
+# =============================================================================
+
+name: sub2api-epusdt
+
+services:
+  epusdt:
+    image: ${EPUSDT_IMAGE:-gmwallet/epusdt:latest}
+    container_name: sub2api-epusdt
+    restart: unless-stopped
+    working_dir: /app
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        if [ -f /opt/epusdt-config/.env ]; then
+          cp /opt/epusdt-config/.env /app/.env
+        fi
+        exec ./epusdt http start
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-256m}"
+        max-file: "${DOCKER_LOG_MAX_FILE:-4}"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - epusdt_data:/app/runtime
+      - ${EPUSDT_CONFIG_DIR:-./epusdt-config}:/opt/epusdt-config:ro
+    ports:
+      - "${EPUSDT_BIND_HOST:-127.0.0.1}:${EPUSDT_HOST_PORT:-18084}:8000"
+    networks:
+      - sub2api-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+networks:
+  sub2api-network:
+    external: true
+    name: ${EPUSDT_NETWORK:-sub2api_sub2api-network}
+
+volumes:
+  epusdt_data:

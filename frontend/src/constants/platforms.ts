@@ -1,0 +1,28 @@
+import type { AccountPlatform, GroupPlatform } from '@/types'
+
+export interface PlatformOption<T extends string = string> {
+  value: T
+  label: string
+}
+
+/**
+ * Concrete upstream platforms supported by accounts and request routing.
+ * Keep platform selectors derived from this catalog so newly added providers
+ * do not silently disappear from list filters.
+ */
+export const CONCRETE_PLATFORM_OPTIONS = [
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'gemini', label: 'Gemini' },
+  { value: 'antigravity', label: 'Antigravity' },
+  { value: 'grok', label: 'Grok' },
+  { value: 'cn', label: '国模' },
+  { value: 'video', label: '视频' }
+] as const satisfies readonly PlatformOption<AccountPlatform>[]
+
+/** Platforms that can own a group. */
+export const GROUP_PLATFORM_OPTIONS = [
+  ...CONCRETE_PLATFORM_OPTIONS,
+  { value: 'composite', label: 'Composite' },
+  { value: 'adaptive', label: 'Adaptive' }
+] as const satisfies readonly PlatformOption<GroupPlatform>[]

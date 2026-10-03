@@ -1,0 +1,101 @@
+# 简化版 GoReleaser 配置 - 仅发布 x86_64 GHCR 镜像
+version: 2
+
+project_name: sub2api
+
+before:
+  hooks:
+    - go mod tidy -C backend
+
+builds:
+  - id: sub2api
+    dir: backend
+    main: ./cmd/server
+    binary: sub2api
+    flags:
+      - -tags=embed
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+      - -X main.Commit={{.Commit}}
+      - -X main.Date={{.Date}}
+      - -X main.BuildType=release
+
+archives:
+  - id: linux-amd64
+    format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE*
+      - README*
+      - deploy/*
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+changelog:
+  disable: true
+
+# 仅 GHCR x86_64 镜像
+dockers:
+  - id: ghcr-amd64
+    # GHCR is optional. A missing package write token must not prevent the
+    # runtime archive from being published to the GitHub Release.
+    skip_push: '{{ if eq .Env.PUBLISH_GHCR "true" }}false{{ else }}true{{ end }}'
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_REPO_OWNER_LOWER }}/sub2api:{{ .Version }}-amd64"
+      - "ghcr.io/{{ .Env.GITHUB_REPO_OWNER_LOWER }}/sub2api:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_REPO_OWNER_LOWER }}/sub2api:latest"
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    extra_files:
+      - deploy/docker-entrypoint.sh
+      - deploy/update-orchestrator.sh
+      - backend/resources
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .Commit }}"
+      - "--label=org.opencontainers.image.source=https://github.com/{{ .Env.GITHUB_REPO_OWNER }}/{{ .Env.GITHUB_REPO_NAME }}"
+
+# 跳过 manifests（单架构不需要）
+docker_manifests: []
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_REPO_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO_NAME }}"
+  draft: false
+  prerelease: auto
+  name_template: "Sub2API {{.Version}} (Simple)"
+  header: |
+    > AI API Gateway Platform - 将 AI 订阅配额分发和管理
+    > ⚡ Simple Release: x86_64 runtime archive (and GHCR image when enabled)
+
+    {{ .Env.TAG_MESSAGE }}
+
+  footer: |
+    ---
+
+    ## 📥 Installation
+
+    **Docker (x86_64 only, when GHCR publishing is enabled):**
+    ```bash
+    docker pull ghcr.io/{{ .Env.GITHUB_REPO_OWNER_LOWER }}/sub2api:{{ .Version }}
+    ```
+
+    **Runtime archive:**
+    Download `sub2api_{{ .Version }}_linux_amd64.tar.gz` and `checksums.txt` from the assets below.
+
+    ## 📚 Documentation
+
+    - [GitHub Repository](https://github.com/{{ .Env.GITHUB_REPO_OWNER }}/{{ .Env.GITHUB_REPO_NAME }})

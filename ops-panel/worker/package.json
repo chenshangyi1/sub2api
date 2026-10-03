@@ -1,0 +1,25 @@
+{
+  "name": "upstream-ops-extension-worker",
+  "version": "0.0.7",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run prisma:generate && npm run typecheck && npm run bundle",
+    "bundle": "esbuild src/worker/monitor.ts --bundle --platform=node --format=esm --target=node20 --packages=external --outfile=dist/monitor.mjs",
+    "prisma:generate": "prisma generate",
+    "start": "node dist/monitor.mjs",
+    "test": "tsx --test src/server/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@prisma/client": "5.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "esbuild": "0.28.1",
+    "js-yaml": "4.3.0",
+    "prisma": "5.22.0",
+    "tsx": "4.22.4",
+    "typescript": "5.9.3"
+  }
+}

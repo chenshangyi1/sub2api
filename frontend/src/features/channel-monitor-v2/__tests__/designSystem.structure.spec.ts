@@ -1,0 +1,147 @@
+/**
+ * Structure contracts: channel-monitor-v2 + studio shells must use project
+ * design-system utility classes rather than isolated flat RGB skins.
+ */
+import { availabilityBadgeClass, availabilityBarClass } from '../monitorFormat'
+
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { describe, expect, it } from 'vitest'
+
+const root = resolve(__dirname, '../../..')
+
+function read(rel: string) {
+  return readFileSync(resolve(root, rel), 'utf8')
+}
+
+describe('channel-monitor-v2 design system structure', () => {
+  it('user ChannelStatus V2 shell uses page-header, card, btn, tabs utilities', () => {
+    // Route wrapper may switch V1/V2; design chrome lives on the V2 implementation.
+    const src = read('views/user/ChannelStatusV2View.vue')
+    expect(src).toContain('page-header')
+    expect(src).toContain('page-title')
+    expect(src).toContain('class="card')
+    expect(src).toContain('btn btn-secondary')
+    expect(src).toContain('class="tab')
+    expect(src).toContain('tab-active')
+    expect(src).toContain('badge badge-warning')
+    // Compact single-row toolbar
+    expect(src).toContain('monitor-toolbar')
+    expect(src).toContain('clearFilters')
+    expect(src).toContain('healthModeOptions')
+    expect(src).toContain("'cache'")
+    // Ops elevation: rounded-3xl + ring surfaces
+    expect(src).toContain('rounded-3xl')
+    expect(src).toContain('ring-1 ring-gray-900/5')
+    // Overview-first KPI strip before primary viz
+    expect(src.indexOf('summaryAria')).toBeLessThan(src.indexOf('MonitorTrendChart'))
+    // No page-level fixed min-width that forces viewport horizontal scroll
+    expect(src).not.toMatch(/min-width:\s*980px/)
+    expect(src).not.toMatch(/min-w-\[980px\]/)
+    // Dense tables scroll internally
+    expect(src).toMatch(/max-h-\[min\(52vh/)
+    expect(src).toContain('overflow-auto')
+    // Trend view toggle (pulse matrix / line chart) + default platform/group dimension
+    expect(src).toContain("trendView")
+    expect(src).toContain("'platform_group'")
+    expect(src).toContain('MonitorTrendChart')
+  })
+
+  it('RelayPulseMatrix uses card chrome, matrix scroll, and hover tooltips (no click modal)', () => {
+    const src = read('features/channel-monitor-v2/RelayPulseMatrix.vue')
+    expect(src).toContain('class="card')
+    expect(src).toContain('card-header')
+    expect(src).toContain('card-body')
+    expect(src).toContain('matrix-scroll')
+    expect(src).toMatch(/max-h-\[min\(42vh/)
+    expect(src).toContain('overflow-auto')
+    expect(src).toContain('pulse-tooltip')
+    expect(src).toContain('rounded-3xl')
+    expect(src).toContain('ring-1 ring-gray-900/5')
+    expect(src).not.toContain('modal-overlay')
+    expect(src).not.toContain('modal-content')
+  })
+
+  it('MetricCell uses stat-card utility', () => {
+    const src = read('features/channel-monitor-v2/MetricCell.vue')
+    expect(src).toContain('stat-card')
+    expect(src).toContain('stat-label')
+    expect(src).toContain('stat-value')
+    expect(src).toContain('rounded-3xl')
+  })
+
+  it('MonitorTrendChart uses Ops chart shell tokens', () => {
+    const src = read('features/channel-monitor-v2/MonitorTrendChart.vue')
+    expect(src).toContain('class="card')
+    expect(src).toContain('rounded-3xl')
+    expect(src).toContain('ring-1 ring-gray-900/5')
+    expect(src).toContain('EmptyState')
+    expect(src).toContain('min-h-[360px]')
+  })
+
+  it('FilterMultiSelect uses rounded-xl input chrome and dropdown utility', () => {
+    const src = read('features/channel-monitor-v2/FilterMultiSelect.vue')
+    expect(src).toContain('rounded-xl')
+    expect(src).toContain('dropdown')
+    expect(src).toContain('dropdown-item')
+  })
+
+  it('MonitorSettingsPanel uses page-header, card, btn-primary, tabs', () => {
+    const src = read('features/channel-monitor-v2/MonitorSettingsPanel.vue')
+    expect(src).toContain('page-header')
+    expect(src).toContain('btn btn-primary')
+    expect(src).toContain('class="card')
+    expect(src).toContain('tab-active')
+    expect(src).toMatch(/max-h-\[min\(40vh/)
+  })
+
+  it('admin ChannelMonitorView V2 tab chrome uses project tabs', () => {
+    const src = read('views/admin/ChannelMonitorView.vue')
+    expect(src).toContain('page-header')
+    expect(src).toContain('page-title')
+    expect(src).toContain('class="tabs')
+    expect(src).toContain('tab-active')
+    expect(src).toContain('MonitorSettingsPanel')
+  })
+
+  it('V3 timeline keeps hover details in a stable tooltip layer', () => {
+    const src = read('components/user/monitor/ChannelMonitorV3Timeline.vue')
+    expect(src).toContain('v3-bar-hitbox')
+    expect(src).toContain('is-neighbor')
+    expect(src).toContain('v3-timeline-tooltip')
+    expect(src).not.toContain(':title="bar.title"')
+    expect(src).toContain("state === 'unknown'")
+  })
+
+  it('V3 channel status groups cards by platform', () => {
+    const src = read('views/user/ChannelStatusV3View.vue')
+    expect(src).toContain('platformSections')
+    expect(src).toContain('layoutBlocks')
+    expect(src).toContain('channel-status-platform-')
+    expect(src).toContain('channel-status-board')
+    expect(src).toContain('channel-status-compact-platforms')
+  })
+})
+
+
+describe('availabilityBadgeClass', () => {
+  it('uses the requested availability color bands', () => {
+    expect(availabilityBadgeClass(95)).toContain('bg-emerald-700')
+    expect(availabilityBadgeClass(90)).toContain('bg-emerald-700')
+    expect(availabilityBadgeClass(89.9)).toContain('bg-emerald-100')
+    expect(availabilityBadgeClass(80)).toContain('bg-emerald-100')
+    expect(availabilityBadgeClass(79.9)).toContain('bg-yellow-100')
+    expect(availabilityBadgeClass(60)).toContain('bg-yellow-100')
+    expect(availabilityBadgeClass(59.9)).toContain('bg-amber-200')
+    expect(availabilityBadgeClass(50)).toContain('bg-amber-200')
+    expect(availabilityBadgeClass(49.9)).toContain('bg-red-600')
+    expect(availabilityBadgeClass(30)).toContain('bg-red-600')
+    expect(availabilityBadgeClass(29.9)).toContain('bg-gray-950')
+    expect(availabilityBarClass(95)).toContain('bg-emerald-600')
+    expect(availabilityBarClass(80)).toContain('bg-emerald-400')
+    expect(availabilityBarClass(60)).toContain('bg-yellow-300')
+    expect(availabilityBarClass(50)).toContain('bg-amber-400')
+    expect(availabilityBarClass(30)).toContain('bg-red-500')
+    expect(availabilityBarClass(29.9)).toContain('bg-gray-950')
+  })
+})

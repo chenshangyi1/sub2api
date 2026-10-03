@@ -1,0 +1,69 @@
+package admin
+
+import (
+	"context"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+)
+
+// /admin/usage/stats scans usage_logs for endpoint dimensions, so keep the
+// result warm long enough for the admin page's related requests to reuse it.
+var usageStatsCache = newNamedSnapshotCache("usage-stats", reportCacheTTL)
+
+type usageStatsCacheKeyData struct {
+	RollupVersion         string `json:"rollup_version"`
+	StartTime             string `json:"start_time"`
+	EndTime               string `json:"end_time"`
+	UserID                int64  `json:"user_id"`
+	APIKeyID              int64  `json:"api_key_id"`
+	AccountID             int64  `json:"account_id"`
+	GroupID               int64  `json:"group_id"`
+	Model                 string `json:"model"`
+	BillingMode           string `json:"billing_mode"`
+	RequestType           *int16 `json:"request_type"`
+	Stream                *bool  `json:"stream"`
+	BillingType           *int8  `json:"billing_type"`
+	UpstreamModelMismatch *bool  `json:"upstream_model_mismatch"`
+}
+
+func usageStatsCacheKey(filters usagestats.UsageLogFilters) string {
+	start := ""
+	if filters.StartTime != nil {
+		start = filters.StartTime.UTC().Format(time.RFC3339)
+	}
+	end := ""
+	if filters.EndTime != nil {
+		end = filters.EndTime.UTC().Format(time.RFC3339)
+	}
+	return mustMarshalDashboardCacheKey(usageStatsCacheKeyData{
+		RollupVersion:         reportCacheVersion(),
+		StartTime:             start,
+		EndTime:               end,
+		UserID:                filters.UserID,
+		APIKeyID:              filters.APIKeyID,
+		AccountID:             filters.AccountID,
+		GroupID:               filters.GroupID,
+		Model:                 filters.Model,
+		BillingMode:           filters.BillingMode,
+		RequestType:           filters.RequestType,
+		Stream:                filters.Stream,
+		BillingType:           filters.BillingType,
+		UpstreamModelMismatch: filters.UpstreamModelMismatch,
+	})
+}
+
+// getStatsCached 命中则返回缓存,未命中则回源 usageService 并写缓存。
+func (h *UsageHandler) getStatsCached(ctx context.Context, filters usagestats.UsageLogFilters) (*usagestats.UsageStats, bool, error) {
+	key := usageStatsCacheKey(filters)
+	entry, hit, err := usageStatsCache.GetOrLoadContext(ctx, key, func() (any, error) {
+		loadCtx, cancel := reportCacheLoadContext(ctx)
+		defer cancel()
+		return h.usageService.GetStatsWithFilters(loadCtx, filters)
+	})
+	if err != nil {
+		return nil, hit, err
+	}
+	stats, err := snapshotPayloadAs[*usagestats.UsageStats](entry.Payload)
+	return stats, hit, err
+}

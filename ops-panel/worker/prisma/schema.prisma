@@ -1,0 +1,402 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "windows", "debian-openssl-1.1.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model AdminUser {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("admin_users")
+}
+
+model Connection {
+  id          Int       @id @default(autoincrement())
+  name        String
+  baseUrl     String    @map("base_url")
+  adminApiKey String    @map("admin_api_key")
+  enabled     Boolean   @default(true)
+  syncMode    String    @default("manual") @map("sync_mode")
+  lastCheckAt DateTime? @map("last_check_at") @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  blSourceBindings BlSourceBinding[]
+  blGroupRateRules BlGroupRateRule[]
+  blAccountRateRules BlAccountRateRule[]
+  announcementRules AnnouncementRule[]
+  upstreamMonitorRules UpstreamMonitorRule[]
+  upstreamMonitorResults UpstreamMonitorResult[]
+  upstreamMonitorRateExclusions UpstreamMonitorRateExclusion[]
+  apiCapabilityProbeRuns ApiCapabilityProbeRun[]
+  blCollectionSites BlCollectionSite[]
+  blCollectionRuns BlCollectionRun[]
+  blCollectedGroupRates BlCollectedGroupRate[]
+  blCollectedModelPrices BlCollectedModelPrice[]
+  blCollectedChanges BlCollectedChange[]
+
+  @@map("connections")
+}
+
+model UpstreamSyncTarget {
+  id                BigInt    @id @default(autoincrement())
+  name              String    @unique
+  baseUrl           String    @map("base_url")
+  adminApiKeyCipher String    @map("admin_api_key_cipher")
+  enabled           Boolean   @default(true)
+  lastCheckStatus   String?   @map("last_check_status")
+  lastCheckAt       DateTime? @map("last_check_at") @db.Timestamptz(3)
+  lastCheckError    String?   @map("last_check_error")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("upstream_sync_targets")
+}
+
+model LegacyImportMap {
+  id                BigInt    @id @default(autoincrement())
+  migrationVersion  String    @map("migration_version")
+  legacyTable       String    @map("legacy_table")
+  legacyId          String    @map("legacy_id")
+  canonicalTable    String    @map("canonical_table")
+  canonicalId       String    @map("canonical_id")
+  sourceFingerprint String    @map("source_fingerprint")
+  importedAt        DateTime  @map("imported_at") @db.Timestamptz(3)
+  rolledBackAt      DateTime? @map("rolled_back_at") @db.Timestamptz(3)
+
+  @@unique([migrationVersion, legacyTable, legacyId, canonicalTable], map: "idx_legacy_import_source")
+  @@index([canonicalTable])
+  @@map("legacy_import_maps")
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime? @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("settings")
+}
+
+model BlSourceBinding {
+  id              Int        @id @default(autoincrement())
+  connectionId    Int        @map("connection_id")
+  targetType      String     @map("target_type")
+  targetId        Int        @map("target_id")
+  sourceSiteId    Int        @map("source_site_id")
+  sourceSiteName  String     @map("source_site_name")
+  sourceGroupId   String     @map("source_group_id")
+  sourceGroupName String?    @map("source_group_name")
+  sourcePlatform  String?    @map("source_platform")
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  connection      Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, targetType, targetId, sourceSiteId, sourceGroupId])
+  @@index([connectionId, targetType, targetId])
+  @@map("bl_source_bindings")
+}
+
+model BlGroupRateRule {
+  id           Int        @id @default(autoincrement())
+  connectionId Int        @map("connection_id")
+  groupId      Int        @map("group_id")
+  enabled      Boolean    @default(false)
+  mode         String     @default("first")
+  offset       Float      @default(0)
+  expression   String?
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  connection   Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, groupId])
+  @@index([connectionId, groupId])
+  @@map("bl_group_rate_rules")
+}
+
+model BlAccountRateRule {
+  id           Int        @id @default(autoincrement())
+  connectionId Int        @map("connection_id")
+  accountId    Int        @map("account_id")
+  enabled      Boolean    @default(false)
+  mode         String     @default("first")
+  offset       Float      @default(0)
+  expression   String?
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  connection   Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, accountId])
+  @@index([connectionId, accountId])
+  @@map("bl_account_rate_rules")
+}
+
+model BlCollectionSite {
+  id                  Int                     @id @default(autoincrement())
+  connectionId         Int                     @map("connection_id")
+  name                String
+  baseUrl             String                  @map("base_url")
+  siteType            String                  @default("sub2api") @map("site_type")
+  email               String                  @default("")
+  passwordEnc         String                  @default("") @map("password_enc")
+  authMode            String                  @default("password") @map("auth_mode")
+  enabled             Boolean                 @default(true)
+  intervalMin         Int                     @default(60) @map("interval_min")
+  rechargeRatio       Float                   @default(1) @map("recharge_ratio")
+  accessToken         String?                 @map("access_token")
+  refreshToken        String?                 @map("refresh_token")
+  tokenExpire         BigInt?                 @map("token_expire")
+  newApiUserId        String?                 @map("new_api_user_id")
+  lastRunAt           DateTime?               @map("last_run_at") @db.Timestamptz(3)
+  lastStatus          String?                 @map("last_status")
+  lastError           String?                 @map("last_error")
+  consecutiveFailures Int                     @default(0) @map("consecutive_failures")
+  lastSuccessAt       DateTime?               @map("last_success_at") @db.Timestamptz(3)
+  createdAt           DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+  connection          Connection              @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  runs                BlCollectionRun[]
+  groupRates          BlCollectedGroupRate[]
+  modelPrices         BlCollectedModelPrice[]
+  changes             BlCollectedChange[]
+
+  @@index([connectionId, enabled])
+  @@index([connectionId, siteType])
+  @@map("bl_collection_sites")
+}
+
+model BlCollectionRun {
+  id          Int                     @id @default(autoincrement())
+  connectionId Int                    @map("connection_id")
+  siteId      Int                     @map("site_id")
+  status      String
+  error       String?
+  groupCount  Int                     @default(0) @map("group_count")
+  modelCount  Int                     @default(0) @map("model_count")
+  changeCount Int                     @default(0) @map("change_count")
+  startedAt   DateTime                @default(now()) @map("started_at") @db.Timestamptz(3)
+  finishedAt  DateTime?               @map("finished_at") @db.Timestamptz(3)
+  connection  Connection              @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  site        BlCollectionSite        @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  groupRates  BlCollectedGroupRate[]
+  modelPrices BlCollectedModelPrice[]
+  changes     BlCollectedChange[]
+
+  @@index([connectionId, siteId, status, id])
+  @@index([siteId, status, id])
+  @@map("bl_collection_runs")
+}
+
+model BlCollectedGroupRate {
+  id               Int              @id @default(autoincrement())
+  connectionId     Int              @map("connection_id")
+  siteId           Int              @map("site_id")
+  runId            Int              @map("run_id")
+  groupId          String           @map("group_id")
+  name             String
+  platform         String?
+  subscriptionType String?          @map("subscription_type")
+  isExclusive      Boolean          @default(false) @map("is_exclusive")
+  rateMultiplier   Float?           @map("rate_multiplier")
+  userRate         Float?           @map("user_rate")
+  effectiveRate    Float?           @map("effective_rate")
+  raw              String?
+  collectedAt      DateTime         @default(now()) @map("collected_at") @db.Timestamptz(3)
+  connection       Connection       @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  site             BlCollectionSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  run              BlCollectionRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId, siteId, groupId, id])
+  @@index([runId])
+  @@map("bl_collected_group_rates")
+}
+
+model BlCollectedModelPrice {
+  id               Int              @id @default(autoincrement())
+  connectionId     Int              @map("connection_id")
+  siteId           Int              @map("site_id")
+  runId            Int              @map("run_id")
+  channelName      String?          @map("channel_name")
+  platform         String?
+  modelName        String           @map("model_name")
+  billingMode      String?          @map("billing_mode")
+  inputPrice       Float?           @map("input_price")
+  outputPrice      Float?           @map("output_price")
+  cacheWritePrice  Float?           @map("cache_write_price")
+  cacheReadPrice   Float?           @map("cache_read_price")
+  imageOutputPrice Float?           @map("image_output_price")
+  perRequestPrice  Float?           @map("per_request_price")
+  modelRatio       Float?           @map("model_ratio")
+  completionRatio  Float?           @map("completion_ratio")
+  modelPrice       Float?           @map("model_price")
+  quotaType        String?          @map("quota_type")
+  vendorName       String?          @map("vendor_name")
+  description      String?
+  raw              String?
+  collectedAt      DateTime         @default(now()) @map("collected_at") @db.Timestamptz(3)
+  connection       Connection       @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  site             BlCollectionSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  run              BlCollectionRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId, siteId, channelName, platform, modelName, id])
+  @@index([runId])
+  @@map("bl_collected_model_prices")
+}
+
+model BlCollectedChange {
+  id          Int              @id @default(autoincrement())
+  connectionId Int             @map("connection_id")
+  siteId      Int              @map("site_id")
+  runId       Int              @map("run_id")
+  entityType  String           @map("entity_type")
+  entityKey   String           @map("entity_key")
+  field       String
+  oldValue    String?          @map("old_value")
+  newValue    String?          @map("new_value")
+  changeType  String           @map("change_type")
+  raw         String?
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  connection  Connection       @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  site        BlCollectionSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  run         BlCollectionRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId, siteId, entityType, field, createdAt])
+  @@index([runId])
+  @@map("bl_collected_changes")
+}
+
+model AnnouncementRule {
+  id            Int        @id @default(autoincrement())
+  connectionId  Int        @map("connection_id")
+  name          String
+  enabled       Boolean    @default(true)
+  titleTemplate String     @map("title_template")
+  contentTemplate String   @map("content_template")
+  targetGroupIds Int[]     @default([]) @map("target_group_ids")
+  status        String     @default("active")
+  notifyMode    String     @default("silent") @map("notify_mode")
+  createdAt     DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  connection    Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId, enabled])
+  @@map("announcement_rules")
+}
+
+model UpstreamMonitorRule {
+  id                   Int        @id @default(autoincrement())
+  connectionId          Int        @map("connection_id")
+  accountId             Int        @map("account_id")
+  accountName           String?    @map("account_name")
+  enabled               Boolean    @default(true)
+  checkIntervalMinutes  Int        @default(10) @map("check_interval_minutes")
+  failureThreshold      Int        @default(3) @map("failure_threshold")
+  pauseMinutes          Int        @default(30) @map("pause_minutes")
+  modelId               String?    @map("model_id")
+  prompt                String?
+    sub2apiChannelMonitorId Int?     @map("sub2api_channel_monitor_id")
+    sub2apiGroupId          Int?     @map("sub2api_group_id")
+    sub2apiGroupName        String?  @map("sub2api_group_name")
+  nativeMonitorSuppressedAt DateTime? @map("native_monitor_suppressed_at") @db.Timestamptz(3)
+  consecutiveFailures   Int        @default(0) @map("consecutive_failures")
+  consecutiveLightFailures Int     @default(0) @map("consecutive_light_failures")
+  consecutiveHeavyFailures Int     @default(0) @map("consecutive_heavy_failures")
+  totalChecks           Int        @default(0) @map("total_checks")
+  successChecks         Int        @default(0) @map("success_checks")
+  lastStatus            String?    @map("last_status")
+  lastMessage           String?    @map("last_message")
+  lastLatencyMs         Int?       @map("last_latency_ms")
+  lastHeavyCheckedAt    DateTime?  @map("last_heavy_checked_at") @db.Timestamptz(3)
+  lastCheckMode         String?    @map("last_check_mode")
+  lastFirstTokenMs      Int?       @map("last_first_token_ms")
+  lastStreamTps         Float?     @map("last_stream_tps")
+  lastCheckedAt         DateTime?  @map("last_checked_at") @db.Timestamptz(3)
+  nextCheckAt           DateTime?  @map("next_check_at") @db.Timestamptz(3)
+  pausedUntil           DateTime?  @map("paused_until") @db.Timestamptz(3)
+  pauseStartedAt        DateTime?  @map("pause_started_at") @db.Timestamptz(3)
+  createdAt             DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  connection            Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  results               UpstreamMonitorResult[]
+
+  @@unique([connectionId, accountId])
+  @@index([connectionId, enabled, nextCheckAt])
+  @@index([connectionId, accountId])
+    @@index([connectionId, sub2apiChannelMonitorId])
+    @@index([connectionId, sub2apiGroupId])
+  @@map("upstream_monitor_rules")
+}
+
+model UpstreamMonitorResult {
+  id           Int                 @id @default(autoincrement())
+  ruleId       Int                 @map("rule_id")
+  connectionId Int                 @map("connection_id")
+  accountId    Int                 @map("account_id")
+  status       String
+  message      String?
+  latencyMs    Int?                @map("latency_ms")
+  model        String?
+  checkMode    String              @default("heavy") @map("check_mode")
+  firstTokenMs Int?                @map("first_token_ms")
+  streamTps    Float?              @map("stream_tps")
+  startedAt    DateTime            @map("started_at") @db.Timestamptz(3)
+  finishedAt   DateTime            @map("finished_at") @db.Timestamptz(3)
+  createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  rule         UpstreamMonitorRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  connection   Connection          @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([ruleId, createdAt])
+  @@index([connectionId, accountId, createdAt])
+  @@map("upstream_monitor_results")
+}
+
+model ApiCapabilityProbeRun {
+  id           Int        @id @default(autoincrement())
+  connectionId Int        @map("connection_id")
+  accountId    Int        @map("account_id")
+  monitorId    Int?       @map("monitor_id")
+  provider     String
+  model        String
+  status       String
+  results      Json
+  startedAt    DateTime   @map("started_at") @db.Timestamptz(3)
+  finishedAt   DateTime   @map("finished_at") @db.Timestamptz(3)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  connection   Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId, monitorId, createdAt])
+  @@index([connectionId, accountId, createdAt])
+  @@map("api_capability_probe_runs")
+}
+
+model UpstreamMonitorRateExclusion {
+  id              Int        @id @default(autoincrement())
+  connectionId    Int        @map("connection_id")
+  accountId       Int        @map("account_id")
+  accountName     String?    @map("account_name")
+  groupId         Int        @map("group_id")
+  sourceSiteId    Int        @map("source_site_id")
+  sourceSiteName  String     @map("source_site_name")
+  sourceGroupId   String     @map("source_group_id")
+  sourceGroupName String?    @map("source_group_name")
+  sourcePlatform  String?    @map("source_platform")
+  reason          String?
+  active          Boolean    @default(true)
+  pausedAt        DateTime   @default(now()) @map("paused_at") @db.Timestamptz(3)
+  restoredAt      DateTime?  @map("restored_at") @db.Timestamptz(3)
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  connection      Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, accountId, groupId, sourceSiteId, sourceGroupId])
+  @@index([connectionId, active, groupId])
+  @@index([connectionId, accountId, active])
+  @@index([connectionId, sourceSiteId, sourceGroupId, active])
+  @@map("upstream_monitor_rate_exclusions")
+}

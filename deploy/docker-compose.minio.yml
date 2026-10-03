@@ -1,0 +1,50 @@
+# =============================================================================
+# MinIO sidecar for async image object storage.
+# Independent project: does not compose-up or Recreate the Sub2API stack.
+# =============================================================================
+# Usage (production):
+#   docker compose -p sub2api-minio -f /opt/sub2api/docker-compose.minio.yml --env-file /opt/sub2api/minio.env up -d
+#
+# S3 API is published on 127.0.0.1:18086 only. Public reads go through nginx
+# at https://milarain.shop/async-images/... . The Sub2API container reaches
+# MinIO on the existing compose network as http://sub2api-minio:9000.
+# =============================================================================
+
+name: sub2api-minio
+
+services:
+  minio:
+    image: ${MINIO_IMAGE:-quay.io/minio/minio:latest}
+    container_name: sub2api-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-256m}"
+        max-file: "${DOCKER_LOG_MAX_FILE:-4}"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "${MINIO_BIND_HOST:-127.0.0.1}:${MINIO_API_PORT:-18086}:9000"
+      - "${MINIO_BIND_HOST:-127.0.0.1}:${MINIO_CONSOLE_PORT:-18087}:9001"
+    networks:
+      - sub2api-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+networks:
+  sub2api-network:
+    external: true
+    name: ${MINIO_NETWORK:-sub2api_sub2api-network}
+
+volumes:
+  minio_data:

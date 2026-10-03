@@ -1,0 +1,21 @@
+﻿<svg width="800" height="1200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grad-amber" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#F59E0B;stop-opacity:0.3" />
+      <stop offset="50%" style="stop-color:#FBBF24;stop-opacity:0.2" />
+      <stop offset="100%" style="stop-color:#FCD34D;stop-opacity:0.1" />
+    </linearGradient>
+    <radialGradient id="glow-amber" cx="50%" cy="40%">
+      <stop offset="0%" style="stop-color:#F59E0B;stop-opacity:0.4" />
+      <stop offset="100%" style="stop-color:#F59E0B;stop-opacity:0" />
+    </radialGradient>
+  </defs>
+  <rect width="800" height="1200" fill="url(#grad-amber)"/>
+  <ellipse cx="400" cy="480" rx="300" ry="400" fill="url(#glow-amber)"/>
+  <circle cx="400" cy="600" r="200" fill="none" stroke="#F59E0B" stroke-width="2" opacity="0.3"/>
+  <circle cx="400" cy="600" r="150" fill="none" stroke="#FBBF24" stroke-width="2" opacity="0.4"/>
+  <circle cx="400" cy="600" r="100" fill="none" stroke="#FCD34D" stroke-width="2" opacity="0.5"/>
+  <text x="400" y="630" font-size="120" text-anchor="middle" opacity="0.8">🍂</text>
+  <text x="400" y="920" font-size="48" font-weight="bold" text-anchor="middle" fill="#F59E0B">琥珀</text>
+  <text x="400" y="980" font-size="20" text-anchor="middle" fill="#666" opacity="0.6">临时占位符 · 等待真实图片</text>
+</svg>

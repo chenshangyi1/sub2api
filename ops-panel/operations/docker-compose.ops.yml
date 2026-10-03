@@ -1,0 +1,47 @@
+# Overlay only. Build and tag the immutable candidate image separately first.
+# Keep both production files before this overlay so database, secrets, network,
+# ports, logging, and the named volume remain authoritative:
+# docker compose -f /opt/sub2api/docker-compose.yml \
+#   -f /opt/sub2api/docker-compose.ops.yml \
+#   -f /opt/sub2api/ops-panel-s2a/operations/docker-compose.ops.yml \
+#   up -d --no-build ops-panel ops-worker
+services:
+  ops-panel:
+    image: local/sub2api-ops-panel:upstream-v0.0.7-integration-20260729T065400Z-r7
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 2m
+    environment:
+      AUTH_ENABLED: "true"
+      DATABASE_DRIVER: postgres
+      SERVER_MODE: release
+      SERVER_PORT: "3000"
+      SUB2API_PUBLIC_URL: https://baiyuan.cc.cd
+    volumes:
+      - ops_panel_data:/app/data
+    command: ["panel", "-config", "/app/data/config.yaml"]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  ops-worker:
+    image: local/sub2api-ops-panel:upstream-v0.0.7-integration-20260729T065400Z-r7
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 10m
+    depends_on:
+      ops-panel:
+        condition: service_healthy
+    environment:
+      S2A_LOG_DIR: /app/data/worker-logs
+      S2A_WORKER_INTERVAL_SECONDS: "60"
+      S2A_WORKER_RETRY_INTERVAL_SECONDS: "60"
+    volumes:
+      - ops_panel_data:/app/data
+    command: ["worker"]
+
+volumes:
+  ops_panel_data:

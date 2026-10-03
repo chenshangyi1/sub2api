@@ -1,0 +1,30 @@
+name: upstream-ops
+
+services:
+  app:
+    image: ghcr.io/bejix/upstream-ops:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    command: ["-config", "/app/data/config.yaml"]
+    environment:
+      TZ: Asia/Shanghai
+      SERVER_PORT: 8418
+      DATABASE_DRIVER: sqlite
+      DATABASE_PATH: /app/data/upstream-ops.db
+      SERVER_MODE: ${SERVER_MODE:-release}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      APP_SECRET: ${APP_SECRET:?APP_SECRET is required, set it in .env}
+      # 鉴权默认关闭。设 AUTH_ENABLED=true 时 ADMIN_PASSWORD 也必须填，否则后端启动失败。
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:-}
+    ports:
+      - "${HTTP_PORT:-8080}:8418"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8418/healthz >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

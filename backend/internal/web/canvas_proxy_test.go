@@ -1,0 +1,128 @@
+package web
+
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+)
+
+func TestInfiniteCanvasHandler_ServesLocalIndex(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>canvas</html>"), 0o644))
+	t.Setenv("INFINITE_CANVAS_STATIC_DIR", dir)
+	t.Setenv("INFINITE_CANVAS_UPSTREAM", "")
+
+	r := gin.New()
+	r.Use(InfiniteCanvasHandler())
+	r.GET("/other", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+
+	req := httptest.NewRequest(http.MethodGet, "/canvas/", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, w.Body.String(), "canvas")
+
+	other := httptest.NewRecorder()
+	r.ServeHTTP(other, httptest.NewRequest(http.MethodGet, "/other", nil))
+	require.Equal(t, http.StatusOK, other.Code)
+	require.Equal(t, "ok", other.Body.String())
+}
+
+func TestInfiniteCanvasHandler_FallsThroughWithoutStaticDir(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("INFINITE_CANVAS_STATIC_DIR", filepath.Join(t.TempDir(), "missing"))
+	t.Setenv("INFINITE_CANVAS_UPSTREAM", "")
+
+	r := gin.New()
+	r.Use(InfiniteCanvasHandler())
+	r.GET("/canvas/", func(c *gin.Context) { c.String(http.StatusOK, "embedded") })
+	r.GET("/canvas", func(c *gin.Context) { c.String(http.StatusOK, "embedded-bare") })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/canvas/", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "embedded", w.Body.String())
+
+	bare := httptest.NewRecorder()
+	r.ServeHTTP(bare, httptest.NewRequest(http.MethodGet, "/canvas", nil))
+	require.Equal(t, http.StatusOK, bare.Code)
+	require.Equal(t, "embedded-bare", bare.Body.String())
+}
+
+func TestInfiniteCanvasHandler_ProxiesUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const query = "v=123&tag=one&tag=two&q=hello+world&next=%2Fcanvas%2F&empty="
+	tests := []struct {
+		name         string
+		upstreamPath string
+		requestPath  string
+		wantPath     string
+		wantRawPath  string
+	}{
+		{name: "index", requestPath: "/canvas/", wantPath: "/canvas/"},
+		{name: "asset", requestPath: "/canvas/assets/app.js", wantPath: "/canvas/assets/app.js"},
+		{name: "upstream_root", upstreamPath: "/", requestPath: "/canvas/assets/app.js", wantPath: "/canvas/assets/app.js"},
+		{name: "upstream_prefix", upstreamPath: "/base", requestPath: "/canvas/assets/app.js", wantPath: "/base/canvas/assets/app.js"},
+		{name: "encoded_path_with_prefix", upstreamPath: "/base/", requestPath: "/canvas/boards/board%2Fone", wantPath: "/base/canvas/boards/board/one", wantRawPath: "/base/canvas/boards/board%2Fone"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			received := make(chan *http.Request, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				received <- r
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = io.WriteString(w, "upstream canvas")
+			}))
+			t.Cleanup(upstream.Close)
+			upstreamURL, err := url.Parse(upstream.URL)
+			require.NoError(t, err)
+			t.Setenv("INFINITE_CANVAS_STATIC_DIR", t.TempDir())
+			t.Setenv("INFINITE_CANVAS_UPSTREAM", upstream.URL+tt.upstreamPath)
+
+			r := gin.New()
+			r.Use(InfiniteCanvasHandler())
+			gateway := httptest.NewServer(r)
+			t.Cleanup(gateway.Close)
+			client := gateway.Client()
+			client.Timeout = 5 * time.Second
+			req, err := http.NewRequest(http.MethodGet, gateway.URL+tt.requestPath+"?"+query, nil)
+			require.NoError(t, err)
+			req.Host = "canvas.example.test"
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			require.Equal(t, "upstream canvas", string(body))
+			require.Equal(t, "text/plain", resp.Header.Get("Content-Type"))
+
+			select {
+			case got := <-received:
+				require.Equal(t, tt.wantPath, got.URL.Path)
+				require.Equal(t, tt.wantRawPath, got.URL.RawPath)
+				require.Equal(t, query, got.URL.RawQuery)
+				require.Equal(t, upstreamURL.Host, got.Host)
+			default:
+				t.Fatal("upstream did not receive the request")
+			}
+		})
+	}
+}
+
+func TestIsInfiniteCanvasPath(t *testing.T) {
+	require.True(t, isInfiniteCanvasPath("/canvas"))
+	require.True(t, isInfiniteCanvasPath("/canvas/"))
+	require.True(t, isInfiniteCanvasPath("/canvas/assets/app.js"))
+	require.False(t, isInfiniteCanvasPath("/infinite-canvas"))
+	require.False(t, isInfiniteCanvasPath("/v1/models"))
+}
