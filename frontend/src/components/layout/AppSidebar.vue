@@ -939,7 +939,7 @@ function isActive(path: string): boolean {
 
 function isGroupActive(item: NavItem): boolean {
   if (!item.children) return false
-  return route.path === item.path || route.path.startsWith(item.path + '/') || item.children.some(child => route.path === child.path || route.path.startsWith(child.path + '/'))
+  return item.children.some(child => route.path === child.path)
 }
 
 function isGroupExpanded(item: NavItem): boolean {
