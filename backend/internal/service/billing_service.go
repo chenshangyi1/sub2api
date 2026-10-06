@@ -250,6 +250,9 @@ const (
 	deepseekV41FlashOffPeakInputPrice  = 2e-6    // $2.00 per MTok (cache miss)
 	deepseekV41FlashOffPeakOutputPrice = 8e-6    // $8.00 per MTok
 	deepseekV41FlashOffPeakCacheRead   = 0.04e-6 // $0.04 per MTok (cache hit)
+	deepseekV32InputPrice              = 2e-6    // $2.00 per MTok (cache miss)
+	deepseekV32OutputPrice             = 8e-6    // $8.00 per MTok
+	deepseekV32CacheRead               = 0       // no separate cache-read price configured
 	deepseekProOffPeakInputPrice       = 6.6e-7  // $0.66 per MTok (cache miss)
 	deepseekProOffPeakOutputPrice      = 1.98e-6 // $1.98 per MTok
 	deepseekProOffPeakCacheRead        = 2.2e-8  // $0.022 per MTok (cache hit)
@@ -577,6 +580,12 @@ func (s *BillingService) initFallbackPricing() {
 		InputPricePerToken:     deepseekFlashOffPeakInputPrice,
 		OutputPricePerToken:    deepseekFlashOffPeakOutputPrice,
 		CacheReadPricePerToken: deepseekFlashOffPeakCacheRead,
+		SupportsCacheBreakdown: false,
+	}
+	s.fallbackPrices["deepseek-v3.2"] = &ModelPricing{
+		InputPricePerToken:     deepseekV32InputPrice,
+		OutputPricePerToken:    deepseekV32OutputPrice,
+		CacheReadPricePerToken: deepseekV32CacheRead,
 		SupportsCacheBreakdown: false,
 	}
 
@@ -920,6 +929,15 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		return s.fallbackPrices["gemini-3.8-flash"]
 	}
 
+	// DeepSeek V3.2/V4 系列：供应商前缀与大小写不影响计费匹配。
+	modelLower = strings.ToLower(strings.TrimSpace(model))
+	if slash := strings.LastIndexByte(modelLower, '/'); slash >= 0 {
+		modelLower = modelLower[slash+1:]
+	}
+	modelLower = strings.ReplaceAll(modelLower, "_", "-")
+	if strings.Contains(modelLower, "deepseek-v3.2") || strings.Contains(modelLower, "deepseek-v3-2") {
+		return s.fallbackPrices["deepseek-v3.2"]
+	}
 	// DeepSeek V4 系列：仅匹配已知 V4 Pro/Flash 与官方兼容别名
 	// （deepseek-chat / deepseek-reasoner → V4 Flash），未知 deepseek-* 型号不回退，避免误计价。
 	if strings.Contains(modelLower, "deepseek-v4-flash") {
