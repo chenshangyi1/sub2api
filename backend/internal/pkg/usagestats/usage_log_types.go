@@ -56,9 +56,11 @@ type DashboardStats struct {
 	TotalCacheCreationTokens int64   `json:"total_cache_creation_tokens"`
 	TotalCacheReadTokens     int64   `json:"total_cache_read_tokens"`
 	TotalTokens              int64   `json:"total_tokens"`
-	TotalCost                float64 `json:"total_cost"`         // 累计标准计费
-	TotalActualCost          float64 `json:"total_actual_cost"`  // 累计实际扣除
-	TotalAccountCost         float64 `json:"total_account_cost"` // 累计账号成本
+	TotalCost                float64 `json:"total_cost"`               // 累计标准计费
+	TotalActualCost          float64 `json:"total_actual_cost"`        // 累计实际扣除
+	TotalAccountCost         float64 `json:"total_account_cost"`       // 累计账号成本
+	TotalProbeAccountCost    float64 `json:"total_probe_account_cost"` // 按上游探测倍率重算的累计账号成本
+	TotalProfit              float64 `json:"total_profit"`             // 按上游探测倍率重算的累计利润
 
 	// 今日 Token 使用统计
 	TodayRequests            int64   `json:"today_requests"`
@@ -67,9 +69,11 @@ type DashboardStats struct {
 	TodayCacheCreationTokens int64   `json:"today_cache_creation_tokens"`
 	TodayCacheReadTokens     int64   `json:"today_cache_read_tokens"`
 	TodayTokens              int64   `json:"today_tokens"`
-	TodayCost                float64 `json:"today_cost"`         // 今日标准计费
-	TodayActualCost          float64 `json:"today_actual_cost"`  // 今日实际扣除
-	TodayAccountCost         float64 `json:"today_account_cost"` // 今日账号成本
+	TodayCost                float64 `json:"today_cost"`               // 今日标准计费
+	TodayActualCost          float64 `json:"today_actual_cost"`        // 今日实际扣除
+	TodayAccountCost         float64 `json:"today_account_cost"`       // 今日账号成本
+	TodayProbeAccountCost    float64 `json:"today_probe_account_cost"` // 按上游探测倍率重算的今日账号成本
+	TodayProfit              float64 `json:"today_profit"`             // 按上游探测倍率重算的今日利润
 
 	// 系统运行统计
 	AverageDurationMs float64 `json:"average_duration_ms"` // 平均响应时间

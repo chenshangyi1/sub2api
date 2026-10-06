@@ -72,6 +72,9 @@ const createDashboardStats = (): DashboardStats => ({
   total_tokens: 0,
   total_cost: 0,
   total_actual_cost: 0,
+  total_account_cost: 0,
+  total_probe_account_cost: 1.25,
+  total_profit: 1.75,
   today_requests: 0,
   today_input_tokens: 0,
   today_output_tokens: 0,
@@ -80,6 +83,9 @@ const createDashboardStats = (): DashboardStats => ({
   today_tokens: 0,
   today_cost: 0,
   today_actual_cost: 0,
+  today_account_cost: 0,
+  today_probe_account_cost: 1.25,
+  today_profit: 1.75,
   average_duration_ms: 0,
   uptime: 0,
   rpm: 0,
@@ -142,5 +148,28 @@ describe('admin DashboardView', () => {
       end_date: formatLocalDate(now),
       granularity: 'hour'
     }))
+  })
+
+  it('shows profit calculated from the upstream probe cost', async () => {
+    const wrapper = mount(DashboardView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          LoadingSpinner: true,
+          Icon: true,
+          DateRangePicker: true,
+          Select: true,
+          ModelDistributionChart: true,
+          TokenUsageTrend: true,
+          Line: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.dashboard.profit')
+    expect(wrapper.text()).toContain('$1.75')
+    expect(wrapper.text()).toContain('admin.dashboard.probeAccountCost')
   })
 })

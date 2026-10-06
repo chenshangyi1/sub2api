@@ -89,6 +89,9 @@ func (r *usageLogRepository) GetDashboardStats(ctx context.Context) (*DashboardS
 	if err := r.fillDashboardUsageStatsAggregated(ctx, stats, todayStart, now); err != nil {
 		return nil, err
 	}
+	if err := r.fillDashboardProbeAccountCosts(ctx, stats, todayStart); err != nil {
+		return nil, err
+	}
 
 	rpm, tpm, err := r.getPerformanceStats(ctx, 0)
 	if err != nil {
@@ -279,6 +282,29 @@ func (r *usageLogRepository) fillDashboardUsageStatsAggregated(ctx context.Conte
 	return nil
 }
 
+// fillDashboardProbeAccountCosts calculates the current account cost from the
+// latest successful upstream billing probe. Historical account costs remain in
+// the rollup fields above for compatibility; the profit card uses these values.
+func (r *usageLogRepository) fillDashboardProbeAccountCosts(ctx context.Context, stats *DashboardStats, todayUTC time.Time) error {
+	query := `
+		SELECT
+			COALESCE(SUM(COALESCE(ul.account_stats_cost, ul.total_cost) * ` + dashboardProbeAccountRateExpression("a", "ul") + `), 0),
+			COALESCE(SUM(COALESCE(ul.account_stats_cost, ul.total_cost) * ` + dashboardProbeAccountRateExpression("a", "ul") + `)
+				FILTER (WHERE ul.created_at >= $1::timestamptz AND ul.created_at < $2::timestamptz), 0)
+		FROM usage_logs AS ul
+		LEFT JOIN accounts AS a ON a.id = ul.account_id
+	`
+
+	todayEnd := todayUTC.Add(24 * time.Hour)
+	args := []any{todayUTC, todayEnd}
+	if err := scanSingleRow(ctx, r.sql, query, args, &stats.TotalProbeAccountCost, &stats.TodayProbeAccountCost); err != nil {
+		return err
+	}
+	stats.TotalProfit = stats.TotalActualCost - stats.TotalProbeAccountCost
+	stats.TodayProfit = stats.TodayActualCost - stats.TodayProbeAccountCost
+	return nil
+}
+
 func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Context, stats *DashboardStats, startUTC, endUTC, todayUTC, now time.Time) error {
 	todayEnd := todayUTC.Add(24 * time.Hour)
 	combinedStatsQuery := `
@@ -292,10 +318,12 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 				total_cost,
 				actual_cost,
 				COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) AS account_cost,
+				COALESCE(account_stats_cost, total_cost) * ` + dashboardProbeAccountRateExpression("a", "ul") + ` AS probe_account_cost,
 				COALESCE(duration_ms, 0) AS duration_ms
-			FROM usage_logs
-			WHERE created_at >= LEAST($1::timestamptz, $3::timestamptz)
-				AND created_at < GREATEST($2::timestamptz, $4::timestamptz)
+			FROM usage_logs AS ul
+			LEFT JOIN accounts AS a ON a.id = ul.account_id
+			WHERE ul.created_at >= LEAST($1::timestamptz, $3::timestamptz)
+				AND ul.created_at < GREATEST($2::timestamptz, $4::timestamptz)
 		)
 		SELECT
 			COUNT(*) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz) AS total_requests,
@@ -306,6 +334,7 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 			COALESCE(SUM(total_cost) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_cost,
 			COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_actual_cost,
 			COALESCE(SUM(account_cost) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_account_cost,
+			COALESCE(SUM(probe_account_cost) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_probe_account_cost,
 			COALESCE(SUM(duration_ms) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_duration_ms,
 			COUNT(*) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz) AS today_requests,
 			COALESCE(SUM(input_tokens) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_input_tokens,
@@ -314,7 +343,8 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 			COALESCE(SUM(cache_read_tokens) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_cache_read_tokens,
 			COALESCE(SUM(total_cost) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_cost,
 			COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_actual_cost,
-			COALESCE(SUM(account_cost) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_account_cost
+			COALESCE(SUM(account_cost) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_account_cost,
+			COALESCE(SUM(probe_account_cost) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_probe_account_cost
 		FROM scoped
 	`
 	var totalDurationMs int64
@@ -331,6 +361,7 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 		&stats.TotalCost,
 		&stats.TotalActualCost,
 		&stats.TotalAccountCost,
+		&stats.TotalProbeAccountCost,
 		&totalDurationMs,
 		&stats.TodayRequests,
 		&stats.TodayInputTokens,
@@ -340,6 +371,7 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 		&stats.TodayCost,
 		&stats.TodayActualCost,
 		&stats.TodayAccountCost,
+		&stats.TodayProbeAccountCost,
 	); err != nil {
 		return err
 	}
@@ -349,6 +381,8 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 	}
 
 	stats.TodayTokens = stats.TodayInputTokens + stats.TodayOutputTokens + stats.TodayCacheCreationTokens + stats.TodayCacheReadTokens
+	stats.TotalProfit = stats.TotalActualCost - stats.TotalProbeAccountCost
+	stats.TodayProfit = stats.TodayActualCost - stats.TodayProbeAccountCost
 
 	hourStart := now.UTC().Truncate(time.Hour)
 	hourEnd := hourStart.Add(time.Hour)
@@ -369,6 +403,13 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 	}
 
 	return nil
+}
+
+func dashboardProbeAccountRateExpression(accountAlias, usageAlias string) string {
+	status := accountAlias + ".extra #>> '{upstream_billing_probe,status}'"
+	rateJSON := accountAlias + ".extra #> '{upstream_billing_probe,data,effective_rate_multiplier}'"
+	rate := accountAlias + ".extra #>> '{upstream_billing_probe,data,effective_rate_multiplier}'"
+	return "CASE WHEN " + status + " = 'ok' AND jsonb_typeof(" + rateJSON + ") = 'number' AND (" + rate + ")::numeric >= 0 THEN (" + rate + ")::numeric ELSE COALESCE(" + usageAlias + ".account_rate_multiplier, 1) END"
 }
 
 // UserDashboardStats 用户仪表盘统计

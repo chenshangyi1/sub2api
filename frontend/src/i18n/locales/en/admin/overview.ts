@@ -47,6 +47,8 @@ export default {
     "actual": "Actual",
     "standard": "Standard",
     "accountCost": "Cost",
+    "probeAccountCost": "Probe-rate cost",
+    "profit": "Profit",
     "noDataAvailable": "No data available",
     "recentUsage": "Recent Usage",
     "viewModelDistribution": "Model Distribution",

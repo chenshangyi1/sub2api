@@ -19,6 +19,8 @@ export default {
     "actual": "实际",
     "standard": "标准",
     "accountCost": "成本",
+    "probeAccountCost": "探测倍率成本",
+    "profit": "利润",
     "todayTokens": "今日 Token",
     "totalTokens": "总 Token",
     "input": "输入",

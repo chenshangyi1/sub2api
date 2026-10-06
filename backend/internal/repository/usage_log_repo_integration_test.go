@@ -667,7 +667,7 @@ func (s *UsageLogRepoSuite) TestGetUserStats() {
 	endTime := base.Add(2 * time.Hour)
 	stats, err := s.repo.GetUserStats(s.ctx, user.ID, startTime, endTime)
 	s.Require().NoError(err, "GetUserStats")
-	s.Require().Equal(int64(2), stats.TotalRequests)
+	s.Require().Equal(int64(3), stats.TotalRequests)
 	s.Require().Equal(int64(25), stats.InputTokens)
 	s.Require().Equal(int64(45), stats.OutputTokens)
 }
@@ -794,6 +794,8 @@ func (s *UsageLogRepoSuite) TestDashboardStats_TodayTotalsAndPerformance() {
 	s.Require().Equal(baseStats.TotalActualCost+2.0, stats.TotalActualCost, "TotalActualCost mismatch")
 	// account_cost falls back to total_cost when account_stats_cost is NULL
 	s.Require().Equal(baseStats.TotalAccountCost+2.3, stats.TotalAccountCost, "TotalAccountCost mismatch")
+	s.Require().Equal(baseStats.TotalProbeAccountCost+2.3, stats.TotalProbeAccountCost, "TotalProbeAccountCost mismatch")
+	s.Require().Equal(baseStats.TotalProfit+(-0.3), stats.TotalProfit, "TotalProfit mismatch")
 	s.Require().GreaterOrEqual(stats.TodayRequests, int64(1), "expected TodayRequests >= 1")
 	s.Require().GreaterOrEqual(stats.TodayCost, 0.0, "expected TodayCost >= 0")
 	s.Require().GreaterOrEqual(stats.TodayAccountCost, 0.0, "expected TodayAccountCost >= 0")
@@ -814,7 +816,30 @@ func (s *UsageLogRepoSuite) TestDashboardStatsWithRange_Fallback() {
 	user2 := mustCreateUser(s.T(), s.client, &service.User{Email: "range-u2@test.com"})
 	apiKey1 := mustCreateApiKey(s.T(), s.client, &service.APIKey{UserID: user1.ID, Key: "sk-range-1", Name: "k1"})
 	apiKey2 := mustCreateApiKey(s.T(), s.client, &service.APIKey{UserID: user2.ID, Key: "sk-range-2", Name: "k2"})
-	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-range"})
+	account := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:           "acc-range",
+		RateMultiplier: func() *float64 { value := 0.8; return &value }(),
+		Extra: map[string]any{
+			"upstream_billing_probe": map[string]any{
+				"status": "ok",
+				"data": map[string]any{
+					"effective_rate_multiplier": 0.25,
+				},
+			},
+		},
+	})
+	fallbackAccount := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:           "acc-range-fallback",
+		RateMultiplier: func() *float64 { value := 0.8; return &value }(),
+		Extra: map[string]any{
+			"upstream_billing_probe": map[string]any{
+				"status": "failed",
+				"data": map[string]any{
+					"effective_rate_multiplier": 0.1,
+				},
+			},
+		},
+	})
 
 	d1, d2, d3 := 100, 200, 300
 	logOutside := &service.UsageLog{
@@ -865,19 +890,39 @@ func (s *UsageLogRepoSuite) TestDashboardStatsWithRange_Fallback() {
 	_, err = s.repo.Create(s.ctx, logToday)
 	s.Require().NoError(err)
 
+	logFallback := &service.UsageLog{
+		UserID:       user2.ID,
+		APIKeyID:     apiKey2.ID,
+		AccountID:    fallbackAccount.ID,
+		Model:        "claude-3",
+		InputTokens:  2,
+		OutputTokens: 3,
+		TotalCost:    0.2,
+		ActualCost:   0.15,
+		DurationMs:   &d1,
+		CreatedAt:    now.Add(-time.Minute),
+	}
+	_, err = s.repo.Create(s.ctx, logFallback)
+	s.Require().NoError(err)
+
 	stats, err := s.repo.GetDashboardStatsWithRange(s.ctx, rangeStart, rangeEnd)
 	s.Require().NoError(err)
-	s.Require().Equal(int64(2), stats.TotalRequests)
-	s.Require().Equal(int64(15), stats.TotalInputTokens)
-	s.Require().Equal(int64(26), stats.TotalOutputTokens)
+	s.Require().Equal(int64(3), stats.TotalRequests)
+	s.Require().Equal(int64(17), stats.TotalInputTokens)
+	s.Require().Equal(int64(29), stats.TotalOutputTokens)
 	s.Require().Equal(int64(1), stats.TotalCacheCreationTokens)
 	s.Require().Equal(int64(3), stats.TotalCacheReadTokens)
-	s.Require().Equal(int64(45), stats.TotalTokens)
-	s.Require().Equal(1.5, stats.TotalCost)
-	s.Require().Equal(1.4, stats.TotalActualCost)
-	// account_cost = COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) = total_cost
-	s.Require().Equal(1.5, stats.TotalAccountCost)
-	s.Require().InEpsilon(150.0, stats.AverageDurationMs, 0.0001)
+	s.Require().Equal(int64(50), stats.TotalTokens)
+	s.Require().Equal(1.7, stats.TotalCost)
+	s.Require().Equal(1.55, stats.TotalActualCost)
+	// account_cost keeps the historical account-rate calculation.
+	s.Require().Equal(1.7, stats.TotalAccountCost)
+	// Probe status ok uses 0.25; failed status falls back to the account's 0.8 rate.
+	s.Require().InEpsilon(0.535, stats.TotalProbeAccountCost, 0.0001)
+	s.Require().InEpsilon(0.285, stats.TodayProbeAccountCost, 0.0001)
+	s.Require().InEpsilon(1.015, stats.TotalProfit, 0.0001)
+	s.Require().InEpsilon(0.365, stats.TodayProfit, 0.0001)
+	s.Require().InEpsilon(133.333333, stats.AverageDurationMs, 0.0001)
 }
 
 // --- GetUserDashboardStats ---

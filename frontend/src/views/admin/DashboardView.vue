@@ -103,7 +103,7 @@
         </div>
 
         <!-- Row 2: Token Stats -->
-        <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <div class="grid grid-cols-2 gap-4 lg:grid-cols-5">
           <!-- Today Tokens -->
           <div class="card p-4">
             <div class="flex items-center gap-3">
@@ -126,8 +126,8 @@
                   <span class="text-gray-400 dark:text-gray-500"> / </span>
                   <span
                     class="text-orange-500 dark:text-orange-400"
-                    :title="t('admin.dashboard.accountCost')"
-                    >${{ formatCost(stats.today_account_cost) }}</span
+                    :title="t('admin.dashboard.probeAccountCost')"
+                    >${{ formatCost(stats.today_probe_account_cost) }}</span
                   >
                   <span class="text-gray-400 dark:text-gray-500"> / </span>
                   <span
@@ -162,8 +162,8 @@
                   <span class="text-gray-400 dark:text-gray-500"> / </span>
                   <span
                     class="text-orange-500 dark:text-orange-400"
-                    :title="t('admin.dashboard.accountCost')"
-                    >${{ formatCost(stats.total_account_cost) }}</span
+                    :title="t('admin.dashboard.probeAccountCost')"
+                    >${{ formatCost(stats.total_probe_account_cost) }}</span
                   >
                   <span class="text-gray-400 dark:text-gray-500"> / </span>
                   <span
@@ -171,6 +171,35 @@
                     :title="t('admin.dashboard.standard')"
                     >${{ formatCost(stats.total_cost) }}</span
                   >
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Profit -->
+          <div class="card p-4">
+            <div class="flex items-center gap-3">
+              <div class="rounded-lg bg-teal-100 p-2 dark:bg-teal-900/30">
+                <Icon name="trendingUp" size="md" class="text-teal-600 dark:text-teal-400" :stroke-width="2" />
+              </div>
+              <div>
+                <p class="text-xs font-medium text-gray-500 dark:text-gray-400">
+                  {{ t('admin.dashboard.profit') }}
+                </p>
+                <p
+                  class="text-xl font-bold"
+                  :class="stats.total_profit >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'"
+                >
+                  ${{ formatCost(stats.total_profit) }}
+                </p>
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.dashboard.probeAccountCost') }}: ${{ formatCost(stats.total_probe_account_cost) }}
+                </p>
+                <p
+                  class="text-xs"
+                  :class="stats.today_profit >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'"
+                >
+                  {{ t('common.today') }}: ${{ formatCost(stats.today_profit) }}
                 </p>
               </div>
             </div>
