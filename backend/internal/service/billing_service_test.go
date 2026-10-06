@@ -1291,6 +1291,54 @@ func TestGetModelPricing_Grok46OfficialFallback(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_Grok46UsesOfficialPricesThenUserMultiplier(t *testing.T) {
+	svc := newTestBillingService()
+
+	// Mirrors the billing breakdown shown in the admin view:
+	// input $0.098220, output $0.006918, cache read $0.000064.
+	cost, err := svc.CalculateCost("grok-4.6", UsageTokens{
+		InputTokens:     49110,
+		OutputTokens:    1153,
+		CacheReadTokens: 128,
+	}, 0.10)
+	require.NoError(t, err)
+	require.InDelta(t, 0.098220*0.10, cost.InputCost, 1e-12)
+	require.InDelta(t, 0.006918*0.10, cost.OutputCost, 1e-12)
+	require.InDelta(t, 0.000064*0.10, cost.CacheReadCost, 1e-12)
+	require.InDelta(t, 0.0105202, cost.TotalCost, 1e-12)
+	require.InDelta(t, cost.TotalCost, cost.ActualCost, 1e-12)
+}
+
+func TestGetModelPricing_DeepSeekV41UsesScreenshotOfficialCard(t *testing.T) {
+	svc := newTestBillingService()
+
+	pricing, err := svc.GetModelPricing("deepseek-v4.1-flash")
+	require.NoError(t, err)
+	require.InDelta(t, 2e-6, pricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, 8e-6, pricing.OutputPricePerToken, 1e-12)
+	require.InDelta(t, 0.04e-6, pricing.CacheReadPricePerToken, 1e-12)
+}
+
+func TestGetModelPricing_Grok46DynamicCatalogIsNormalizedToOfficialCard(t *testing.T) {
+	pricingSvc := NewPricingService(&config.Config{}, nil)
+	pricingSvc.pricingData = map[string]*LiteLLMModelPricing{
+		"grok-4.6": {
+			InputCostPerToken:       99e-6,
+			OutputCostPerToken:      99e-6,
+			CacheReadInputTokenCost: 99e-6,
+			LiteLLMProvider:         "xai",
+			Mode:                    "chat",
+		},
+	}
+	svc := NewBillingService(&config.Config{}, pricingSvc)
+
+	pricing, err := svc.GetModelPricing("grok-4.6")
+	require.NoError(t, err)
+	require.InDelta(t, 2e-6, pricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, 6e-6, pricing.OutputPricePerToken, 1e-12)
+	require.InDelta(t, 0.5e-6, pricing.CacheReadPricePerToken, 1e-12)
+}
+
 func TestGetModelPricing_GrokOfficialFamilyCards(t *testing.T) {
 	svc := newTestBillingService()
 	for _, tc := range []struct {

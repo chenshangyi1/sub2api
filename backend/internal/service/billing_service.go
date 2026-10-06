@@ -244,15 +244,15 @@ var ErrModelPricingUnavailable = errors.New("pricing not found")
 // 高峰价 = 2× 低谷价；高峰时段 01:00–04:00 与 06:00–10:00 UTC（仅工作日），
 // 北京时间周六/周日全天低谷。时段判定见 deepseekPeakMultiplierAt。
 const (
-	deepseekFlashOffPeakInputPrice     = 2.2e-7   // $0.22 per MTok (cache miss)
-	deepseekFlashOffPeakOutputPrice    = 6.6e-7   // $0.66 per MTok
-	deepseekFlashOffPeakCacheRead      = 7e-9     // $0.007 per MTok (cache hit)
-	deepseekV41FlashOffPeakInputPrice  = 0.15e-6  // $0.15 per MTok (cache miss)
-	deepseekV41FlashOffPeakOutputPrice = 0.60e-6  // $0.60 per MTok
-	deepseekV41FlashOffPeakCacheRead   = 0.003e-6 // $0.003 per MTok (cache hit)
-	deepseekProOffPeakInputPrice       = 6.6e-7   // $0.66 per MTok (cache miss)
-	deepseekProOffPeakOutputPrice      = 1.98e-6  // $1.98 per MTok
-	deepseekProOffPeakCacheRead        = 2.2e-8   // $0.022 per MTok (cache hit)
+	deepseekFlashOffPeakInputPrice     = 2.2e-7  // $0.22 per MTok (cache miss)
+	deepseekFlashOffPeakOutputPrice    = 6.6e-7  // $0.66 per MTok
+	deepseekFlashOffPeakCacheRead      = 7e-9    // $0.007 per MTok (cache hit)
+	deepseekV41FlashOffPeakInputPrice  = 2e-6    // $2.00 per MTok (cache miss)
+	deepseekV41FlashOffPeakOutputPrice = 8e-6    // $8.00 per MTok
+	deepseekV41FlashOffPeakCacheRead   = 0.04e-6 // $0.04 per MTok (cache hit)
+	deepseekProOffPeakInputPrice       = 6.6e-7  // $0.66 per MTok (cache miss)
+	deepseekProOffPeakOutputPrice      = 1.98e-6 // $1.98 per MTok
+	deepseekProOffPeakCacheRead        = 2.2e-8  // $0.022 per MTok (cache hit)
 )
 
 // isDeepSeekModel 判断模型名是否为 DeepSeek 模型（大小写不敏感）。
@@ -1652,22 +1652,21 @@ func (s *BillingService) calculateCostInternalWithPolicy(
 	return s.computeTokenBreakdown(pricing, tokens, rateMultiplier, serviceTier, longContextBillingEnabled), nil
 }
 
-// applyModelSpecificPricingPolicy 对目录数据做模型特定修正：DeepSeek 官方价
+// applyModelSpecificPricingPolicy 对目录数据做模型特定修正：DeepSeek/Grok 官方价
 // 强制覆盖；GPT-5.6 缺 cache_write 价时按官方规则补 1.25 倍输入价；Fast/priority
 // 档按业务倍率改写（本地/远程目录的 priority 价可能沿用官方旧口径）。长上下文
 // 阶梯不在此处补齐：一律由目录数据（above_XXXk 折算或显式 long_context_* 字段）
-// 驱动。默认强制 DeepSeek 官方价——该路径仅被默认价卡（GetModelPricing 内部）
-// 调用；分组/渠道自定义定价路径用带参数的 applyModelSpecificPricingPolicyEx
-// 关闭强制，保留运营者配置。
+// 驱动。默认价卡路径（GetModelPricing 内部）强制使用官方基础单价；分组/渠道
+// 自定义定价路径用带参数的 applyModelSpecificPricingPolicyEx 关闭强制，保留运营者配置。
 func (s *BillingService) applyModelSpecificPricingPolicy(model string, pricing *ModelPricing) *ModelPricing {
 	return s.applyModelSpecificPricingPolicyEx(model, pricing, true)
 }
 
 // applyModelSpecificPricingPolicyEx 与 applyModelSpecificPricingPolicy 相同，
-// 但由调用方控制是否强制 DeepSeek 官方价（forceDeepSeekRates）。
+// 但由调用方控制是否强制默认目录的 DeepSeek/Grok 官方价（forceOfficialCatalogRates）。
 // calculateTokenCost 对分组/渠道自定义定价（Source 非 LiteLLM）传 false：
 // 强制覆盖会把运营者配置的售价盖回官方价，违反自定义定价语义。
-func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing *ModelPricing, forceDeepSeekRates bool) *ModelPricing {
+func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing *ModelPricing, forceOfficialCatalogRates bool) *ModelPricing {
 	if pricing == nil {
 		return nil
 	}
@@ -1678,7 +1677,7 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 	// 其余 deepseek-*（含已停服的 chat/reasoner 与未知型号）统一归 flash 档。
 	// 高峰时段倍率不在本函数处理，由 calculateTokenCost 按 deepseekPeakMultiplierAt
 	// 对默认价卡另行叠加（分组/渠道自定义定价不叠加）。
-	if forceDeepSeekRates && isDeepSeekModel(model) {
+	if forceOfficialCatalogRates && isDeepSeekModel(model) {
 		cloned := *pricing
 		if strings.Contains(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-pro") {
 			cloned.InputPricePerToken = deepseekProOffPeakInputPrice
@@ -1695,6 +1694,31 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 			cloned.CacheReadPricePerToken = deepseekFlashOffPeakCacheRead
 		}
 		return &cloned
+	}
+	// Grok 默认目录统一使用对应官方价卡，避免 LiteLLM 动态数据漂移后改变用户扣费。
+	// 用户倍率在 computeTokenBreakdown 中单独应用；分组/渠道显式价不进入此分支。
+	if forceOfficialCatalogRates && isGrokUnknownTextFamilyModel(model) {
+		if official := s.getFallbackPricing(model); official != nil {
+			cloned := *pricing
+			cloned.InputPricePerToken = official.InputPricePerToken
+			cloned.InputPricePerTokenPriority = official.InputPricePerTokenPriority
+			cloned.OutputPricePerToken = official.OutputPricePerToken
+			cloned.OutputPricePerTokenPriority = official.OutputPricePerTokenPriority
+			cloned.CacheCreationPricePerToken = official.CacheCreationPricePerToken
+			cloned.CacheCreationPricePerTokenPriority = official.CacheCreationPricePerTokenPriority
+			cloned.CacheCreation5mPrice = official.CacheCreation5mPrice
+			cloned.CacheCreation1hPrice = official.CacheCreation1hPrice
+			cloned.CacheReadPricePerToken = official.CacheReadPricePerToken
+			cloned.CacheReadPricePerTokenPriority = official.CacheReadPricePerTokenPriority
+			cloned.ImageInputPricePerToken = official.ImageInputPricePerToken
+			cloned.ImageOutputPricePerToken = official.ImageOutputPricePerToken
+			cloned.SupportsCacheBreakdown = official.SupportsCacheBreakdown
+			cloned.LongContextInputThreshold = official.LongContextInputThreshold
+			cloned.LongContextThresholdInclusive = official.LongContextThresholdInclusive
+			cloned.LongContextInputMultiplier = official.LongContextInputMultiplier
+			cloned.LongContextOutputMultiplier = official.LongContextOutputMultiplier
+			return &cloned
+		}
 	}
 	pricing = s.applyGrokOfficialLongContextPolicy(model, pricing)
 	normalized := normalizeKnownOpenAICodexModel(model)
