@@ -33,10 +33,28 @@ func isDeepSeekModelAlias(model string) bool {
 // admitted through fuzzy catalog matching or an empty account mapping.
 func isKnownDeepSeekModel(model string) bool {
 	m := normalizeDeepSeekModelName(model)
-	return strings.HasPrefix(m, "deepseek-v3.2") ||
-		strings.HasPrefix(m, "deepseek-v4-pro") ||
-		strings.HasPrefix(m, "deepseek-v4-flash") ||
-		strings.HasPrefix(m, "deepseek-v4.1") ||
+	return isDeepSeekFamilyOrNumericVersion(m, "deepseek-v3.2") ||
+		isDeepSeekFamilyOrNumericVersion(m, "deepseek-v4-pro") ||
+		isDeepSeekFamilyOrNumericVersion(m, "deepseek-v4-flash") ||
+		isDeepSeekFamilyOrNumericVersion(m, "deepseek-v4.1") ||
+		isDeepSeekFamilyOrNumericVersion(m, "deepseek-v4.1-flash") ||
+		m == "deepseek-v4-flash-vision-exp" ||
 		m == "deepseek-chat" ||
 		m == "deepseek-reasoner"
+}
+
+func isDeepSeekFamilyOrNumericVersion(model, base string) bool {
+	if model == base {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(model, base+"-")
+	if !ok || suffix == "" {
+		return false
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

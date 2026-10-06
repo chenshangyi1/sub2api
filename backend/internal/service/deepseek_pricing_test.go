@@ -344,7 +344,14 @@ func TestIsKnownDeepSeekModel(t *testing.T) {
 	} {
 		require.True(t, isKnownDeepSeekModel(model), model)
 	}
-	for _, model := range []string{"deepseek-v9", "deepseek-foo", "gpt-5.4"} {
+	for _, model := range []string{
+		"deepseek-v9", "deepseek-foo", "deepseek-v4-proxy", "deepseek-v4-flash-vision-exp",
+		"gpt-5.4",
+	} {
+		if model == "deepseek-v4-flash-vision-exp" {
+			require.True(t, isKnownDeepSeekModel(model), model)
+			continue
+		}
 		require.False(t, isKnownDeepSeekModel(model), model)
 	}
 }
