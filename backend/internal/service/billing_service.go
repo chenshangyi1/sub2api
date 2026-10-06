@@ -244,12 +244,15 @@ var ErrModelPricingUnavailable = errors.New("pricing not found")
 // 高峰价 = 2× 低谷价；高峰时段 01:00–04:00 与 06:00–10:00 UTC（仅工作日），
 // 北京时间周六/周日全天低谷。时段判定见 deepseekPeakMultiplierAt。
 const (
-	deepseekFlashOffPeakInputPrice  = 2.2e-7  // $0.22 per MTok (cache miss)
-	deepseekFlashOffPeakOutputPrice = 6.6e-7  // $0.66 per MTok
-	deepseekFlashOffPeakCacheRead   = 7e-9    // $0.007 per MTok (cache hit)
-	deepseekProOffPeakInputPrice    = 6.6e-7  // $0.66 per MTok (cache miss)
-	deepseekProOffPeakOutputPrice   = 1.98e-6 // $1.98 per MTok
-	deepseekProOffPeakCacheRead     = 2.2e-8  // $0.022 per MTok (cache hit)
+	deepseekFlashOffPeakInputPrice     = 2.2e-7   // $0.22 per MTok (cache miss)
+	deepseekFlashOffPeakOutputPrice    = 6.6e-7   // $0.66 per MTok
+	deepseekFlashOffPeakCacheRead      = 7e-9     // $0.007 per MTok (cache hit)
+	deepseekV41FlashOffPeakInputPrice  = 0.15e-6  // $0.15 per MTok (cache miss)
+	deepseekV41FlashOffPeakOutputPrice = 0.60e-6  // $0.60 per MTok
+	deepseekV41FlashOffPeakCacheRead   = 0.003e-6 // $0.003 per MTok (cache hit)
+	deepseekProOffPeakInputPrice       = 6.6e-7   // $0.66 per MTok (cache miss)
+	deepseekProOffPeakOutputPrice      = 1.98e-6  // $1.98 per MTok
+	deepseekProOffPeakCacheRead        = 2.2e-8   // $0.022 per MTok (cache hit)
 )
 
 // isDeepSeekModel 判断模型名是否为 DeepSeek 模型（大小写不敏感）。
@@ -559,6 +562,17 @@ func (s *BillingService) initFallbackPricing() {
 		CacheReadPricePerToken: deepseekFlashOffPeakCacheRead,   // $0.007 per MTok (cache hit)
 		SupportsCacheBreakdown: false,
 	}
+	// DeepSeek V4.1-Flash is the current model behind the deepseek-flash API
+	// name. Keep its price card separate from the legacy V4 Flash card so old
+	// historical pricing remains reproducible while new V4.1 requests use the
+	// current official rates.
+	s.fallbackPrices["deepseek-v4.1-flash"] = &ModelPricing{
+		InputPricePerToken:     deepseekV41FlashOffPeakInputPrice,
+		OutputPricePerToken:    deepseekV41FlashOffPeakOutputPrice,
+		CacheReadPricePerToken: deepseekV41FlashOffPeakCacheRead,
+		SupportsCacheBreakdown: false,
+	}
+	s.fallbackPrices["deepseek-flash"] = s.fallbackPrices["deepseek-v4.1-flash"]
 	s.fallbackPrices["deepseek-v4-flash-vision-exp"] = &ModelPricing{
 		InputPricePerToken:     deepseekFlashOffPeakInputPrice,
 		OutputPricePerToken:    deepseekFlashOffPeakOutputPrice,
@@ -910,6 +924,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	// （deepseek-chat / deepseek-reasoner → V4 Flash），未知 deepseek-* 型号不回退，避免误计价。
 	if strings.Contains(modelLower, "deepseek-v4-flash") {
 		return s.fallbackPrices["deepseek-v4-flash"]
+	}
+	if strings.Contains(modelLower, "deepseek-v4.1") || strings.HasPrefix(modelLower, "deepseek-flash") {
+		return s.fallbackPrices["deepseek-v4.1-flash"]
 	}
 	if strings.Contains(modelLower, "deepseek-v4-pro") {
 		return s.fallbackPrices["deepseek-v4-pro"]
@@ -1667,6 +1684,10 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 			cloned.InputPricePerToken = deepseekProOffPeakInputPrice
 			cloned.OutputPricePerToken = deepseekProOffPeakOutputPrice
 			cloned.CacheReadPricePerToken = deepseekProOffPeakCacheRead
+		} else if isDeepSeekV41FlashModel(model) {
+			cloned.InputPricePerToken = deepseekV41FlashOffPeakInputPrice
+			cloned.OutputPricePerToken = deepseekV41FlashOffPeakOutputPrice
+			cloned.CacheReadPricePerToken = deepseekV41FlashOffPeakCacheRead
 		} else {
 			// deepseek-v4-flash / deepseek-v4-flash-vision-exp 与其余 deepseek-* 共用 flash 价。
 			cloned.InputPricePerToken = deepseekFlashOffPeakInputPrice
@@ -1714,6 +1735,11 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 		enforceOpenAIFastPricingRatio(&cloned, fastRatio)
 	}
 	return &cloned
+}
+
+func isDeepSeekV41FlashModel(model string) bool {
+	modelLower := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(modelLower, "deepseek-v4.1") || strings.HasPrefix(modelLower, "deepseek-flash")
 }
 
 // openAIModelFastPricingRatio 返回业务口径下 OpenAI GPT-5.x 模型 Fast/priority

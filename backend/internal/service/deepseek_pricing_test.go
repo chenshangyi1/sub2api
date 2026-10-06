@@ -96,6 +96,18 @@ func TestGetModelPricing_DeepseekFlashAliasKeeps303Rates(t *testing.T) {
 	}
 }
 
+func TestGetModelPricing_DeepseekV41FlashAliases(t *testing.T) {
+	bs := NewBillingService(&config.Config{}, &PricingService{})
+
+	for _, model := range []string{"deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4.1"} {
+		pricing, err := bs.GetModelPricing(model)
+		require.NoError(t, err, model)
+		require.InDelta(t, 0.15e-6, pricing.InputPricePerToken, 1e-15, model)
+		require.InDelta(t, 0.60e-6, pricing.OutputPricePerToken, 1e-15, model)
+		require.InDelta(t, 0.003e-6, pricing.CacheReadPricePerToken, 1e-15, model)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 默认价卡（Source=LiteLLM）按官方峰谷倍率计费；分组/渠道自定义定价不叠加
 // ---------------------------------------------------------------------------
