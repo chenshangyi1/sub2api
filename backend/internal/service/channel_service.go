@@ -65,6 +65,9 @@ type channelModelKey struct {
 // differences equivalent in channel pricing cache keys.
 func normalizeChannelPricingModelName(model string) string {
 	model = strings.ToLower(strings.TrimSpace(model))
+	if isDeepSeekModelAlias(model) {
+		return normalizeDeepSeekModelName(model)
+	}
 	if strings.HasPrefix(model, "claude-") {
 		model = strings.ReplaceAll(model, ".", "-")
 	}

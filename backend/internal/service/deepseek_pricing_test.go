@@ -76,6 +76,21 @@ func TestIsDeepSeekModel(t *testing.T) {
 	}
 }
 
+func TestNormalizeDeepSeekModelName(t *testing.T) {
+	tests := map[string]string{
+		"deepseek-ai/DeepSeek-V3.2":     "deepseek-v3.2",
+		"DEEPSEEK-V3-2":                 "deepseek-v3.2",
+		"deepseek_ai_DeepSeek_V4_Pro":   "deepseek-v4-pro",
+		"deepseek-v4pro":                "deepseek-v4-pro",
+		"deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+		"deepseek-flash":                "deepseek-v4.1-flash",
+		"gpt-5.4":                       "gpt-5.4",
+	}
+	for input, want := range tests {
+		require.Equal(t, want, normalizeDeepSeekModelName(input), input)
+	}
+}
+
 // TestGetModelPricing_DeepseekFlashAliasKeeps303Rates 锁定价格回退后的别名语义：
 // deepseek-flash 保留为可用模型名，但仍沿用 303 的 Flash 三档价格。
 func TestGetModelPricing_DeepseekFlashAliasKeeps303Rates(t *testing.T) {
@@ -120,6 +135,16 @@ func TestGetModelPricing_DeepseekV32ProviderAliasesUseOfficialCard(t *testing.T)
 		require.InDelta(t, 2e-6, pricing.InputPricePerToken, 1e-15, model)
 		require.InDelta(t, 8e-6, pricing.OutputPricePerToken, 1e-15, model)
 		require.Zero(t, pricing.CacheReadPricePerToken, model)
+	}
+}
+
+func TestGetModelPricing_DeepseekV4ProAliasesUseOfficialCard(t *testing.T) {
+	bs := NewBillingService(&config.Config{}, &PricingService{})
+	for _, model := range []string{"deepseek-ai/DeepSeek-V4-Pro", "DEEPSEEK-V4PRO", "deepseek_ai_DeepSeek_V4_Pro"} {
+		pricing, err := bs.GetModelPricing(model)
+		require.NoError(t, err, model)
+		require.InDelta(t, 4.35e-7, pricing.InputPricePerToken, 1e-15, model)
+		require.InDelta(t, 8.7e-7, pricing.OutputPricePerToken, 1e-15, model)
 	}
 }
 

@@ -930,11 +930,7 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 
 	// DeepSeek V3.2/V4 系列：供应商前缀与大小写不影响计费匹配。
-	modelLower = strings.ToLower(strings.TrimSpace(model))
-	if slash := strings.LastIndexByte(modelLower, '/'); slash >= 0 {
-		modelLower = modelLower[slash+1:]
-	}
-	modelLower = strings.ReplaceAll(modelLower, "_", "-")
+	modelLower = normalizeDeepSeekModelName(model)
 	if strings.Contains(modelLower, "deepseek-v3.2") || strings.Contains(modelLower, "deepseek-v3-2") {
 		return s.fallbackPrices["deepseek-v3.2"]
 	}

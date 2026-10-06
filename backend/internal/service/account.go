@@ -994,6 +994,9 @@ func normalizeRequestedModelForLookup(platform, requestedModel string) string {
 	if trimmed == "" {
 		return ""
 	}
+	if strings.EqualFold(platform, PlatformDeepseek) || strings.EqualFold(platform, CNVendorDeepseek) || isDeepSeekModelAlias(trimmed) {
+		return normalizeDeepSeekModelName(trimmed)
+	}
 	if platform != PlatformGemini && platform != PlatformAntigravity {
 		return trimmed
 	}
@@ -1010,6 +1013,12 @@ func mappingSupportsRequestedModel(mapping map[string]string, requestedModel str
 	if _, exists := mapping[requestedModel]; exists {
 		return true
 	}
+	canonical := normalizeDeepSeekModelName(requestedModel)
+	if canonical != requestedModel {
+		if _, exists := mapping[canonical]; exists {
+			return true
+		}
+	}
 	for pattern := range mapping {
 		if matchWildcard(pattern, requestedModel) {
 			return true
@@ -1024,6 +1033,12 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 	}
 	if mappedModel, exists := mapping[requestedModel]; exists {
 		return mappedModel, true
+	}
+	canonical := normalizeDeepSeekModelName(requestedModel)
+	if canonical != requestedModel {
+		if mappedModel, exists := mapping[canonical]; exists {
+			return mappedModel, true
+		}
 	}
 	return matchWildcardMappingResult(mapping, requestedModel)
 }
