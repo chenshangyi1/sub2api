@@ -148,6 +148,12 @@ func TestGetModelPricing_DeepseekV4ProAliasesUseOfficialCard(t *testing.T) {
 	}
 }
 
+func TestGetModelPricing_UnknownDeepSeekDoesNotUseLowFlashFallback(t *testing.T) {
+	bs := NewBillingService(&config.Config{}, &PricingService{})
+	_, err := bs.GetModelPricing("DeepSeek-V9-Unknown")
+	require.Error(t, err)
+}
+
 // ---------------------------------------------------------------------------
 // 默认价卡（Source=LiteLLM）按官方峰谷倍率计费；分组/渠道自定义定价不叠加
 // ---------------------------------------------------------------------------

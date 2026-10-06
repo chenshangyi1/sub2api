@@ -931,18 +931,18 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 
 	// DeepSeek V3.2/V4 系列：供应商前缀与大小写不影响计费匹配。
 	modelLower = normalizeDeepSeekModelName(model)
-	if strings.Contains(modelLower, "deepseek-v3.2") || strings.Contains(modelLower, "deepseek-v3-2") {
+	if strings.HasPrefix(modelLower, "deepseek-v3.2") {
 		return s.fallbackPrices["deepseek-v3.2"]
 	}
 	// DeepSeek V4 系列：仅匹配已知 V4 Pro/Flash 与官方兼容别名
 	// （deepseek-chat / deepseek-reasoner → V4 Flash），未知 deepseek-* 型号不回退，避免误计价。
-	if strings.Contains(modelLower, "deepseek-v4-flash") {
+	if strings.HasPrefix(modelLower, "deepseek-v4-flash") {
 		return s.fallbackPrices["deepseek-v4-flash"]
 	}
-	if strings.Contains(modelLower, "deepseek-v4.1") || strings.HasPrefix(modelLower, "deepseek-flash") {
+	if strings.HasPrefix(modelLower, "deepseek-v4.1") {
 		return s.fallbackPrices["deepseek-v4.1-flash"]
 	}
-	if strings.Contains(modelLower, "deepseek-v4-pro") {
+	if strings.HasPrefix(modelLower, "deepseek-v4-pro") {
 		return s.fallbackPrices["deepseek-v4-pro"]
 	}
 	if strings.Contains(modelLower, "deepseek-chat") || strings.Contains(modelLower, "deepseek-reasoner") {
