@@ -14,48 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ---------------------------------------------------------------------------
-// deepseekPeakMultiplierAt：官方峰谷口径（2026-08-23 起生效）
-// 高峰时段 01:00–04:00 与 06:00–10:00 UTC（半开区间，仅工作日）；
-// 北京时间周六/周日全天低谷；高峰价 = 2× 低谷价。
-// 2026-08-24 为周一（工作日），2026-08-22 周六、2026-08-23 周日。
-// ---------------------------------------------------------------------------
-
-func TestDeepseekPeakMultiplierAt(t *testing.T) {
-	mon := func(hour, min int) time.Time { return time.Date(2026, 8, 24, hour, min, 0, 0, time.UTC) }
-	sat := func(hour, min int) time.Time { return time.Date(2026, 8, 22, hour, min, 0, 0, time.UTC) }
-	sun := func(hour, min int) time.Time { return time.Date(2026, 8, 23, hour, min, 0, 0, time.UTC) }
-
-	tests := []struct {
-		name string
-		now  time.Time
-		want float64
-	}{
-		// 工作日高峰窗口边界（半开区间）
-		{"weekday 01:00 peak start", mon(1, 0), 2.0},
-		{"weekday 03:59 peak upper bound", mon(3, 59), 2.0},
-		{"weekday 04:00 peak end", mon(4, 0), 1.0},
-		{"weekday 06:00 peak start", mon(6, 0), 2.0},
-		{"weekday 09:59 peak upper bound", mon(9, 59), 2.0},
-		{"weekday 10:00 peak end", mon(10, 0), 1.0},
-		// 工作日低谷时段
-		{"weekday 00:00 off-peak", mon(0, 0), 1.0},
-		{"weekday 05:00 off-peak", mon(5, 0), 1.0},
-		{"weekday 12:00 off-peak", mon(12, 0), 1.0},
-		{"weekday 23:59 off-peak", mon(23, 59), 1.0},
-		// 北京时间周末全天低谷（即使 UTC 处于高峰时段）
-		{"saturday utc 02:00 beijing sat 10:00", sat(2, 0), 1.0},
-		{"sunday utc 07:00 beijing sun 15:00", sun(7, 0), 1.0},
-		// 北京时间与 UTC 跨日边界：UTC 周六 16:30 = 北京周日 00:30 → 周末低谷
-		{"utc saturday 16:30 = beijing sunday 00:30", sat(16, 30), 1.0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, deepseekPeakMultiplierAt(tt.now))
-		})
-	}
-}
-
 func TestIsDeepSeekModel(t *testing.T) {
 	deepseek := []string{
 		"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp",
@@ -155,15 +113,14 @@ func TestGetModelPricing_UnknownDeepSeekDoesNotUseLowFlashFallback(t *testing.T)
 }
 
 // ---------------------------------------------------------------------------
-// 默认价卡（Source=LiteLLM）按官方峰谷倍率计费；分组/渠道自定义定价不叠加
+// 动态目录/本地兜底的 DeepSeek 标准价不按时段重复加倍；分组/渠道自定义价也不叠加
 // ---------------------------------------------------------------------------
 
-func TestCalculateCostUnified_DeepseekDefaultCardPeakMultiplier(t *testing.T) {
+func TestCalculateCostUnified_DeepseekDefaultCardUsesStandardPriceAtAnyTime(t *testing.T) {
 	bs := newTestBillingService()
 	resolver := NewModelPricingResolver(nil, bs)
 
 	tokens := UsageTokens{InputTokens: 1000, OutputTokens: 500, CacheReadTokens: 1000}
-	// 低谷成本：1000*2.2e-7 + 500*6.6e-7 + 1000*7e-9 = 5.57e-4
 	offPeakTotal := 1000*2.2e-7 + 500*6.6e-7 + 1000*7e-9
 
 	offPeak, err := bs.CalculateCostUnified(CostInput{
@@ -180,10 +137,10 @@ func TestCalculateCostUnified_DeepseekDefaultCardPeakMultiplier(t *testing.T) {
 		PricingAt: time.Date(2026, 8, 24, 2, 0, 0, 0, time.UTC), // 周一高峰
 	})
 	require.NoError(t, err)
-	require.InDelta(t, offPeakTotal*2, peak.TotalCost, 1e-10)
+	require.InDelta(t, offPeakTotal, peak.TotalCost, 1e-10)
 }
 
-func TestCalculateCostUnified_DeepseekProDefaultCardPeakMultiplier(t *testing.T) {
+func TestCalculateCostUnified_DeepseekProDefaultCardUsesStandardPriceAtAnyTime(t *testing.T) {
 	bs := newTestBillingService()
 	resolver := NewModelPricingResolver(nil, bs)
 
@@ -204,10 +161,10 @@ func TestCalculateCostUnified_DeepseekProDefaultCardPeakMultiplier(t *testing.T)
 		PricingAt: time.Date(2026, 8, 24, 6, 30, 0, 0, time.UTC), // 周一高峰
 	})
 	require.NoError(t, err)
-	require.InDelta(t, offPeakTotal*2, peak.TotalCost, 1e-10)
+	require.InDelta(t, offPeakTotal, peak.TotalCost, 1e-10)
 }
 
-func TestCalculateCostUnified_DeepseekVersionedNamePeakMultiplier(t *testing.T) {
+func TestCalculateCostUnified_DeepseekVersionedNameUsesStandardPriceAtAnyTime(t *testing.T) {
 	bs := newTestBillingService()
 	resolver := NewModelPricingResolver(nil, bs)
 
@@ -228,7 +185,7 @@ func TestCalculateCostUnified_DeepseekVersionedNamePeakMultiplier(t *testing.T) 
 		PricingAt: time.Date(2026, 8, 24, 2, 0, 0, 0, time.UTC), // 周一高峰
 	})
 	require.NoError(t, err)
-	require.InDelta(t, offPeakTotal*2, peak.TotalCost, 1e-10)
+	require.InDelta(t, offPeakTotal, peak.TotalCost, 1e-10)
 }
 
 func TestCalculateCostUnified_DeepseekGroupPricingNotScaledByPeak(t *testing.T) {
@@ -310,11 +267,11 @@ func TestCalculateCostUnified_DeepseekPricingAtZeroFallsBackToNow(t *testing.T) 
 }
 
 // ---------------------------------------------------------------------------
-// 官方价强制覆盖（远端旧价兜底）与未知 deepseek-* flash 兜底
+// 动态上游标准价优先；未知 DeepSeek fail-closed
 // ---------------------------------------------------------------------------
 
-func TestGetModelPricing_DeepseekForcesOfficialRatesOverJSON(t *testing.T) {
-	// JSON 给任意价（模拟远端旧价/占位价），deepseek-* 必须被强制覆盖为官方低谷价。
+func TestGetModelPricing_DeepseekKeepsDynamicUpstreamRates(t *testing.T) {
+	// 动态目录价格代表上游标准价，不能被本地官方价卡覆盖。
 	pricingSvc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
 		"deepseek-v4-flash":            {InputCostPerToken: 1e-6, OutputCostPerToken: 2e-6, CacheReadInputTokenCost: 1e-8},
 		"deepseek-v4-pro":              {InputCostPerToken: 1e-6, OutputCostPerToken: 2e-6, CacheReadInputTokenCost: 1e-8},
@@ -328,12 +285,11 @@ func TestGetModelPricing_DeepseekForcesOfficialRatesOverJSON(t *testing.T) {
 		model                    string
 		input, output, cacheRead float64
 	}{
-		{"deepseek-v4-flash", 2.2e-7, 6.6e-7, 7e-9},
-		{"deepseek-v4-flash-vision-exp", 2.2e-7, 6.6e-7, 7e-9},
-		{"deepseek-v4-pro", 6.6e-7, 1.98e-6, 2.2e-8},
-		// 已停服的 chat/reasoner：即使 JSON 有旧条目也按 flash 价兜底。
-		{"deepseek-chat", 2.2e-7, 6.6e-7, 7e-9},
-		{"deepseek-reasoner", 2.2e-7, 6.6e-7, 7e-9},
+		{"deepseek-v4-flash", 1e-6, 2e-6, 1e-8},
+		{"deepseek-v4-flash-vision-exp", 1e-6, 2e-6, 1e-8},
+		{"deepseek-v4-pro", 1e-6, 2e-6, 1e-8},
+		{"deepseek-chat", 1e-6, 2e-6, 1e-8},
+		{"deepseek-reasoner", 1e-6, 2e-6, 1e-8},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
@@ -346,13 +302,13 @@ func TestGetModelPricing_DeepseekForcesOfficialRatesOverJSON(t *testing.T) {
 		})
 	}
 
-	// 版本化名称（不在 JSON / fallbackPrices 精确表中）：按子串归档计价。
+	// 版本化名称若动态目录提供了精确条目，也保留动态价格。
 	versioned := []struct {
 		model                    string
 		input, output, cacheRead float64
 	}{
-		{"deepseek-v4-pro-0813", 6.6e-7, 1.98e-6, 2.2e-8},
-		{"deepseek-v4-flash-0731", 2.2e-7, 6.6e-7, 7e-9},
+		{"deepseek-v4-pro-0813", 1e-6, 2e-6, 1e-8},
+		{"deepseek-v4-flash-0731", 1e-6, 2e-6, 1e-8},
 	}
 	for _, tt := range versioned {
 		t.Run(tt.model, func(t *testing.T) {
@@ -365,27 +321,36 @@ func TestGetModelPricing_DeepseekForcesOfficialRatesOverJSON(t *testing.T) {
 	}
 }
 
-func TestGetModelPricing_UnknownDeepseekMapsToFlash(t *testing.T) {
-	// JSON 含 $0 占位条目（如旧 deepseek-v3-2-251201）：未知 deepseek-* 不再
-	// fail-closed，统一按 flash 价兜底（2.2e-7/6.6e-7/7e-9），不得按 $0 计费。
+func TestGetModelPricing_UnknownDeepseekFailsClosed(t *testing.T) {
+	// JSON 含 $0 占位条目时，未知 DeepSeek 仍然不能低价兜底。
 	pricingSvc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
 		"deepseek-v3-2-251201": {InputCostPerToken: 0, OutputCostPerToken: 0},
 	}}
 	bs := NewBillingService(&config.Config{}, pricingSvc)
 
-	for _, m := range []string{"deepseek-v3-2-251201", "deepseek-chat", "deepseek-reasoner", "deepseek-foo"} {
+	for _, m := range []string{"deepseek-v9-unknown", "deepseek-foo"} {
 		t.Run(m, func(t *testing.T) {
-			pricing, err := bs.GetModelPricing(m)
-			require.NoError(t, err)
-			require.InDelta(t, 2.2e-7, pricing.InputPricePerToken, 1e-15)
-			require.InDelta(t, 6.6e-7, pricing.OutputPricePerToken, 1e-15)
-			require.InDelta(t, 7e-9, pricing.CacheReadPricePerToken, 1e-15)
+			_, err := bs.GetModelPricing(m)
+			require.Error(t, err)
 		})
 	}
 }
 
+func TestIsKnownDeepSeekModel(t *testing.T) {
+	for _, model := range []string{
+		"deepseek-v3.2", "deepseek-ai/DeepSeek-V3-2-251201",
+		"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4.1-flash",
+		"deepseek-chat", "deepseek-reasoner",
+	} {
+		require.True(t, isKnownDeepSeekModel(model), model)
+	}
+	for _, model := range []string{"deepseek-v9", "deepseek-foo", "gpt-5.4"} {
+		require.False(t, isKnownDeepSeekModel(model), model)
+	}
+}
+
 // ---------------------------------------------------------------------------
-// 本地兜底 JSON：无 $0 占位条目，官方模型价格为官方低谷价
+// 本地兜底 JSON：无 $0 占位条目，官方模型价格为官方标准价
 // ---------------------------------------------------------------------------
 
 func TestDeepseekPricingFileMatchesOfficialRates(t *testing.T) {

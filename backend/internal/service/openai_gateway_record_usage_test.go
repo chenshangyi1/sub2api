@@ -583,7 +583,7 @@ func TestOpenAIGatewayServiceRecordUsage_DeepSeekAccountStatsUsesRequestPricingA
 			pricingAt  time.Time
 			multiplier float64
 		}{
-			{"peak", time.Date(2026, time.August, 24, 2, 0, 0, 0, time.UTC), 2},
+			{"peak", time.Date(2026, time.August, 24, 2, 0, 0, 0, time.UTC), 1},
 			{"off_peak", time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC), 1},
 		} {
 			t.Run(model.name+"/"+slot.name, func(t *testing.T) {

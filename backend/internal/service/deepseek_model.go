@@ -27,3 +27,16 @@ func normalizeDeepSeekModelName(model string) string {
 func isDeepSeekModelAlias(model string) bool {
 	return strings.HasPrefix(normalizeDeepSeekModelName(model), "deepseek-")
 }
+
+// isKnownDeepSeekModel reports whether a DeepSeek model is explicitly covered
+// by the billing/access policy. Unknown deepseek-* identifiers must not be
+// admitted through fuzzy catalog matching or an empty account mapping.
+func isKnownDeepSeekModel(model string) bool {
+	m := normalizeDeepSeekModelName(model)
+	return strings.HasPrefix(m, "deepseek-v3.2") ||
+		strings.HasPrefix(m, "deepseek-v4-pro") ||
+		strings.HasPrefix(m, "deepseek-v4-flash") ||
+		strings.HasPrefix(m, "deepseek-v4.1") ||
+		m == "deepseek-chat" ||
+		m == "deepseek-reasoner"
+}

@@ -23,6 +23,12 @@ func TestIsCNProviderServableModel_EmptyMappingFamilies(t *testing.T) {
 	if !isCNProviderServableModel(PlatformDeepseek, "deepseek-chat") {
 		t.Fatal("deepseek empty mapping must admit deepseek-chat")
 	}
+	if !isCNProviderServableModel(PlatformDeepseek, "deepseek-v3.2") {
+		t.Fatal("deepseek empty mapping must admit known deepseek-v3.2")
+	}
+	if isCNProviderServableModel(PlatformDeepseek, "deepseek-v9-unknown") {
+		t.Fatal("deepseek empty mapping must reject unknown models")
+	}
 	if isCNProviderServableModel(CNVendorMiniMax, "gpt-5.6") {
 		t.Fatal("minimax empty mapping must not admit gpt-5.6")
 	}

@@ -117,7 +117,7 @@ func isCNProviderServableModel(platformOrVendor, requestedModel string) bool {
 	case PlatformKimi:
 		return model == "k3" || model == "k3-256k" || hasAnyPrefix(model, "kimi-", "moonshot-", "k2-", "k1.5")
 	case PlatformDeepseek:
-		return hasAnyPrefix(model, "deepseek-")
+		return isKnownDeepSeekModel(model)
 	case CNVendorMiniMax:
 		return hasAnyPrefix(model, "minimax-", "abab", "m2.")
 	default:
