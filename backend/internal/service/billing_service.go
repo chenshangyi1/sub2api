@@ -247,12 +247,19 @@ const (
 	deepseekV41FlashOffPeakInputPrice  = 2e-6    // $2.00 per MTok (cache miss)
 	deepseekV41FlashOffPeakOutputPrice = 8e-6    // $8.00 per MTok
 	deepseekV41FlashOffPeakCacheRead   = 0.04e-6 // $0.04 per MTok (cache hit)
-	deepseekV32InputPrice              = 2e-6    // $2.00 per MTok (cache miss)
-	deepseekV32OutputPrice             = 8e-6    // $8.00 per MTok
-	deepseekV32CacheRead               = 0       // no separate cache-read price configured
 	deepseekProOffPeakInputPrice       = 6.6e-7  // $0.66 per MTok (cache miss)
 	deepseekProOffPeakOutputPrice      = 1.98e-6 // $1.98 per MTok
 	deepseekProOffPeakCacheRead        = 2.2e-8  // $0.022 per MTok (cache hit)
+)
+
+// SiliconFlow V3.2 site base prices, checked 2026-10-07:
+// https://www.siliconflow.cn/pricing lists CNY 4/6/0.40 per million tokens.
+// Site policy uses the CNY numbers as USD balance amounts, without FX conversion.
+// Group/user multipliers are applied separately; these are not upstream USD costs.
+const (
+	deepseekV32InputPrice  = 4e-6
+	deepseekV32OutputPrice = 6e-6
+	deepseekV32CacheRead   = 0.4e-6
 )
 
 // isDeepSeekModel 判断模型名是否为 DeepSeek 模型（大小写不敏感）。
@@ -1151,6 +1158,9 @@ func (s *BillingService) HasIdentifiedTokenPricing(model string) bool {
 	if model == "" {
 		return false
 	}
+	if isDeepSeekFamilyOrNumericVersion(normalizeDeepSeekModelName(model), "deepseek-v3.2") {
+		return s.fallbackPrices["deepseek-v3.2"] != nil
+	}
 	if s.pricingService != nil {
 		// 仅有图片价的条目不能用于 token 计费，口径与 GetModelPricing 保持一致。
 		if pricing := s.pricingService.GetIdentifiedModelPricing(model); pricing != nil && !pricing.TokenPricingAbsent {
@@ -1162,11 +1172,19 @@ func (s *BillingService) HasIdentifiedTokenPricing(model string) bool {
 }
 
 // getModelPricingWithSource 获取模型价格配置及其真实来源。
-// 动态目录价格代表上游标准价；只有动态目录没有可用价格时才进入本地官方兜底。
+// V3.2 使用本站人民币数值价卡；其他模型优先动态目录，再进入本地兜底。
 func (s *BillingService) getModelPricingWithSource(model string) (*ModelPricing, string, error) {
 	// 标准化模型名称（转小写）
 	model = strings.ToLower(strings.TrimSpace(model))
 	if isDeepSeekModelAlias(model) && !isKnownDeepSeekModel(model) {
+		return nil, "", fmt.Errorf("%w for model: %s", ErrModelPricingUnavailable, model)
+	}
+	// A generic USD catalog must not override the site's domestic base-price policy.
+	// Channel/group cards are applied by their callers after this base card.
+	if isDeepSeekFamilyOrNumericVersion(normalizeDeepSeekModelName(model), "deepseek-v3.2") {
+		if pricing := s.fallbackPrices["deepseek-v3.2"]; pricing != nil {
+			return s.applyModelSpecificPricingPolicy(model, pricing), PricingSourceFallback, nil
+		}
 		return nil, "", fmt.Errorf("%w for model: %s", ErrModelPricingUnavailable, model)
 	}
 
@@ -1654,6 +1672,15 @@ func (s *BillingService) applyModelSpecificPricingPolicy(model string, pricing *
 func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing *ModelPricing, forceOfficialCatalogRates bool) *ModelPricing {
 	if pricing == nil {
 		return nil
+	}
+	// Keep V3.2 out of the generic Flash rewrite, including provider aliases.
+	// Explicit channel/group overrides pass false and retain their configured prices.
+	if forceOfficialCatalogRates && isDeepSeekFamilyOrNumericVersion(normalizeDeepSeekModelName(model), "deepseek-v3.2") {
+		cloned := *pricing
+		cloned.InputPricePerToken = deepseekV32InputPrice
+		cloned.OutputPricePerToken = deepseekV32OutputPrice
+		cloned.CacheReadPricePerToken = deepseekV32CacheRead
+		return &cloned
 	}
 	// DeepSeek 模型：仅在本地兜底价路径强制使用官方标准价。动态目录价格
 	// 代表上游标准价，不能在这里被再次覆盖；克隆后再覆盖，避免污染共享指针。
