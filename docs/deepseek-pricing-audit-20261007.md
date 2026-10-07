@@ -37,3 +37,9 @@ V3.2 测试先复现了被覆盖到 Flash 的错误，再验证基础价、缓�
 扩大到既有 DeepSeek 测试后还发现下划线供应商前缀归一化及 V4 日期后缀动态价匹配失败；通过 Go overlay 使用修改前 847ce5afa 的 billing_service.go 复现相同失败，确认为既有问题。账号成本统计若使用模型文件定价，也会读此基础卡；它代表本站基础售价，不能据此认为等于供应商实际美元成本。
 
 本次只同步源码，不运行 Docker build、compose up、容器重启、前端发布或数据库写入。新价尚未在线生效。后续其他型号应先建立供应商明确的价卡与分时规则，再测试和单独部署。
+
+## Additional local verification before candidate construction
+
+Seven V3.2 regression tests pass, including three runs under `-race`. Coverage includes the real gateway cost entry with/without a resolver, dynamic USD-catalog interference, base/model aliases, 0/0.9/1/1.3 effective multipliers, cache-only/empty usage, free/partial group cards and concurrent isolation. No usage record, balance or production database was written. Expanded regression tests have two additional existing Grok 4.6 failures, reproduced with the unchanged starting billing source via an overlay: `TestCalculateCost_Grok46UsesOfficialPricesThenUserMultiplier` and `TestGetModelPricing_Grok46DynamicCatalogIsNormalizedToOfficialCard`. These are unrelated to the V3.2 patch and remain open.
+
+The candidate image is a binary overlay on the existing runtime. All 2,883 backend Go/module source files present in the running image matched local source except this operation’s billing source/test, with the new test only locally; all 221 embedded frontend files matched byte for byte. This avoids an unintended frontend/runtime dependency upgrade. The user authorized constructing the candidate after verification; activation remains unauthorized.

@@ -1,0 +1,11 @@
+# Package the locally verified linux/amd64 binary over the existing runtime image.
+# Build only from /opt/sub2api/build_context; this recipe does not deploy a container.
+ARG BASE_IMAGE=sub2api1:deepseek-standard-pricing-20261007-2
+FROM ${BASE_IMAGE}
+ARG SOURCE_REVISION
+ARG BINARY_SHA256
+ARG BASE_IMAGE_ID
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      xyz.xinmc.binary-sha256="${BINARY_SHA256}" \
+      xyz.xinmc.base-image-id="${BASE_IMAGE_ID}"
+COPY --chmod=755 outputs/deepseek-v32-candidate/sub2api /app/sub2api

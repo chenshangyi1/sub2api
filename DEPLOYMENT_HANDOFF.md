@@ -1,4 +1,4 @@
-# xinmc source-only handoff — 2026-10-07
+# xinmc pricing candidate handoff — 2026-10-07
 
 This handoff records the current operation, superseding old runtime assumptions only where explicitly verified below. No credentials are stored here.
 
@@ -15,7 +15,7 @@ This handoff records the current operation, superseding old runtime assumptions 
 - StartedAt: `2026-10-06T19:53:49.955885423Z`; healthy, origin `/readyz` HTTP 200.
 - Runtime Compose: `/opt/sub2api/deploy/docker-compose.local.yml`. Root checkout and Compose have intentional local changes; never reset or overwrite them.
 - `/opt/sub2api/build_context` also has local modifications and an older Git baseline. Do not treat it as aligned with local main.
-- Existing source staging tree `/opt/sub2api/build_context/billing-847ce5afa-full` matches the local starting billing source and test hashes. Reuse this tree for source-only synchronization; do not create another parallel source tree. It is not the canonical build root and no build is authorized now.
+- Existing source staging tree `/opt/sub2api/build_context/billing-847ce5afa-full` matches the local starting billing source and test hashes. Reuse this tree for source-only synchronization; do not create another parallel source tree. It is not the canonical build root. The user subsequently authorized a candidate image build after local verification, but did not authorize switching the running service.
 
 ## Synchronization and rollback
 
@@ -24,3 +24,11 @@ Transfer only the committed changed source/tests and this operation's notes afte
 Recheck the container ID, image, start timestamp and readiness after transfer. They must remain unchanged. The source update does not activate the new prices; current production pricing continues until an explicitly authorized rollout.
 
 For source rollback, use the recorded backup to restore the two previously existing changed files and remove only files newly introduced by this operation. Do not restore the database or change the running container. Before a future rollout, reconcile the canonical build root and review the supplier-specific pricing policy, migrations, known full-test failures and runtime rollback plan.
+
+## Candidate build authorized after local verification
+
+The candidate uses a locally cross-compiled linux/amd64, CGO-disabled binary with `embed timetzdata` tags and GOEXPERIMENT=jsonv2. Before compilation, all 2,883 backend Go/module files present in the running image were compared with local source: only this operation’s billing source and test differed, with the new V3.2 test present locally. All 221 embedded frontend files matched the running image byte for byte (excluding macOS metadata). No other runtime-source change is included.
+
+Package the binary from `/opt/sub2api/build_context/outputs/deepseek-v32-candidate/sub2api` using `deploy/Dockerfile.deepseek-v32-candidate` from the canonical build root. Its Dockerfile-specific ignore file admits only that binary. The base must remain image ID `sha256:7ef469688d398f748e7cca40a8b105f3a6a4e2a506e0f4ec2953c83dbe6e79d7`, tag `sub2api1:deepseek-standard-pricing-20261007-2`. This preserves existing runtime dependencies and files while replacing only the executable. Record the candidate tag, source revision, binary hash and isolated version check after construction.
+
+V3.2 regression coverage now includes the actual gateway calculation path with and without its pricing resolver, a real bill’s token counts, zero multiplier, zero-token/cache-only requests, partial/zero custom cards and concurrent group isolation. Expanded existing billing and tier tests must be reported separately from unrelated baseline failures; full-package test compilation still has the previously recorded blockers. Building a candidate does not activate prices. Do not restart the app, change Compose, mount production volumes into a candidate, or connect a candidate to production databases.

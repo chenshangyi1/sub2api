@@ -1,0 +1,5 @@
+# Limit the context to the tested binary; exclude source, configuration and secrets.
+**
+!outputs/
+!outputs/deepseek-v32-candidate/
+!outputs/deepseek-v32-candidate/sub2api
