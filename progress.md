@@ -25,3 +25,17 @@ All seven focused V3.2 tests passed, including three repetitions with the Go rac
 ### Notes
 
 Changed the focused test, DEPLOYMENT_HANDOFF.md and added deploy/Dockerfile.deepseek-v32-candidate plus its .dockerignore. A candidate will replace only /app/sub2api over the verified current runtime image; construction and isolated version checks do not deploy it. Test evidence is in ignored work files. Source rollback is a revert of this task’s commits; existing server source backup remains /opt/sub2api/backups/v32-source-20261007T081207Z. The unrelated api_key file remains untouched.
+
+## 2026-10-07 - Task: Candidate image built and isolated Linux checks passed
+
+### What was done
+
+Built sub2api1:deepseek-v32-cny-9c3c6fbd8-20261007 from the canonical server build root, over the exact current runtime image. Replaced only the executable with the locally validated linux/amd64 artifact from source 9c3c6fbd809441d657da26e9039f29ca8c3ab009. Recorded image/executable hashes, version and backups in DEPLOYMENT_HANDOFF.md. No rollout occurred.
+
+### Testing
+
+Candidate image ID e8f9acf6dfcab55ace34151be7526456acdb0f2706592a3c9c4e4a44e9b18f9a; executable SHA256 b8cf200a71a28313d7978d8da0b3953756d5e14cbb9e925ce1bffa67e64d9f9b. Isolated version and checksum checks passed. All seven pricing regressions also passed as a cross-compiled Linux test executable inside the read-only, network-disabled candidate, without production volumes or credentials. Runtime image configuration matched the base, and the existing production container's identity/start time/image remained unchanged with readiness HTTP 200. This supplements the local/race tests; unrelated baseline failures remain as previously documented.
+
+### Notes
+
+This step changes only handoff/progress documentation locally; uploaded binaries and test evidence reside under the existing server build root's outputs/deepseek-v32-candidate. The unused image can be discarded without runtime rollback. Source sync backup: /opt/sub2api/backups/v32-candidate-20261007T082356Z. Old /app Go source is inherited in the binary-overlay image, so future compilation must use the recorded repository revision. No service restart or production data write was performed.
