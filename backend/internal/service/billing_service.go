@@ -802,6 +802,16 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextOutputMultiplier:   2,
 	}
 
+	// Site-selected Grok 4.7 build-fast base card: $4 input / $12 output /
+	// $1 cache read per MTok, before group/user multipliers. This flat card
+	// does not inherit Grok 4.6's long-context tier or a supplier catalog price.
+	s.fallbackPrices["grok-4.7-build-fast"] = &ModelPricing{
+		InputPricePerToken:     4e-6,
+		OutputPricePerToken:    12e-6,
+		CacheReadPricePerToken: 1e-6,
+		SupportsCacheBreakdown: false,
+	}
+
 	// xAI Grok 4.3: $1.25 input / $0.20 cached / $2.50 output below 200k;
 	// long-context rates are $2.50 / $0.40 / $5.
 	s.fallbackPrices["grok-4.3"] = &ModelPricing{
@@ -1074,6 +1084,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		}
 	}
 
+	if isGrokBuildFastSiteModel(modelLower) {
+		return s.fallbackPrices["grok-4.7-build-fast"]
+	}
 	switch modelLower {
 	case "grok", "grok-latest", "grok-4.6", "grok-4.6-latest":
 		return s.fallbackPrices["grok-4.6"]
@@ -1109,6 +1122,10 @@ func (s *BillingService) grokUnknownTextFamilyFallback(model string) *ModelPrici
 		return nil
 	}
 	return s.fallbackPrices["grok-4.6"]
+}
+
+func isGrokBuildFastSiteModel(model string) bool {
+	return strings.EqualFold(xai.StripGrokProviderPrefix(model), "grok-4.7-build-fast")
 }
 
 func isGrokUnknownTextFamilyModel(model string) bool {
@@ -1161,6 +1178,9 @@ func (s *BillingService) HasIdentifiedTokenPricing(model string) bool {
 	if isDeepSeekFamilyOrNumericVersion(normalizeDeepSeekModelName(model), "deepseek-v3.2") {
 		return s.fallbackPrices["deepseek-v3.2"] != nil
 	}
+	if isGrokBuildFastSiteModel(model) {
+		return s.fallbackPrices["grok-4.7-build-fast"] != nil
+	}
 	if s.pricingService != nil {
 		// 仅有图片价的条目不能用于 token 计费，口径与 GetModelPricing 保持一致。
 		if pricing := s.pricingService.GetIdentifiedModelPricing(model); pricing != nil && !pricing.TokenPricingAbsent {
@@ -1172,7 +1192,7 @@ func (s *BillingService) HasIdentifiedTokenPricing(model string) bool {
 }
 
 // getModelPricingWithSource 获取模型价格配置及其真实来源。
-// V3.2 使用本站人民币数值价卡；其他模型优先动态目录，再进入本地兜底。
+// V3.2 与 Grok 4.7 build-fast 使用本站标准价卡；其他模型优先动态目录，再进入本地兜底。
 func (s *BillingService) getModelPricingWithSource(model string) (*ModelPricing, string, error) {
 	// 标准化模型名称（转小写）
 	model = strings.ToLower(strings.TrimSpace(model))
@@ -1183,6 +1203,14 @@ func (s *BillingService) getModelPricingWithSource(model string) (*ModelPricing,
 	// Channel/group cards are applied by their callers after this base card.
 	if isDeepSeekFamilyOrNumericVersion(normalizeDeepSeekModelName(model), "deepseek-v3.2") {
 		if pricing := s.fallbackPrices["deepseek-v3.2"]; pricing != nil {
+			return s.applyModelSpecificPricingPolicy(model, pricing), PricingSourceFallback, nil
+		}
+		return nil, "", fmt.Errorf("%w for model: %s", ErrModelPricingUnavailable, model)
+	}
+	// Preserve the operator-selected card even if the dynamic catalog identifies
+	// this exact model at a lower rate. Explicit group/channel cards still override it.
+	if isGrokBuildFastSiteModel(model) {
+		if pricing := s.fallbackPrices["grok-4.7-build-fast"]; pricing != nil {
 			return s.applyModelSpecificPricingPolicy(model, pricing), PricingSourceFallback, nil
 		}
 		return nil, "", fmt.Errorf("%w for model: %s", ErrModelPricingUnavailable, model)
@@ -1704,7 +1732,7 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 		}
 		return &cloned
 	}
-	// Grok 默认目录统一使用对应官方价卡，避免 LiteLLM 动态数据漂移后改变用户扣费。
+	// Grok 本地兜底统一使用对应价卡（含本站 build-fast 标准价），避免借用其他型号的价格。
 	// 用户倍率在 computeTokenBreakdown 中单独应用；分组/渠道显式价不进入此分支。
 	if forceOfficialCatalogRates && isGrokUnknownTextFamilyModel(model) {
 		if official := s.getFallbackPricing(model); official != nil {
