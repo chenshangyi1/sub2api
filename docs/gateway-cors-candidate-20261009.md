@@ -1,0 +1,11 @@
+# Gateway-only browser CORS candidate
+
+The user authorized implementation, GitHub/source synchronization and candidate construction, but explicitly prohibited switching the running image until later approval.
+
+Browser/WebView model-list calls currently fail at OPTIONS /v1/models with HTTP 403. The change derives its scope from the routes added by RegisterGatewayRoutes, matching the request method (or Access-Control-Request-Method for preflight) and route path, including named parameters and wildcard subpaths. These API-key routes return Access-Control-Allow-Origin: * without Access-Control-Allow-Credentials. Panel, login, user, admin, payment, static and unregistered paths retain the configured origin policy. Existing API-key authentication and billing remain unchanged. Browser OpenAI, Gemini and Anthropic authentication/protocol headers are supported. This does not guarantee a specific third-party client's model/protocol compatibility.
+
+Verification covers arbitrary and null origins, configured panel origins, every registered gateway route, unknown paths/methods and traversal paths, and actual API-key authentication with missing/invalid/valid keys and a cookie-only request. The baseline TestGatewayRoutesAdaptiveInboundDoesNot404LeafProtocols failure reproduces on unchanged main; it is unrelated to this change. Builds require GOEXPERIMENT=jsonv2 as the baseline imports encoding/json/jsontext.
+
+Build over production image sha256:e8f9acf6dfcab55ace34151be7526456acdb0f2706592a3c9c4e4a44e9b18f9a using deploy/Dockerfile.gateway-cors-candidate and the verified linux/amd64 executable. Preserve embedded frontend, migrations, runtime settings, volumes and all pricing changes. Never compile from inherited image source: this image family retains old source under /app. Isolated candidate startup must use separate PostgreSQL/Redis containers, no production data/configuration mounts or credentials, and no paid generation requests.
+
+Candidate hashes, isolated checks and final server preservation checks will be recorded after construction. A future rollout needs current backups, a read-only migration check with current production configuration and an app-only rollback plan. Building the candidate does not activate CORS online.

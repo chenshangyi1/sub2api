@@ -66,7 +66,14 @@ func SetupRouter(
 	// 解析模式按请求快照：兼容开关开启时信任原始转发头，关闭时使用 server.trusted_proxies。
 	r.Use(middleware2.SessionBindingContext(cfg))
 	r.Use(middleware2.Logger())
-	r.Use(middleware2.CORS(cfg.CORS))
+	// Model gateway endpoints are API-key authenticated and may be called by
+	// browser/WebView clients from arbitrary origins. Keep panel/auth/user APIs
+	// on the configured origin allowlist and never enable credentialed wildcard
+	// CORS for the gateway.
+	var gatewayRoutes []gin.RouteInfo
+	r.Use(middleware2.CORS(cfg.CORS, func(c *gin.Context) bool {
+		return middleware2.IsGatewayAPIRequest(c, gatewayRoutes)
+	}))
 	r.Use(middleware2.SecurityHeaders(cfg.Security.CSP, func() []string {
 		if p := cachedFrameOrigins.Load(); p != nil {
 			return *p
@@ -96,7 +103,7 @@ func SetupRouter(
 	}
 
 	// 注册路由
-	registerRoutes(r, handlers, jwtAuth, optionalJWTAuth, adminAuth, apiKeyAuth, auditLog, stepUpAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg, redisClient, db)
+	registerRoutes(r, handlers, jwtAuth, optionalJWTAuth, adminAuth, apiKeyAuth, auditLog, stepUpAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg, redisClient, db, &gatewayRoutes)
 
 	return r
 }
@@ -119,6 +126,7 @@ func registerRoutes(
 	cfg *config.Config,
 	redisClient *redis.Client,
 	db *sql.DB,
+	gatewayRouteCapture ...*[]gin.RouteInfo,
 ) {
 	// 通用路由（健康检查、状态等）
 	routes.RegisterCommonRoutes(r, func(ctx context.Context) error {
@@ -143,7 +151,18 @@ func registerRoutes(
 	routes.RegisterUserRoutes(v1, h, jwtAuth, auditLog, settingService, panelRateLimiter)
 	routes.RegisterModelPlazaRoutes(v1, h, optionalJWTAuth, settingService, panelRateLimiter)
 	routes.RegisterAdminRoutes(v1, h, adminAuth, auditLog, stepUpAuth, settingService, panelRateLimiter)
+	beforeGateway := make(map[string]bool)
+	for _, route := range r.Routes() {
+		beforeGateway[route.Method+" "+route.Path] = true
+	}
 	routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg)
+	if len(gatewayRouteCapture) > 0 && gatewayRouteCapture[0] != nil {
+		for _, route := range r.Routes() {
+			if !beforeGateway[route.Method+" "+route.Path] {
+				*gatewayRouteCapture[0] = append(*gatewayRouteCapture[0], route)
+			}
+		}
+	}
 	routes.RegisterPaymentRoutes(v1, h.Payment, h.PaymentWebhook, h.Admin.Payment, jwtAuth, adminAuth, auditLog, settingService, panelRateLimiter)
 
 	handler.RegisterPageRoutes(v1, cfg.Pricing.DataDir, gin.HandlerFunc(jwtAuth), gin.HandlerFunc(adminAuth), settingService)

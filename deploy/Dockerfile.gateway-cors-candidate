@@ -1,0 +1,11 @@
+# Overlay only the verified executable on the current V3.2 production image.
+# This builds a candidate; it does not restart or switch the live service.
+ARG BASE_IMAGE=sub2api1:deepseek-v32-cny-9c3c6fbd8-20261007
+FROM ${BASE_IMAGE}
+ARG SOURCE_REVISION
+ARG BINARY_SHA256
+ARG BASE_IMAGE_ID
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      xyz.xinmc.binary-sha256="${BINARY_SHA256}" \
+      xyz.xinmc.base-image-id="${BASE_IMAGE_ID}"
+COPY --chmod=755 outputs/gateway-cors-candidate/sub2api /app/sub2api

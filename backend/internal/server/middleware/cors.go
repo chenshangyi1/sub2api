@@ -12,8 +12,10 @@ import (
 
 var corsWarningOnce sync.Once
 
-// CORS 跨域中间件
-func CORS(cfg config.CORSConfig) gin.HandlerFunc {
+// CORS applies the configured browser policy. A gatewayPath predicate can be
+// supplied for API routes that intentionally accept calls from arbitrary web
+// clients while keeping the panel/session API on the configured allowlist.
+func CORS(cfg config.CORSConfig, gatewayPath ...func(*gin.Context) bool) gin.HandlerFunc {
 	allowedOrigins := normalizeOrigins(cfg.AllowedOrigins)
 	allowAll := false
 	for _, origin := range allowedOrigins {
@@ -63,25 +65,32 @@ func CORS(cfg config.CORSConfig) gin.HandlerFunc {
 		allowHeaders = append(allowHeaders, "x-stainless-"+prop)
 	}
 	allowHeadersValue := strings.Join(allowHeaders, ", ")
+	gatewayHeadersValue := allowHeadersValue + ", X-Goog-API-Key, Anthropic-Version, Anthropic-Beta, Anthropic-Dangerous-Direct-Browser-Access"
 
 	return func(c *gin.Context) {
 		origin := strings.TrimSpace(c.GetHeader("Origin"))
-		originAllowed := allowAll
-		if origin != "" && !allowAll {
+		gatewayRequest := len(gatewayPath) > 0 && gatewayPath[0] != nil && gatewayPath[0](c)
+		allowAnyOrigin := allowAll || gatewayRequest
+		originAllowed := allowAnyOrigin
+		if origin != "" && !allowAnyOrigin {
 			_, originAllowed = allowedSet[origin]
 		}
 
 		if originAllowed {
-			if allowAll {
+			if allowAnyOrigin {
 				c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 			} else if origin != "" {
 				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
 				c.Writer.Header().Add("Vary", "Origin")
 			}
-			if allowCredentials {
+			if allowCredentials && !gatewayRequest {
 				c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 			}
-			c.Writer.Header().Set("Access-Control-Allow-Headers", allowHeadersValue)
+			if gatewayRequest {
+				c.Writer.Header().Set("Access-Control-Allow-Headers", gatewayHeadersValue)
+			} else {
+				c.Writer.Header().Set("Access-Control-Allow-Headers", allowHeadersValue)
+			}
 			c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
 			c.Writer.Header().Set("Access-Control-Expose-Headers", "ETag, Server-Timing")
 			c.Writer.Header().Set("Access-Control-Max-Age", "86400")
@@ -98,6 +107,55 @@ func CORS(cfg config.CORSConfig) gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// IsGatewayAPIRequest matches only routes registered by the API-key gateway.
+// Preflight has no Gin route, so match its requested method and URL against
+// the same registered route patterns. Panel and unknown paths stay restricted.
+func IsGatewayAPIRequest(c *gin.Context, routes []gin.RouteInfo) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	method := c.Request.Method
+	if method == http.MethodOptions {
+		method = strings.TrimSpace(c.GetHeader("Access-Control-Request-Method"))
+	}
+	path := c.Request.URL.Path
+	if strings.ContainsAny(path, "\\\x00") {
+		return false
+	}
+	parts := strings.Split(path, "/")
+	for _, part := range parts {
+		if part == "." || part == ".." {
+			return false
+		}
+	}
+	for _, route := range routes {
+		if route.Method == method && matchesGatewayRoute(route.Path, parts) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesGatewayRoute(pattern string, parts []string) bool {
+	patternParts := strings.Split(pattern, "/")
+	for i, part := range patternParts {
+		if i >= len(parts) {
+			return false
+		}
+		if strings.HasPrefix(part, "*") {
+			return i == len(patternParts)-1 && strings.Join(parts[i:], "/") != ""
+		}
+		if strings.HasPrefix(part, ":") {
+			if parts[i] == "" {
+				return false
+			}
+		} else if part != parts[i] {
+			return false
+		}
+	}
+	return len(patternParts) == len(parts)
 }
 
 func normalizeOrigins(values []string) []string {
