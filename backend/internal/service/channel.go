@@ -74,15 +74,16 @@ type Channel struct {
 // 每条规则包含匹配条件（分组/账号）和独立的模型定价。
 // 多条规则按 SortOrder 排序，先命中为准。
 type AccountStatsPricingRule struct {
-	ID         int64
-	ChannelID  int64
-	Name       string
-	GroupIDs   []int64
-	AccountIDs []int64
-	SortOrder  int
-	Pricing    []ChannelModelPricing // 规则内的模型定价（复用现有定价结构）
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID                 int64
+	ChannelID          int64
+	Name               string
+	GroupIDs           []int64
+	AccountIDs         []int64
+	ApplyToUserBilling bool
+	SortOrder          int
+	Pricing            []ChannelModelPricing // 规则内的模型定价（复用现有定价结构）
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // ChannelModelPricing 渠道模型定价条目

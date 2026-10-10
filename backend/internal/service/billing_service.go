@@ -228,7 +228,7 @@ func applyCostBreakdownMultiplier(cost *CostBreakdown, multiplier float64) {
 }
 
 func resolvedChannelTimeMultiplier(resolved *ResolvedPricing, at time.Time) float64 {
-	if resolved == nil || resolved.Source != PricingSourceChannel || resolved.channelPricing == nil {
+	if resolved == nil || (resolved.Source != PricingSourceChannel && resolved.Source != PricingSourceAccountRule) || resolved.channelPricing == nil {
 		return 1
 	}
 	return resolved.channelPricing.TimePricing.MultiplierAt(at)

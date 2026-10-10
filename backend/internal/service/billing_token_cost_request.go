@@ -54,7 +54,7 @@ func legacyLongContextApplies(resolved *ResolvedPricing, group *Group, rule *Leg
 	if rule == nil || rule.Threshold <= 0 {
 		return false
 	}
-	if resolved != nil && (resolved.Source == PricingSourceGroup || resolved.Source == PricingSourceChannel) {
+	if resolved != nil && (resolved.Source == PricingSourceGroup || resolved.Source == PricingSourceChannel || resolved.Source == PricingSourceAccountRule) {
 		return false
 	}
 	return group == nil || group.LongContextPricingEnabled
@@ -69,7 +69,7 @@ func legacyLongContextApplies(resolved *ResolvedPricing, group *Group, rule *Leg
 // 模型广场的阶梯表查询与网关使用同一入口，保证展示与扣费同源。
 func (s *BillingService) CalculateTokenCostForRequest(req TokenCostRequest) (*CostBreakdown, error) {
 	resolved := req.Resolved
-	if resolved != nil && (resolved.Source == PricingSourceGroup || resolved.Source == PricingSourceChannel) {
+	if resolved != nil && (resolved.Source == PricingSourceGroup || resolved.Source == PricingSourceChannel || resolved.Source == PricingSourceAccountRule) {
 		return s.CalculateCostUnified(s.tokenCostInput(req, resolved))
 	}
 	if legacyLongContextApplies(resolved, req.Group, req.LegacyLongContext) {

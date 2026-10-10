@@ -214,16 +214,21 @@ func TestGetRequestTierPrice_NilPerRequestPrice(t *testing.T) {
 // helper: creates a resolver wired to a ChannelService that returns the given
 // channel (active, groupID=100, platform=anthropic) with the specified pricing.
 func newResolverWithChannel(t *testing.T, pricing []ChannelModelPricing) *ModelPricingResolver {
+	return newResolverWithChannelAndAccountRules(t, pricing, nil)
+}
+
+func newResolverWithChannelAndAccountRules(t *testing.T, pricing []ChannelModelPricing, rules []AccountStatsPricingRule) *ModelPricingResolver {
 	t.Helper()
 	const groupID = 100
 	repo := &mockChannelRepository{
 		listAllFn: func(_ context.Context) ([]Channel, error) {
 			return []Channel{{
-				ID:           1,
-				Name:         "test-channel",
-				Status:       StatusActive,
-				GroupIDs:     []int64{groupID},
-				ModelPricing: pricing,
+				ID:                       1,
+				Name:                     "test-channel",
+				Status:                   StatusActive,
+				GroupIDs:                 []int64{groupID},
+				ModelPricing:             pricing,
+				AccountStatsPricingRules: rules,
 			}}, nil
 		},
 		getGroupPlatformsFn: func(_ context.Context, _ []int64) (map[int64]string, error) {
@@ -237,6 +242,84 @@ func newResolverWithChannel(t *testing.T, pricing []ChannelModelPricing) *ModelP
 
 // groupIDPtr returns a pointer to groupID 100 (the test constant).
 func groupIDPtr() *int64 { v := int64(100); return &v }
+
+func TestResolve_AccountRuleUsedForUserBillingOnlyWhenEnabled(t *testing.T) {
+	channelPricing := []ChannelModelPricing{{
+		Platform:    "anthropic",
+		Models:      []string{"deepseek-v4-pro"},
+		BillingMode: BillingModeToken,
+		InputPrice:  testPtrFloat64(1e-6),
+		OutputPrice: testPtrFloat64(2e-6),
+	}}
+	rules := []AccountStatsPricingRule{
+		{
+			AccountIDs:         []int64{11},
+			ApplyToUserBilling: true,
+			Pricing: []ChannelModelPricing{{
+				Platform:    "anthropic",
+				Models:      []string{"xindu-deepseek-v4-pro"},
+				BillingMode: BillingModeToken,
+				InputPrice:  testPtrFloat64(4.5e-6),
+				OutputPrice: testPtrFloat64(13.5e-6),
+			}},
+		},
+		{
+			AccountIDs:         []int64{12},
+			ApplyToUserBilling: true,
+			Pricing: []ChannelModelPricing{{
+				Platform:    "anthropic",
+				Models:      []string{"deepseek-v4-pro"},
+				BillingMode: BillingModeToken,
+				InputPrice:  testPtrFloat64(9e-6),
+				OutputPrice: testPtrFloat64(27e-6),
+			}},
+		},
+		{
+			AccountIDs:         []int64{13},
+			ApplyToUserBilling: false,
+			Pricing: []ChannelModelPricing{{
+				Platform:    "anthropic",
+				Models:      []string{"deepseek-v4-pro"},
+				BillingMode: BillingModeToken,
+				InputPrice:  testPtrFloat64(18e-6),
+				OutputPrice: testPtrFloat64(54e-6),
+			}},
+		},
+	}
+	r := newResolverWithChannelAndAccountRules(t, channelPricing, rules)
+
+	account11 := int64(11)
+	resolvedForAccount11 := r.Resolve(context.Background(), PricingInput{
+		Model: "deepseek-v4-pro", UpstreamModel: "xindu-deepseek-v4-pro", GroupID: groupIDPtr(), AccountID: &account11,
+	})
+	require.Equal(t, PricingSourceAccountRule, resolvedForAccount11.Source)
+	require.InDelta(t, 4.5e-6, resolvedForAccount11.BasePricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, 13.5e-6, resolvedForAccount11.BasePricing.OutputPricePerToken, 1e-12)
+	cost, err := r.billingService.CalculateCostUnified(CostInput{
+		Ctx: context.Background(), Model: "deepseek-v4-pro", GroupID: groupIDPtr(),
+		Tokens: UsageTokens{InputTokens: 1000, OutputTokens: 100}, RequestCount: 1,
+		RateMultiplier: 0.25, Resolver: r, Resolved: resolvedForAccount11,
+	})
+	require.NoError(t, err)
+	require.InDelta(t, 0.00585, cost.TotalCost, 1e-12)
+	require.InDelta(t, 0.0014625, cost.ActualCost, 1e-12)
+
+	account12 := int64(12)
+	resolvedForAccount12 := r.Resolve(context.Background(), PricingInput{
+		Model: "deepseek-v4-pro", GroupID: groupIDPtr(), AccountID: &account12,
+	})
+	require.Equal(t, PricingSourceAccountRule, resolvedForAccount12.Source)
+	require.InDelta(t, 9e-6, resolvedForAccount12.BasePricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, 27e-6, resolvedForAccount12.BasePricing.OutputPricePerToken, 1e-12)
+
+	account13 := int64(13)
+	resolvedForAccount13 := r.Resolve(context.Background(), PricingInput{
+		Model: "deepseek-v4-pro", GroupID: groupIDPtr(), AccountID: &account13,
+	})
+	require.Equal(t, PricingSourceChannel, resolvedForAccount13.Source)
+	require.InDelta(t, 1e-6, resolvedForAccount13.BasePricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, 2e-6, resolvedForAccount13.BasePricing.OutputPricePerToken, 1e-12)
+}
 
 // ---------------------------------------------------------------------------
 // 1. Token mode overrides

@@ -494,6 +494,17 @@
                   </button>
                 </div>
 
+                <div class="flex items-center justify-between gap-4 rounded border border-gray-200 px-3 py-2 dark:border-dark-600">
+                  <div>
+                    <p class="text-xs font-medium text-gray-700 dark:text-gray-300">{{ t('admin.channels.form.applyRuleToUserBilling') }}</p>
+                    <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.channels.form.applyRuleToUserBillingDesc') }}</p>
+                  </div>
+                  <Toggle
+                    :modelValue="rule.apply_to_user_billing"
+                    @update:modelValue="rule.apply_to_user_billing = $event"
+                  />
+                </div>
+
                 <div>
                   <label class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.channels.form.ruleGroups') }}</label>
                   <div class="mt-1 flex flex-wrap gap-1">
@@ -673,6 +684,7 @@ interface FormPricingRule {
   name: string
   group_ids: number[]
   account_ids: number[]
+  apply_to_user_billing: boolean
   pricing: PricingFormEntry[]
 }
 
@@ -954,6 +966,7 @@ function addAccountStatsRule(sectionIdx: number) {
     name: '',
     group_ids: [],
     account_ids: [],
+    apply_to_user_billing: false,
     pricing: []
   })
 }
@@ -1073,6 +1086,7 @@ function accountStatsRulesToAPI(): AccountStatsPricingRule[] {
         name: rule.name,
         group_ids: rule.group_ids,
         account_ids: rule.account_ids,
+        apply_to_user_billing: rule.apply_to_user_billing,
         pricing: rule.pricing
           .filter(p => p.models.length > 0)
           .map(p => ({
@@ -1392,6 +1406,7 @@ function distributeRulesToPlatforms(apiRules: AccountStatsPricingRule[]) {
       name: apiRule.name || '',
       group_ids: [...(apiRule.group_ids || [])],
       account_ids: [...(apiRule.account_ids || [])],
+      apply_to_user_billing: apiRule.apply_to_user_billing || false,
       pricing: (apiRule.pricing || []).map(p => ({
         models: [...(p.models || [])],
         billing_mode: p.billing_mode,

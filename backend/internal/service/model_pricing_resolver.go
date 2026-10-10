@@ -8,10 +8,11 @@ import (
 
 // PricingSource 定价来源标识
 const (
-	PricingSourceGroup    = "group"
-	PricingSourceChannel  = "channel"
-	PricingSourceLiteLLM  = "litellm"
-	PricingSourceFallback = "fallback"
+	PricingSourceGroup       = "group"
+	PricingSourceChannel     = "channel"
+	PricingSourceAccountRule = "account_rule"
+	PricingSourceLiteLLM     = "litellm"
+	PricingSourceFallback    = "fallback"
 )
 
 // ResolvedPricing 统一定价解析结果
@@ -32,7 +33,7 @@ type ResolvedPricing struct {
 	DefaultPerRequestPrice float64
 
 	// 来源标识
-	Source string // "channel", "litellm", "fallback"
+	Source string // PricingSource constants
 
 	// 是否支持缓存细分
 	SupportsCacheBreakdown bool
@@ -44,7 +45,7 @@ type ResolvedPricing struct {
 }
 
 // ModelPricingResolver 统一模型定价解析器。
-// 解析链：Channel → Group → LiteLLM → Fallback。
+// 解析链：AccountRule → Channel → Group → LiteLLM → Fallback。
 // 渠道填价覆盖分组价卡；没有渠道定价时才用分组价卡。
 type ModelPricingResolver struct {
 	channelService *ChannelService
@@ -61,17 +62,42 @@ func NewModelPricingResolver(channelService *ChannelService, billingService *Bil
 
 // PricingInput 定价解析输入
 type PricingInput struct {
-	Model   string
-	GroupID *int64 // nil 表示不检查渠道
-	Group   *Group
+	Model         string
+	UpstreamModel string
+	AccountID     *int64
+	GroupID       *int64 // nil 表示不检查渠道
+	Group         *Group
+}
+
+// accountPricingContext carries data available only after the scheduler has
+// selected the account that successfully served the request.
+type accountPricingContext struct {
+	account       *Account
+	upstreamModel string
+}
+
+func pricingContextForAccount(account *Account, upstreamModel string) accountPricingContext {
+	return accountPricingContext{account: account, upstreamModel: upstreamModel}
+}
+
+func firstAccountPricingContext(contexts []accountPricingContext) accountPricingContext {
+	if len(contexts) == 0 {
+		return accountPricingContext{}
+	}
+	return contexts[0]
 }
 
 // Resolve 解析模型定价。
-// 1. 有渠道定价则用渠道填价（覆盖分组价卡）
-// 2. 无渠道定价时用分组价卡
+// 1. 优先使用显式启用的成功上游账号规则
+// 2. 有渠道定价则用渠道填价，否则用分组价卡
 // 3. 再回落 LiteLLM / Fallback
 func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) *ResolvedPricing {
 	longContextPricingEnabled := input.Group == nil || input.Group.LongContextPricingEnabled
+	if accountPricing := r.resolveAccountRulePricing(ctx, input); accountPricing != nil {
+		resolved := r.resolveConfiguredPricing(accountPricing, input.Model, PricingSourceAccountRule)
+		resolved.longContextPricingEnabled = longContextPricingEnabled
+		return resolved
+	}
 
 	var chPricing *ChannelModelPricing
 	if input.GroupID != nil && r.channelService != nil {
@@ -130,6 +156,37 @@ func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) 
 	}
 
 	return resolved
+}
+
+// resolveAccountRulePricing applies an opt-in account stats rule to customer
+// billing. The sent upstream model is preferred so a channel mapping does not
+// make the selected account's rule invisible; the billing model remains a
+// fallback for configurations that intentionally price public aliases.
+func (r *ModelPricingResolver) resolveAccountRulePricing(ctx context.Context, input PricingInput) *ChannelModelPricing {
+	if r.channelService == nil || input.GroupID == nil || input.AccountID == nil || *input.AccountID <= 0 {
+		return nil
+	}
+	channel, err := r.channelService.GetChannelForGroup(ctx, *input.GroupID)
+	if err != nil || channel == nil {
+		return nil
+	}
+	platform := r.channelService.GetGroupPlatform(ctx, *input.GroupID)
+	models := []string{strings.TrimSpace(input.UpstreamModel), strings.TrimSpace(input.Model)}
+	for _, model := range models {
+		if model == "" {
+			continue
+		}
+		for _, rule := range channel.AccountStatsPricingRules {
+			if !rule.ApplyToUserBilling || !matchAccountStatsRule(&rule, *input.AccountID, *input.GroupID) {
+				continue
+			}
+			if pricing := findPricingForModel(rule.Pricing, platform, strings.ToLower(model)); pricing != nil {
+				cloned := pricing.Clone()
+				return &cloned
+			}
+		}
+	}
+	return nil
 }
 
 func (r *ModelPricingResolver) resolveConfiguredPricing(config *ChannelModelPricing, model, source string) *ResolvedPricing {

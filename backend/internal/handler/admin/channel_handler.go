@@ -102,10 +102,11 @@ type pricingIntervalRequest struct {
 }
 
 type accountStatsPricingRuleRequest struct {
-	Name       string                       `json:"name"`
-	GroupIDs   []int64                      `json:"group_ids"`
-	AccountIDs []int64                      `json:"account_ids"`
-	Pricing    []channelModelPricingRequest `json:"pricing"`
+	Name               string                       `json:"name"`
+	GroupIDs           []int64                      `json:"group_ids"`
+	AccountIDs         []int64                      `json:"account_ids"`
+	ApplyToUserBilling bool                         `json:"apply_to_user_billing"`
+	Pricing            []channelModelPricingRequest `json:"pricing"`
 }
 
 type channelResponse struct {
@@ -174,11 +175,12 @@ type pricingIntervalResponse struct {
 }
 
 type accountStatsPricingRuleResponse struct {
-	ID         int64                         `json:"id"`
-	Name       string                        `json:"name"`
-	GroupIDs   []int64                       `json:"group_ids"`
-	AccountIDs []int64                       `json:"account_ids"`
-	Pricing    []channelModelPricingResponse `json:"pricing"`
+	ID                 int64                         `json:"id"`
+	Name               string                        `json:"name"`
+	GroupIDs           []int64                       `json:"group_ids"`
+	AccountIDs         []int64                       `json:"account_ids"`
+	ApplyToUserBilling bool                          `json:"apply_to_user_billing"`
+	Pricing            []channelModelPricingResponse `json:"pricing"`
 }
 
 func channelToResponse(ch *service.Channel) *channelResponse {
@@ -215,11 +217,12 @@ func channelToResponse(ch *service.Channel) *channelResponse {
 	resp.AccountStatsPricingRules = make([]accountStatsPricingRuleResponse, 0, len(ch.AccountStatsPricingRules))
 	for _, rule := range ch.AccountStatsPricingRules {
 		ruleResp := accountStatsPricingRuleResponse{
-			ID:         rule.ID,
-			Name:       rule.Name,
-			GroupIDs:   rule.GroupIDs,
-			AccountIDs: rule.AccountIDs,
-			Pricing:    make([]channelModelPricingResponse, 0, len(rule.Pricing)),
+			ID:                 rule.ID,
+			Name:               rule.Name,
+			GroupIDs:           rule.GroupIDs,
+			AccountIDs:         rule.AccountIDs,
+			ApplyToUserBilling: rule.ApplyToUserBilling,
+			Pricing:            make([]channelModelPricingResponse, 0, len(rule.Pricing)),
 		}
 		if ruleResp.GroupIDs == nil {
 			ruleResp.GroupIDs = []int64{}
@@ -389,10 +392,11 @@ func timePricingRequestToService(value *channelTimePricingRequest) *service.Chan
 
 func accountStatsPricingRuleRequestToService(r accountStatsPricingRuleRequest) service.AccountStatsPricingRule {
 	return service.AccountStatsPricingRule{
-		Name:       r.Name,
-		GroupIDs:   r.GroupIDs,
-		AccountIDs: r.AccountIDs,
-		Pricing:    pricingRequestToService(r.Pricing, false),
+		Name:               r.Name,
+		GroupIDs:           r.GroupIDs,
+		AccountIDs:         r.AccountIDs,
+		ApplyToUserBilling: r.ApplyToUserBilling,
+		Pricing:            pricingRequestToService(r.Pricing, false),
 	}
 }
 

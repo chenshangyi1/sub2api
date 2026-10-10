@@ -60,6 +60,7 @@ export interface AccountStatsPricingRule {
   name: string
   group_ids: number[]
   account_ids: number[]
+  apply_to_user_billing: boolean
   pricing: ChannelModelPricing[]
 }
 
