@@ -660,7 +660,7 @@ func TestTryModelFilePricing_DeepSeekUsesStandardPricingAtAnyTime(t *testing.T) 
 		input, output, cacheReadPrice float64
 	}{
 		{"deepseek-v4-flash", 2.2e-7, 6.6e-7, 7e-9},
-		{"deepseek-v4-pro", 6.6e-7, 1.98e-6, 2.2e-8},
+		{"deepseek-v4-pro", 4.5e-6, 13.5e-6, 0.15e-6},
 	} {
 		for _, usage := range []struct {
 			name   string

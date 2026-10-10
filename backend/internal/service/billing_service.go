@@ -247,9 +247,9 @@ const (
 	deepseekV41FlashOffPeakInputPrice  = 2e-6    // $2.00 per MTok (cache miss)
 	deepseekV41FlashOffPeakOutputPrice = 8e-6    // $8.00 per MTok
 	deepseekV41FlashOffPeakCacheRead   = 0.04e-6 // $0.04 per MTok (cache hit)
-	deepseekProOffPeakInputPrice       = 6.6e-7  // $0.66 per MTok (cache miss)
-	deepseekProOffPeakOutputPrice      = 1.98e-6 // $1.98 per MTok
-	deepseekProOffPeakCacheRead        = 2.2e-8  // $0.022 per MTok (cache hit)
+	deepseekProOffPeakInputPrice       = 4.5e-6  // $4.50 per MTok (cache miss)
+	deepseekProOffPeakOutputPrice      = 13.5e-6 // $13.50 per MTok
+	deepseekProOffPeakCacheRead        = 0.15e-6 // $0.15 per MTok (cache hit)
 )
 
 // SiliconFlow V3.2 site base prices, checked 2026-10-07:
@@ -535,9 +535,9 @@ func (s *BillingService) initFallbackPricing() {
 	// deepseek-reasoner 已停止服务。以下是本地官方标准价兜底，仅在上游目录
 	// 无可用价格时使用；未知 deepseek-* 不进入兜底。
 	s.fallbackPrices["deepseek-v4-pro"] = &ModelPricing{
-		InputPricePerToken:     4.35e-7,  // $0.435 per MTok (cache miss)
-		OutputPricePerToken:    8.7e-7,   // $0.87 per MTok
-		CacheReadPricePerToken: 3.625e-9, // $0.003625 per MTok (cache hit)
+		InputPricePerToken:     4.5e-6,  // $4.50 per MTok (cache miss)
+		OutputPricePerToken:    13.5e-6, // $13.50 per MTok
+		CacheReadPricePerToken: 0.15e-6, // $0.15 per MTok (cache hit)
 		SupportsCacheBreakdown: false,
 	}
 	s.fallbackPrices["deepseek-v4-flash"] = &ModelPricing{
@@ -1716,11 +1716,12 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 	// 其它已知别名按对应的本地官方标准价处理，未知型号在更早的入口已拒绝。
 	if forceOfficialCatalogRates && isDeepSeekModel(model) {
 		cloned := *pricing
-		if strings.Contains(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-pro") {
+		normalizedDeepSeek := normalizeDeepSeekModelName(model)
+		if strings.HasPrefix(normalizedDeepSeek, "deepseek-v4-pro") {
 			cloned.InputPricePerToken = deepseekProOffPeakInputPrice
 			cloned.OutputPricePerToken = deepseekProOffPeakOutputPrice
 			cloned.CacheReadPricePerToken = deepseekProOffPeakCacheRead
-		} else if isDeepSeekV41FlashModel(model) {
+		} else if isDeepSeekV41FlashModel(normalizedDeepSeek) {
 			cloned.InputPricePerToken = deepseekV41FlashOffPeakInputPrice
 			cloned.OutputPricePerToken = deepseekV41FlashOffPeakOutputPrice
 			cloned.CacheReadPricePerToken = deepseekV41FlashOffPeakCacheRead

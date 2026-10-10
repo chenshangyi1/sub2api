@@ -490,9 +490,9 @@ func TestGetFallbackPricing_FamilyMatching(t *testing.T) {
 		{
 			name:              "deepseek v4 pro",
 			model:             "deepseek-v4-pro",
-			expectedInput:     4.35e-7,
-			expectedOutput:    floatPtr(8.7e-7),
-			expectedCacheRead: floatPtr(3.625e-9),
+			expectedInput:     4.5e-6,
+			expectedOutput:    floatPtr(13.5e-6),
+			expectedCacheRead: floatPtr(0.15e-6),
 		},
 		{
 			name:              "deepseek v4 flash",

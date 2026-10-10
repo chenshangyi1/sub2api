@@ -86,8 +86,9 @@ func TestGetModelPricing_DeepseekV4ProAliasesUseOfficialCard(t *testing.T) {
 	for _, model := range []string{"deepseek-ai/DeepSeek-V4-Pro", "DEEPSEEK-V4PRO", "deepseek_ai_DeepSeek_V4_Pro"} {
 		pricing, err := bs.GetModelPricing(model)
 		require.NoError(t, err, model)
-		require.InDelta(t, 4.35e-7, pricing.InputPricePerToken, 1e-15, model)
-		require.InDelta(t, 8.7e-7, pricing.OutputPricePerToken, 1e-15, model)
+		require.InDelta(t, 4.5e-6, pricing.InputPricePerToken, 1e-15, model)
+		require.InDelta(t, 13.5e-6, pricing.OutputPricePerToken, 1e-15, model)
+		require.InDelta(t, 0.15e-6, pricing.CacheReadPricePerToken, 1e-15, model)
 	}
 }
 
@@ -130,7 +131,7 @@ func TestCalculateCostUnified_DeepseekProDefaultCardUsesStandardPriceAtAnyTime(t
 	resolver := NewModelPricingResolver(nil, bs)
 
 	tokens := UsageTokens{InputTokens: 1000, OutputTokens: 500, CacheReadTokens: 1000}
-	offPeakTotal := 1000*6.6e-7 + 500*1.98e-6 + 1000*2.2e-8
+	offPeakTotal := 1000*4.5e-6 + 500*13.5e-6 + 1000*0.15e-6
 
 	offPeak, err := bs.CalculateCostUnified(CostInput{
 		Ctx: context.Background(), Model: "deepseek-v4-pro", Tokens: tokens,
@@ -366,7 +367,7 @@ func TestDeepseekPricingFileMatchesOfficialRates(t *testing.T) {
 	}{
 		{"deepseek-v4-flash", 2.2e-7, 6.6e-7, 7e-9},
 		{"deepseek-v4-flash-vision-exp", 2.2e-7, 6.6e-7, 7e-9},
-		{"deepseek-v4-pro", 6.6e-7, 1.98e-6, 2.2e-8},
+		{"deepseek-v4-pro", 4.5e-6, 13.5e-6, 0.15e-6},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
