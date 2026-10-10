@@ -79,7 +79,7 @@ Building this image does not activate the feature or configure supplier tariffs.
   `/opt/sub2api/build_context/account-rule-upload-20261011/build-account-rule-candidate.sh`.
   Its SHA256 is `bd4af4a6838c4735497af58f2b62162cb52adf59c35248df904b01fc8c564f8b`.
 
-Transferred archives were checksum-verified before extraction. All 3,425
+Transferred archives were checksum-verified before extraction. All 3,424
 source/module/SQL/embedded frontend files were verified against the local
 manifest; staging has no extra Go or SQL files. Previous changed source and the
 embedded frontend were backed up before replacement. Canonical server checkout
